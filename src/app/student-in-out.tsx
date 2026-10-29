@@ -414,7 +414,14 @@ export default function StudentInOutScreen() {
                           <Text style={styles.editBadgeBtnText}>Edit</Text>
                         </Pressable>
                       </View>
-                      <Text style={styles.residentRoom}>Room {resident.room_number}</Text>
+                      <View style={styles.roomTagRow}>
+                        <Text style={styles.residentRoom}>Room {resident.room_number}</Text>
+                        {resident.profile_id ? (
+                          <View style={styles.appLinkedPill}>
+                            <Text style={styles.appLinkedPillText}>App Linked</Text>
+                          </View>
+                        ) : null}
+                      </View>
                     </View>
 
                     {/* Status Pill Badge */}
@@ -876,7 +883,25 @@ const styles = StyleSheet.create({
   residentRoom: {
     fontSize: 13,
     color: '#64748B',
+  },
+  roomTagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     marginTop: 2,
+  },
+  appLinkedPill: {
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  appLinkedPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#15803D',
   },
   statusBadge: {
     flexDirection: 'row',

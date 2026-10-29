@@ -80,19 +80,19 @@ export default function LoginScreen() {
 
       const profile = profileData as UserProfile;
 
-      // 3. Enforce Owner Role Check
-      if (profile.role !== 'owner') {
-        // Deny access and clear session immediately
+      // 3. Enforce Role Check and Navigation
+      if (profile.role === 'owner') {
+        router.replace('/(tabs)');
+      } else if (profile.role === 'student') {
+        router.replace('/student-dashboard');
+      } else {
         await signOut();
         setErrorMessage(
-          `Access Denied: This portal is strictly for PG Owners. Your account is registered as '${profile.role}'.`
+          `Access Denied: Unrecognized account role '${profile.role}'. Please contact support.`
         );
         setLoading(false);
         return;
       }
-
-      // 4. Authorized owner -> Navigate to Dashboard
-      router.replace('/(tabs)');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       setErrorMessage(`Unexpected error during sign in: ${msg}`);
@@ -117,7 +117,7 @@ export default function LoginScreen() {
               <Text style={styles.logoBadgeText}>PG</Text>
             </View>
             <Text style={styles.appTitle}>PGwala</Text>
-            <Text style={styles.appSubtitle}>Owner Management Portal</Text>
+            <Text style={styles.appSubtitle}>Owner & Student Portal</Text>
           </View>
 
           {/* Login Card */}
@@ -140,7 +140,7 @@ export default function LoginScreen() {
               <Text style={styles.fieldLabel}>Email Address</Text>
               <TextInput
                 style={styles.input}
-                placeholder="owner@example.com"
+                placeholder="you@example.com"
                 placeholderTextColor="#94A3B8"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -194,7 +194,7 @@ export default function LoginScreen() {
           {/* Footer Note */}
           <View style={styles.footer}>
             <Text style={styles.footerText}>
-              Need an owner account? Contact support to set up your accommodation.
+              Need an account? Contact your PG owner or management.
             </Text>
           </View>
         </ScrollView>

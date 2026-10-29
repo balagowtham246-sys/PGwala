@@ -25,6 +25,18 @@ interface ResidentData {
   phone_number: string | null;
   room_number: string;
   is_active: boolean;
+  profile?: {
+    id: string;
+    full_name: string;
+  } | null;
+}
+
+interface RpcResponse {
+  success: boolean;
+  message?: string;
+  error?: string;
+  resident_id?: string;
+  profile_id?: string;
 }
 
 export default function EditResidentScreen() {
@@ -38,10 +50,13 @@ export default function EditResidentScreen() {
   const [fullName, setFullName] = useState('');
   const [roomNumber, setRoomNumber] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [studentEmail, setStudentEmail] = useState('');
 
   // Mutation states
   const [saving, setSaving] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
+  const [linking, setLinking] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
@@ -59,7 +74,19 @@ export default function EditResidentScreen() {
 
       const { data, error } = await supabase
         .from('residents')
-        .select('id, property_id, profile_id, full_name, phone_number, room_number, is_active')
+        .select(`
+          id,
+          property_id,
+          profile_id,
+          full_name,
+          phone_number,
+          room_number,
+          is_active,
+          profile:profiles (
+            id,
+            full_name
+          )
+        `)
         .eq('id', id)
         .single();
 
@@ -71,10 +98,25 @@ export default function EditResidentScreen() {
         throw new Error('Resident record not found.');
       }
 
-      setResident(data);
-      setFullName(data.full_name);
-      setRoomNumber(data.room_number);
-      setPhoneNumber(data.phone_number || '');
+      const profileObj = Array.isArray(data.profile)
+        ? data.profile[0]
+        : data.profile;
+
+      const residentInfo: ResidentData = {
+        id: data.id,
+        property_id: data.property_id,
+        profile_id: data.profile_id,
+        full_name: data.full_name,
+        phone_number: data.phone_number,
+        room_number: data.room_number,
+        is_active: data.is_active,
+        profile: profileObj || null,
+      };
+
+      setResident(residentInfo);
+      setFullName(residentInfo.full_name);
+      setRoomNumber(residentInfo.room_number);
+      setPhoneNumber(residentInfo.phone_number || '');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[EditResident] Error fetching resident:', err);
@@ -164,7 +206,10 @@ export default function EditResidentScreen() {
 
       // Update confirmed
       console.log('[EditResident] Resident updated successfully:', data);
-      setResident(data);
+      setResident({
+        ...data,
+        profile: resident.profile || null,
+      });
       setSuccessMessage('Resident details updated successfully!');
 
       Alert.alert('Changes Saved', `${data.full_name}'s details have been updated.`, [
@@ -187,7 +232,167 @@ export default function EditResidentScreen() {
     }
   };
 
-  // 3. Handle Deactivate Resident (Soft Deactivation: is_active = false)
+  // 3. Handle Link Student Account (Owner-Only RPC Call)
+  // Invokes public.link_resident_profile(p_resident_id, p_student_email).
+  // Never updates residents.profile_id directly from the client.
+  const handleLinkStudent = async () => {
+    if (!user?.id) {
+      Alert.alert('Authentication Required', 'You must be signed in as an owner.');
+      return;
+    }
+
+    if (!resident) {
+      Alert.alert('Error', 'Resident details not loaded.');
+      return;
+    }
+
+    const trimmedEmail = studentEmail.trim();
+    if (!trimmedEmail) {
+      setErrorMessage('Please enter the student account email address.');
+      return;
+    }
+
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      setErrorMessage('Please enter a valid email address (e.g. student@example.com).');
+      return;
+    }
+
+    setLinking(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      console.log('[EditResident] Calling link_resident_profile RPC:', {
+        p_resident_id: resident.id,
+        p_student_email: trimmedEmail,
+      });
+
+      const { data, error } = await supabase.rpc('link_resident_profile', {
+        p_resident_id: resident.id,
+        p_student_email: trimmedEmail,
+      });
+
+      if (error) {
+        console.error('[EditResident] RPC link error:', error);
+        const errMsg = error.message || 'Failed to connect to the database to link account.';
+        Alert.alert('Linking Failed', errMsg);
+        setErrorMessage(errMsg);
+        return;
+      }
+
+      const res = data as RpcResponse | null;
+      if (!res) {
+        const errMsg = 'Linking Failed: No response received from server.';
+        Alert.alert('Linking Failed', errMsg);
+        setErrorMessage(errMsg);
+        return;
+      }
+
+      if (!res.success) {
+        const errMsg = res.error || 'Failed to link student account.';
+        Alert.alert('Linking Failed', errMsg);
+        setErrorMessage(errMsg);
+        return;
+      }
+
+      // Confirmed success
+      const successMsg = res.message || 'Student account linked successfully!';
+      setSuccessMessage(successMsg);
+      setStudentEmail('');
+      Alert.alert('Account Linked', successMsg);
+
+      // Reload resident data to update profile_id and joined profile
+      await loadResident();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[EditResident] Unexpected error during link:', err);
+      Alert.alert('Linking Failed', msg);
+      setErrorMessage(`Linking Failed: ${msg}`);
+    } finally {
+      setLinking(false);
+    }
+  };
+
+  // 4. Handle Unlink Student Account (Owner-Only RPC Call with confirmation)
+  // Invokes public.unlink_resident_profile(p_resident_id).
+  const handleConfirmUnlink = () => {
+    if (!resident) return;
+
+    Alert.alert(
+      'Unlink Student Account?',
+      `Are you sure you want to unlink the student account from ${resident.full_name} (Room ${resident.room_number})?\n\n• The student will no longer have access to this room or published menus on their portal.\n• You can link another account at any time.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Unlink Account',
+          style: 'destructive',
+          onPress: performUnlink,
+        },
+      ]
+    );
+  };
+
+  const performUnlink = async () => {
+    if (!user?.id || !resident) return;
+
+    setUnlinking(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    try {
+      console.log('[EditResident] Calling unlink_resident_profile RPC:', {
+        p_resident_id: resident.id,
+      });
+
+      const { data, error } = await supabase.rpc('unlink_resident_profile', {
+        p_resident_id: resident.id,
+      });
+
+      if (error) {
+        console.error('[EditResident] RPC unlink error:', error);
+        const errMsg = error.message || 'Failed to unlink account.';
+        Alert.alert('Unlink Failed', errMsg);
+        setErrorMessage(errMsg);
+        return;
+      }
+
+      const res = data as RpcResponse | null;
+      if (!res) {
+        const errMsg = 'Unlink Failed: No response received from server.';
+        Alert.alert('Unlink Failed', errMsg);
+        setErrorMessage(errMsg);
+        return;
+      }
+
+      if (!res.success) {
+        const errMsg = res.error || 'Failed to unlink student account.';
+        Alert.alert('Unlink Failed', errMsg);
+        setErrorMessage(errMsg);
+        return;
+      }
+
+      const successMsg = res.message || 'Student account unlinked successfully.';
+      setSuccessMessage(successMsg);
+      Alert.alert('Account Unlinked', successMsg);
+
+      // Reload resident data to update profile_id
+      await loadResident();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('[EditResident] Unexpected error during unlink:', err);
+      Alert.alert('Unlink Failed', msg);
+      setErrorMessage(`Unlink Failed: ${msg}`);
+    } finally {
+      setUnlinking(false);
+    }
+  };
+
+  // 5. Handle Deactivate Resident (Soft Deactivation: is_active = false)
   // Preserves resident record and historical movement_logs. Never deletes records.
   const handleConfirmDeactivate = () => {
     if (!resident) return;
@@ -412,10 +617,10 @@ export default function EditResidentScreen() {
                 {/* Save Changes Button */}
                 <Pressable
                   accessibilityRole="button"
-                  disabled={saving || deactivating}
+                  disabled={saving || deactivating || linking || unlinking}
                   style={({ pressed }) => [
                     styles.submitBtn,
-                    (saving || deactivating) && styles.submitBtnDisabled,
+                    (saving || deactivating || linking || unlinking) && styles.submitBtnDisabled,
                     pressed && styles.submitBtnPressed,
                   ]}
                   onPress={handleSave}>
@@ -428,6 +633,125 @@ export default function EditResidentScreen() {
                     <Text style={styles.submitBtnText}>Save Changes</Text>
                   )}
                 </Pressable>
+              </View>
+
+              {/* Student Portal Access Card (Owner-Only Account Linking) */}
+              <View style={styles.card}>
+                <View style={styles.cardHeaderRow}>
+                  <Text style={styles.cardHeaderTitle}>Student Portal Access</Text>
+                  <View
+                    style={[
+                      styles.linkStatusBadge,
+                      resident.profile_id
+                        ? styles.linkStatusBadgeLinked
+                        : styles.linkStatusBadgeUnlinked,
+                    ]}>
+                    <View
+                      style={[
+                        styles.linkStatusDot,
+                        {
+                          backgroundColor: resident.profile_id ? '#16A34A' : '#94A3B8',
+                        },
+                      ]}
+                    />
+                    <Text
+                      style={[
+                        styles.linkStatusText,
+                        {
+                          color: resident.profile_id ? '#15803D' : '#64748B',
+                        },
+                      ]}>
+                      {resident.profile_id ? 'App Linked' : 'Not Linked'}
+                    </Text>
+                  </View>
+                </View>
+
+                {resident.profile_id ? (
+                  /* State A: Currently Linked */
+                  <View style={styles.linkedBox}>
+                    <View style={styles.linkedInfoRow}>
+                      <Text style={styles.linkedIcon}>📱</Text>
+                      <View style={styles.linkedTextWrap}>
+                        <Text style={styles.linkedStudentName}>
+                          {resident.profile?.full_name || 'Linked Student Account'}
+                        </Text>
+                        <Text style={styles.linkedDesc}>
+                          This student can sign in to the PGwala Student Portal to view room allocation, check gate status, and view daily food menus.
+                        </Text>
+                      </View>
+                    </View>
+
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={saving || deactivating || unlinking || linking}
+                      style={({ pressed }) => [
+                        styles.unlinkBtn,
+                        (saving || deactivating || unlinking || linking) && styles.unlinkBtnDisabled,
+                        pressed && styles.unlinkBtnPressed,
+                      ]}
+                      onPress={handleConfirmUnlink}>
+                      {unlinking ? (
+                        <View style={styles.btnRow}>
+                          <ActivityIndicator size="small" color="#DC2626" />
+                          <Text style={styles.unlinkBtnText}>Unlinking Account...</Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.unlinkBtnText}>Unlink Student Account</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                ) : !resident.is_active ? (
+                  /* State B: Inactive resident */
+                  <Text style={styles.unlinkedHelpText}>
+                    Student accounts cannot be linked to deactivated resident records.
+                  </Text>
+                ) : (
+                  /* State C: Not Linked (Form to Link) */
+                  <View>
+                    <Text style={styles.unlinkedHelpText}>
+                      Link this room to the student's registered PGwala account so they can view accommodation details in their student app.
+                    </Text>
+
+                    <View style={styles.inputGroup}>
+                      <Text style={styles.label}>
+                        Student Account Email <Text style={styles.requiredAsterisk}>*</Text>
+                      </Text>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="student@example.com"
+                        placeholderTextColor="#94A3B8"
+                        value={studentEmail}
+                        onChangeText={(val) => {
+                          setStudentEmail(val);
+                          if (errorMessage) setErrorMessage(null);
+                        }}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        keyboardType="email-address"
+                        editable={!saving && !deactivating && !linking && !unlinking}
+                      />
+                    </View>
+
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={saving || deactivating || linking || unlinking}
+                      style={({ pressed }) => [
+                        styles.linkBtn,
+                        (saving || deactivating || linking || unlinking) && styles.linkBtnDisabled,
+                        pressed && styles.linkBtnPressed,
+                      ]}
+                      onPress={handleLinkStudent}>
+                      {linking ? (
+                        <View style={styles.btnRow}>
+                          <ActivityIndicator size="small" color="#FFFFFF" />
+                          <Text style={styles.linkBtnText}>Linking Account...</Text>
+                        </View>
+                      ) : (
+                        <Text style={styles.linkBtnText}>Link Student Account</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                )}
               </View>
 
               {/* Danger Zone: Deactivate Resident */}
@@ -635,6 +959,113 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#0F172A',
     marginBottom: 16,
+  },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  linkStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 12,
+    gap: 6,
+  },
+  linkStatusBadgeLinked: {
+    backgroundColor: '#DCFCE7',
+  },
+  linkStatusBadgeUnlinked: {
+    backgroundColor: '#F1F5F9',
+  },
+  linkStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  linkStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  linkedBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  linkedInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 14,
+  },
+  linkedIcon: {
+    fontSize: 24,
+    marginTop: 2,
+  },
+  linkedTextWrap: {
+    flex: 1,
+  },
+  linkedStudentName: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  linkedDesc: {
+    fontSize: 12,
+    color: '#64748B',
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  unlinkBtn: {
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 44,
+  },
+  unlinkBtnDisabled: {
+    opacity: 0.6,
+  },
+  unlinkBtnPressed: {
+    backgroundColor: '#FEF2F2',
+  },
+  unlinkBtnText: {
+    color: '#DC2626',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  unlinkedHelpText: {
+    fontSize: 13,
+    color: '#64748B',
+    lineHeight: 18,
+    marginBottom: 14,
+  },
+  linkBtn: {
+    backgroundColor: '#0284C7',
+    borderRadius: 8,
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+    minHeight: 46,
+  },
+  linkBtnDisabled: {
+    backgroundColor: '#94A3B8',
+  },
+  linkBtnPressed: {
+    backgroundColor: '#0369A1',
+  },
+  linkBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   inputGroup: {
     marginBottom: 16,

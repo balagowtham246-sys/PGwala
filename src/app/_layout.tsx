@@ -16,15 +16,45 @@ function RootNavigationLayout() {
   useEffect(() => {
     if (isLoading) return;
 
-    const inAuthGroup = segments[0] === 'login';
+    const currentSegment = segments[0] as string | undefined;
+    const inAuthGroup = currentSegment === 'login';
     const isOwner = session && profile?.role === 'owner';
+    const isStudent = session && profile?.role === 'student';
 
-    if (!isOwner && !inAuthGroup) {
-      // User is not logged in or is not an owner -> redirect to /login
-      router.replace('/login');
-    } else if (isOwner && inAuthGroup) {
-      // User is logged in as owner and on /login -> redirect to dashboard
-      router.replace('/(tabs)');
+    if (!session || !profile) {
+      // User is not logged in -> redirect to /login
+      if (!inAuthGroup) {
+        router.replace('/login');
+      }
+      return;
+    }
+
+    if (isOwner) {
+      // Owner should not be on /login or /student-dashboard
+      if (inAuthGroup || currentSegment === 'student-dashboard') {
+        router.replace('/(tabs)');
+      }
+    } else if (isStudent) {
+      // Student should not be on /login or any owner route
+      const ownerRoutes = [
+        '(tabs)',
+        'student-in-out',
+        'add-resident',
+        'edit-resident',
+        'food-menu',
+      ];
+      if (
+        inAuthGroup ||
+        (currentSegment && ownerRoutes.includes(currentSegment)) ||
+        !currentSegment
+      ) {
+        router.replace('/student-dashboard');
+      }
+    } else {
+      // Unknown role or invalid state -> redirect to /login
+      if (!inAuthGroup) {
+        router.replace('/login');
+      }
     }
   }, [session, profile, isLoading, segments]);
 
@@ -40,9 +70,11 @@ function RootNavigationLayout() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="login" />
       <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="student-dashboard" />
       <Stack.Screen name="student-in-out" />
       <Stack.Screen name="add-resident" />
       <Stack.Screen name="edit-resident" />
+      <Stack.Screen name="food-menu" />
     </Stack>
   );
 }

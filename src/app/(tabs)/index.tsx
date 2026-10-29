@@ -379,8 +379,8 @@ export default function OwnerDashboard() {
           <ActionButton
             iconText="🍛"
             title="Food Menu"
-            subtitle="Today's breakfast, lunch & dinner (Coming soon)"
-            onPress={() => handleQuickAction('Food Menu')}
+            subtitle="Manage daily breakfast, lunch & dinner"
+            onPress={() => router.push('/food-menu')}
           />
           <ActionButton
             iconText="💵"
