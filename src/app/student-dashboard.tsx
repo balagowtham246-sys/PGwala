@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 
 import { BottomTabInset } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -423,29 +424,22 @@ export default function StudentDashboardScreen() {
             </View>
           </Pressable>
 
-          {/* Bills & Rent Placeholder */}
+          {/* Bills & Rent */}
           <Pressable
             accessibilityRole="button"
             style={({ pressed }) => [
               styles.serviceCard,
               pressed && styles.serviceCardPressed,
             ]}
-            onPress={() =>
-              showPlaceholderNotice(
-                'My Bills & Rent',
-                'You will be able to check monthly rent invoices, due dates, and payment history.'
-              )
-            }>
+            onPress={() => router.push('/student-billing')}>
             <View style={styles.serviceIconBox}>
               <Text style={styles.serviceIcon}>💵</Text>
             </View>
             <View style={styles.serviceContent}>
               <Text style={styles.serviceTitle}>My Bills & Rent</Text>
-              <Text style={styles.serviceSubtitle}>Dues & payment receipts</Text>
+              <Text style={styles.serviceSubtitle}>Dues, payments & receipts</Text>
             </View>
-            <View style={styles.comingSoonBadge}>
-              <Text style={styles.comingSoonText}>Coming soon</Text>
-            </View>
+            <Text style={styles.actionArrow}>›</Text>
           </Pressable>
 
           {/* Complaints & Requests Placeholder */}
@@ -897,6 +891,12 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: '#64748B',
+  },
+  actionArrow: {
+    fontSize: 22,
+    color: '#94A3B8',
+    marginLeft: 8,
+    fontWeight: '300',
   },
 });
 

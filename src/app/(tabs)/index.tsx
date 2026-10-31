@@ -75,6 +75,8 @@ export default function OwnerDashboard() {
     studentsInside: 0,
     studentsOutside: 0,
     studentsUnknown: 0,
+    pendingBillsCount: 0,
+    pendingBillsAmount: 0,
   });
 
   const [recentActivities, setRecentActivities] = useState<ActivityItem[]>([]);
@@ -108,6 +110,8 @@ export default function OwnerDashboard() {
           studentsInside: 0,
           studentsOutside: 0,
           studentsUnknown: 0,
+          pendingBillsCount: 0,
+          pendingBillsAmount: 0,
         });
         setRecentActivities([]);
         setLoading(false);
@@ -136,6 +140,8 @@ export default function OwnerDashboard() {
           studentsInside: 0,
           studentsOutside: 0,
           studentsUnknown: 0,
+          pendingBillsCount: 0,
+          pendingBillsAmount: 0,
         });
         setRecentActivities([]);
         setLoading(false);
@@ -179,11 +185,31 @@ export default function OwnerDashboard() {
         }
       }
 
+      // 4b. Fetch live outstanding billing totals (fails softly if migration not yet run)
+      let pendingBillsCount = 0;
+      let pendingBillsAmount = 0;
+      try {
+        const { data: billsData } = await supabase
+          .from('charges')
+          .select('amount_paise')
+          .eq('property_id', activeProp.id)
+          .eq('status', 'outstanding');
+
+        if (billsData && billsData.length > 0) {
+          pendingBillsCount = billsData.length;
+          pendingBillsAmount = billsData.reduce((acc, curr) => acc + (curr.amount_paise || 0), 0);
+        }
+      } catch {
+        // Table not created yet; fail softly
+      }
+
       setStats({
         totalResidents: activeResidents.length,
         studentsInside: insideCount,
         studentsOutside: outsideCount,
         studentsUnknown: unknownCount,
+        pendingBillsCount,
+        pendingBillsAmount,
       });
 
       // 5. Build recent gate activity feed from the latest 5 logs
@@ -348,9 +374,9 @@ export default function OwnerDashboard() {
             />
             <SummaryCard
               label="Pending Bills"
-              value="—"
-              sublabel="Coming soon"
-              accentColor="#94A3B8" // Slate gray placeholder
+              value={stats.pendingBillsAmount > 0 ? `₹${(stats.pendingBillsAmount / 100).toLocaleString('en-IN')}` : '₹0'}
+              sublabel={stats.pendingBillsCount > 0 ? `${stats.pendingBillsCount} dues pending` : 'All settled'}
+              accentColor="#0284C7"
             />
             <SummaryCard
               label="Open Issues"
@@ -385,8 +411,8 @@ export default function OwnerDashboard() {
           <ActionButton
             iconText="💵"
             title="Rent & Bills"
-            subtitle="Payment tracking (Coming soon)"
-            onPress={() => handleQuickAction('Bills')}
+            subtitle="Manage rent, EB, washing & payments"
+            onPress={() => router.push('/billing-management')}
           />
           <ActionButton
             iconText="🔧"
