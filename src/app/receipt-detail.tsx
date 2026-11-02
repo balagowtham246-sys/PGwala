@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -58,9 +60,11 @@ export default function ReceiptDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [payment, setPayment] = useState<PaymentDetail | null>(null);
   const [reversing, setReversing] = useState(false);
+  const [showReverseModal, setShowReverseModal] = useState(false);
+  const [reversalReason, setReversalReason] = useState('');
 
   const loadReceipt = useCallback(async () => {
-    if (!id) return;
+    if (!id || !user?.id) return;
     try {
       setLoading(true);
 
@@ -115,66 +119,46 @@ export default function ReceiptDetailScreen() {
   }, [id]);
 
   useEffect(() => {
-    loadReceipt();
-  }, [loadReceipt]);
+    if (id && user?.id) {
+      loadReceipt();
+    }
+  }, [id, user?.id, loadReceipt]);
 
-  const handleReversePayment = () => {
-    if (!payment) return;
+  const handleOpenReverseModal = () => {
+    setReversalReason('');
+    setShowReverseModal(true);
+  };
 
-    const executeReversal = async (reason: string) => {
-      setReversing(true);
-      try {
-        const { data, error } = await supabase.rpc('reverse_payment', {
-          p_payment_id: payment.id,
-          p_reversal_reason: reason,
-        });
+  const handleConfirmReversal = async () => {
+    if (!payment || reversing) return;
+    const trimmed = reversalReason.trim();
+    if (!trimmed) {
+      Alert.alert('Reason Required', 'Please provide a valid reversal reason.');
+      return;
+    }
 
-        if (error) throw error;
-        if (!data?.success) {
-          Alert.alert('Reversal Failed', data?.error || 'Could not reverse payment.');
-          return;
-        }
+    setReversing(true);
+    try {
+      const { data, error } = await supabase.rpc('reverse_payment', {
+        p_payment_id: payment.id,
+        p_reversal_reason: trimmed,
+      });
 
-        Alert.alert('Payment Reversed', data.message || 'Receipt marked as reversed.');
-        loadReceipt();
-      } catch (err: any) {
-        Alert.alert('Error', err.message || 'Failed to reverse payment.');
-      } finally {
-        setReversing(false);
+      if (error) throw error;
+      if (!data?.success) {
+        Alert.alert('Reversal Failed', data?.error || 'Could not reverse payment.');
+        return;
       }
-    };
 
-    Alert.prompt
-      ? Alert.prompt(
-          'Reverse Payment',
-          'Enter the reason for reversing this payment. All settled charges will be reopened as outstanding.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Reverse Payment',
-              style: 'destructive',
-              onPress: (reason?: string) => {
-                if (!reason || !reason.trim()) {
-                  Alert.alert('Reason Required', 'Please provide a valid reversal reason.');
-                  return;
-                }
-                executeReversal(reason.trim());
-              },
-            },
-          ]
-        )
-      : Alert.alert(
-          'Reverse Payment?',
-          'Are you sure you want to reverse this payment? All settled charges will be reopened as outstanding.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Confirm Reversal',
-              style: 'destructive',
-              onPress: () => executeReversal('Manual correction by PG owner'),
-            },
-          ]
-        );
+      setShowReverseModal(false);
+      setReversalReason('');
+      Alert.alert('Payment Reversed', data.message || 'Receipt marked as reversed.');
+      loadReceipt();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to reverse payment.');
+    } finally {
+      setReversing(false);
+    }
   };
 
   const isOwner = profile?.role === 'owner';
@@ -272,13 +256,17 @@ export default function ReceiptDetailScreen() {
               {payment.allocations && payment.allocations.length > 0 ? (
                 payment.allocations.map((alloc, idx) => (
                   <View key={alloc.id || idx} style={styles.chargeItemRow}>
-                    <View style={{ flex: 1 }}>
+                    <View style={{ flex: 1, paddingRight: 8 }}>
                       <Text style={styles.chargeItemDesc}>
                         {alloc.charge?.description || 'Charge'}
                         {alloc.status === 'reversed' ? ' (Reversed)' : ''}
                       </Text>
                       <Text style={styles.chargeItemMeta}>
                         Category: {alloc.charge?.category?.toUpperCase()}
+                        {alloc.charge?.billing_period_start
+                          ? ` • Period: ${alloc.charge.billing_period_start}`
+                          : ''}
+                        {alloc.charge?.due_date ? ` • Due: ${alloc.charge.due_date}` : ''}
                       </Text>
                     </View>
                     <Text style={styles.chargeItemAmount}>
@@ -287,18 +275,39 @@ export default function ReceiptDetailScreen() {
                   </View>
                 ))
               ) : (
-                <Text style={styles.emptyNote}>No complete charges were settled by this payment.</Text>
+                <Text style={styles.emptyNote}>
+                  No complete charges were settled by this payment.
+                </Text>
               )}
 
-              {/* Unallocated Amount Row */}
-              {payment.unallocated_amount_paise > 0 && (
-                <View style={styles.unallocRow}>
-                  <Text style={styles.unallocLabel}>Unallocated Credit</Text>
-                  <Text style={styles.unallocVal}>
-                    ₹{(payment.unallocated_amount_paise / 100).toLocaleString('en-IN')}
-                  </Text>
-                </View>
-              )}
+              {/* Remaining Balance / Unallocated Amount Row */}
+              <View
+                style={[
+                  styles.unallocRow,
+                  payment.unallocated_amount_paise > 0
+                    ? styles.unallocRowCredit
+                    : styles.unallocRowZero,
+                ]}>
+                <Text
+                  style={[
+                    styles.unallocLabel,
+                    payment.unallocated_amount_paise > 0
+                      ? styles.unallocLabelCredit
+                      : styles.unallocLabelZero,
+                  ]}>
+                  Remaining Balance / Credit
+                </Text>
+                <Text
+                  style={[
+                    styles.unallocVal,
+                    payment.unallocated_amount_paise > 0
+                      ? styles.unallocValCredit
+                      : styles.unallocValZero,
+                  ]}>
+                  ₹{(payment.unallocated_amount_paise / 100).toLocaleString('en-IN')}
+                  {payment.unallocated_amount_paise === 0 ? ' (Fully Allocated)' : ''}
+                </Text>
+              </View>
 
               <View style={styles.dashedDivider} />
 
@@ -335,7 +344,7 @@ export default function ReceiptDetailScreen() {
                     reversing && styles.btnDisabled,
                     pressed && styles.reverseBtnPressed,
                   ]}
-                  onPress={handleReversePayment}>
+                  onPress={handleOpenReverseModal}>
                   {reversing ? (
                     <ActivityIndicator color="#DC2626" size="small" />
                   ) : (
@@ -350,6 +359,90 @@ export default function ReceiptDetailScreen() {
           </>
         )}
       </ScrollView>
+
+      {/* Cross-Platform Payment Reversal Modal */}
+      <Modal
+        visible={showReverseModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!reversing) setShowReverseModal(false);
+        }}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Reverse Payment Receipt</Text>
+            <Text style={styles.modalSubtitle}>
+              Receipt {payment?.receipt_number} • ₹
+              {((payment?.amount_paise || 0) / 100).toLocaleString('en-IN')}
+            </Text>
+
+            <View style={styles.warningBox}>
+              <Text style={styles.warningIcon}>⚠️</Text>
+              <Text style={styles.warningText}>
+                Reversing will immediately reopen all settled charges as outstanding and cancel any advance credit from this payment.
+              </Text>
+            </View>
+
+            <Text style={styles.inputLabel}>Preset Reasons</Text>
+            <View style={styles.presetChipsRow}>
+              {[
+                'Cheque / UPI bounced or recalled',
+                'Entered duplicate payment in error',
+                'Incorrect resident or room credited',
+                'Resident requested payment refund',
+              ].map((chip) => (
+                <Pressable
+                  key={chip}
+                  style={[
+                    styles.presetChip,
+                    reversalReason === chip && styles.presetChipActive,
+                  ]}
+                  onPress={() => setReversalReason(chip)}>
+                  <Text
+                    style={[
+                      styles.presetChipText,
+                      reversalReason === chip && styles.presetChipTextActive,
+                    ]}>
+                    {chip}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <Text style={styles.inputLabel}>Reversal Reason *</Text>
+            <TextInput
+              style={[styles.input, { height: 75, textAlignVertical: 'top' }]}
+              multiline
+              placeholder="Provide reason for reversing this payment..."
+              placeholderTextColor="#94A3B8"
+              value={reversalReason}
+              onChangeText={setReversalReason}
+            />
+
+            <View style={styles.modalBtnRow}>
+              <Pressable
+                disabled={reversing}
+                style={styles.modalCancelBtn}
+                onPress={() => setShowReverseModal(false)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                disabled={reversing || !reversalReason.trim()}
+                style={[
+                  styles.modalDangerBtn,
+                  (reversing || !reversalReason.trim()) && styles.btnDisabled,
+                ]}
+                onPress={handleConfirmReversal}>
+                {reversing ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.modalDangerText}>Confirm Reversal</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -566,21 +659,41 @@ const styles = StyleSheet.create({
   unallocRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    paddingVertical: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    marginTop: 8,
+    alignItems: 'center',
+  },
+  unallocRowCredit: {
     backgroundColor: '#FFFBEB',
-    paddingHorizontal: 8,
-    borderRadius: 6,
-    marginTop: 6,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  unallocRowZero: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
   unallocLabel: {
-    fontSize: 13,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  unallocLabelCredit: {
     color: '#B45309',
-    fontWeight: '600',
+  },
+  unallocLabelZero: {
+    color: '#64748B',
   },
   unallocVal: {
     fontSize: 13,
-    color: '#B45309',
     fontWeight: '700',
+  },
+  unallocValCredit: {
+    color: '#B45309',
+  },
+  unallocValZero: {
+    color: '#16A34A',
   },
   totalRow: {
     flexDirection: 'row',
@@ -660,6 +773,124 @@ const styles = StyleSheet.create({
   },
   btnDisabled: {
     opacity: 0.6,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 4,
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    color: '#64748B',
+    marginBottom: 14,
+  },
+  warningBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    marginBottom: 14,
+    gap: 10,
+  },
+  warningIcon: {
+    fontSize: 18,
+  },
+  warningText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#991B1B',
+    lineHeight: 16,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 6,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#0F172A',
+    marginBottom: 16,
+  },
+  presetChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 12,
+  },
+  presetChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  presetChipActive: {
+    backgroundColor: '#FEE2E2',
+    borderColor: '#EF4444',
+  },
+  presetChipText: {
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  presetChipTextActive: {
+    color: '#DC2626',
+    fontWeight: '700',
+  },
+  modalBtnRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modalCancelText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  modalDangerBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    backgroundColor: '#DC2626',
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modalDangerText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 });
 

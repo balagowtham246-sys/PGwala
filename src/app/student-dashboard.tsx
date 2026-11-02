@@ -88,6 +88,19 @@ export default function StudentDashboardScreen() {
     lunch: null,
     dinner: null,
   });
+  const [pendingDuesPaise, setPendingDuesPaise] = useState<number | null>(null);
+  const [billingSummary, setBillingSummary] = useState<{
+    outstandingPaise: number;
+    overduePaise: number;
+    pendingReportsCount: number;
+    recentApprovedPayment: {
+      id: string;
+      receipt_number: string;
+      amount_paise: number;
+      payment_date: string;
+      method: string;
+    } | null;
+  } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   /**
@@ -180,6 +193,61 @@ export default function StudentDashboardScreen() {
           }
         }
         setMenus(menuMap);
+      }
+
+      // 3. Fetch live billing summary (fails softly if billing not initialized)
+      try {
+        const todayIso = getTodayIsoDate();
+
+        // 3a. Query outstanding charges & overdue amounts
+        const { data: chargesData } = await supabase
+          .from('charges')
+          .select('amount_paise, due_date')
+          .eq('resident_id', residentInfo.id)
+          .eq('status', 'outstanding');
+
+        let totalOut = 0;
+        let totalOver = 0;
+        if (chargesData && chargesData.length > 0) {
+          for (const ch of chargesData) {
+            const amt = ch.amount_paise || 0;
+            totalOut += amt;
+            if (ch.due_date && ch.due_date < todayIso) {
+              totalOver += amt;
+            }
+          }
+        }
+        setPendingDuesPaise(totalOut);
+
+        // 3b. Query pending payment reports submitted by this student
+        const { data: reportsData } = await supabase
+          .from('student_payment_reports')
+          .select('id')
+          .eq('resident_id', residentInfo.id)
+          .eq('status', 'pending');
+
+        const pendingReportsCount = reportsData ? reportsData.length : 0;
+
+        // 3c. Query most recent approved payment receipt
+        const { data: payData } = await supabase
+          .from('payments')
+          .select('id, receipt_number, amount_paise, payment_date, method')
+          .eq('resident_id', residentInfo.id)
+          .eq('status', 'approved')
+          .order('payment_date', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        setBillingSummary({
+          outstandingPaise: totalOut,
+          overduePaise: totalOver,
+          pendingReportsCount,
+          recentApprovedPayment: payData || null,
+        });
+      } catch (billingErr) {
+        console.warn('[StudentDashboard] Billing summary fetch error:', billingErr);
+        setPendingDuesPaise(null);
+        setBillingSummary(null);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -327,6 +395,92 @@ export default function StudentDashboardScreen() {
           </View>
         )}
 
+        {/* Section: Rent & Bills Overview */}
+        {resident && (
+          <>
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>My Rent & Bills</Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => router.push('/student-billing')}>
+                <Text style={styles.sectionLink}>View All ›</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.billingOverviewCard}>
+              <View style={styles.billingOverviewTop}>
+                <View>
+                  <Text style={styles.billingOverviewLabel}>Current Outstanding Dues</Text>
+                  <Text
+                    style={[
+                      styles.billingOverviewAmount,
+                      (billingSummary?.outstandingPaise || 0) > 0
+                        ? styles.amountDue
+                        : styles.amountClear,
+                    ]}>
+                    {(billingSummary?.outstandingPaise || 0) > 0
+                      ? `₹${((billingSummary?.outstandingPaise || 0) / 100).toLocaleString('en-IN')}`
+                      : '₹0 (All Settled)'}
+                  </Text>
+                </View>
+
+                <Pressable
+                  style={styles.payDuesButton}
+                  onPress={() => router.push('/student-billing')}>
+                  <Text style={styles.payDuesButtonText}>
+                    {(billingSummary?.outstandingPaise || 0) > 0 ? 'Pay Dues' : 'View Bills'}
+                  </Text>
+                </Pressable>
+              </View>
+
+              {/* Overdue Alert Banner if overdue charges exist */}
+              {(billingSummary?.overduePaise || 0) > 0 && (
+                <View style={styles.studentOverdueBanner}>
+                  <Text style={styles.studentOverdueIcon}>⚠️</Text>
+                  <Text style={styles.studentOverdueText}>
+                    Overdue: ₹{((billingSummary!.overduePaise) / 100).toLocaleString('en-IN')} is past due date. Please clear your dues promptly.
+                  </Text>
+                </View>
+              )}
+
+              {/* Pending Payment Reports Banner if awaiting review */}
+              {(billingSummary?.pendingReportsCount || 0) > 0 && (
+                <View style={styles.studentPendingReportBanner}>
+                  <Text style={styles.studentPendingReportIcon}>🕒</Text>
+                  <Text style={styles.studentPendingReportText}>
+                    {billingSummary!.pendingReportsCount} payment report{billingSummary!.pendingReportsCount > 1 ? 's' : ''} submitted — awaiting owner verification
+                  </Text>
+                </View>
+              )}
+
+              {/* Recent Approved Payment Info */}
+              {billingSummary?.recentApprovedPayment ? (
+                <Pressable
+                  style={styles.recentPaymentBox}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/receipt-detail',
+                      params: { id: billingSummary.recentApprovedPayment!.id },
+                    })
+                  }>
+                  <View style={styles.recentPaymentIconWrap}>
+                    <Text style={styles.recentPaymentIcon}>🧾</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.recentPaymentTitle}>
+                      Receipt {billingSummary.recentApprovedPayment.receipt_number}
+                    </Text>
+                    <Text style={styles.recentPaymentMeta}>
+                      ₹{(billingSummary.recentApprovedPayment.amount_paise / 100).toLocaleString('en-IN')} paid via {billingSummary.recentApprovedPayment.method.toUpperCase()} on {billingSummary.recentApprovedPayment.payment_date}
+                    </Text>
+                  </View>
+                  <Text style={styles.recentPaymentLink}>View ›</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </>
+        )}
+
         {/* Section: Today's Food Menu */}
         <View style={styles.sectionHeaderRow}>
           <Text style={styles.sectionTitle}>Today's Food Menu</Text>
@@ -399,29 +553,22 @@ export default function StudentDashboardScreen() {
         </View>
 
         <View style={styles.servicesGrid}>
-          {/* Gate History Placeholder */}
+          {/* Gate History */}
           <Pressable
             accessibilityRole="button"
             style={({ pressed }) => [
               styles.serviceCard,
               pressed && styles.serviceCardPressed,
             ]}
-            onPress={() =>
-              showPlaceholderNotice(
-                'My Gate History',
-                'You will be able to review all your past IN/OUT gate entry and exit timestamps.'
-              )
-            }>
+            onPress={() => router.push('/student-gate-history')}>
             <View style={styles.serviceIconBox}>
               <Text style={styles.serviceIcon}>🚪</Text>
             </View>
             <View style={styles.serviceContent}>
               <Text style={styles.serviceTitle}>My Gate History</Text>
-              <Text style={styles.serviceSubtitle}>View entry and exit records</Text>
+              <Text style={styles.serviceSubtitle}>View entry and exit timestamps</Text>
             </View>
-            <View style={styles.comingSoonBadge}>
-              <Text style={styles.comingSoonText}>Coming soon</Text>
-            </View>
+            <Text style={styles.actionArrow}>›</Text>
           </Pressable>
 
           {/* Bills & Rent */}
@@ -439,32 +586,42 @@ export default function StudentDashboardScreen() {
               <Text style={styles.serviceTitle}>My Bills & Rent</Text>
               <Text style={styles.serviceSubtitle}>Dues, payments & receipts</Text>
             </View>
+            {pendingDuesPaise !== null ? (
+              <View
+                style={[
+                  styles.duesPill,
+                  pendingDuesPaise > 0 ? styles.duesPillPending : styles.duesPillClear,
+                ]}>
+                <Text
+                  style={[
+                    styles.duesPillText,
+                    pendingDuesPaise > 0 ? styles.duesTextPending : styles.duesTextClear,
+                  ]}>
+                  {pendingDuesPaise > 0
+                    ? `₹${(pendingDuesPaise / 100).toLocaleString('en-IN')}`
+                    : 'Clear'}
+                </Text>
+              </View>
+            ) : null}
             <Text style={styles.actionArrow}>›</Text>
           </Pressable>
 
-          {/* Complaints & Requests Placeholder */}
+          {/* Complaints & Requests */}
           <Pressable
             accessibilityRole="button"
             style={({ pressed }) => [
               styles.serviceCard,
               pressed && styles.serviceCardPressed,
             ]}
-            onPress={() =>
-              showPlaceholderNotice(
-                'Complaints & Requests',
-                'You will be able to report maintenance issues or room complaints directly to your PG owner.'
-              )
-            }>
+            onPress={() => router.push('/student-complaints')}>
             <View style={styles.serviceIconBox}>
               <Text style={styles.serviceIcon}>🔧</Text>
             </View>
             <View style={styles.serviceContent}>
               <Text style={styles.serviceTitle}>Complaints & Requests</Text>
-              <Text style={styles.serviceSubtitle}>Raise room or PG issues</Text>
+              <Text style={styles.serviceSubtitle}>Raise room or PG maintenance issues</Text>
             </View>
-            <View style={styles.comingSoonBadge}>
-              <Text style={styles.comingSoonText}>Coming soon</Text>
-            </View>
+            <Text style={styles.actionArrow}>›</Text>
           </Pressable>
         </View>
 
@@ -726,6 +883,143 @@ const styles = StyleSheet.create({
     color: '#64748B',
     fontWeight: '500',
   },
+  sectionLink: {
+    fontSize: 13,
+    color: '#0284C7',
+    fontWeight: '600',
+  },
+  billingOverviewCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.05,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
+  },
+  billingOverviewTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  billingOverviewLabel: {
+    fontSize: 12,
+    color: '#64748B',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  billingOverviewAmount: {
+    fontSize: 24,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  amountDue: {
+    color: '#0F172A',
+  },
+  amountClear: {
+    color: '#16A34A',
+  },
+  payDuesButton: {
+    backgroundColor: '#0284C7',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  payDuesButtonText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  studentOverdueBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 10,
+    gap: 8,
+  },
+  studentOverdueIcon: {
+    fontSize: 16,
+  },
+  studentOverdueText: {
+    fontSize: 12,
+    color: '#DC2626',
+    fontWeight: '600',
+    flex: 1,
+  },
+  studentPendingReportBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 10,
+    gap: 8,
+  },
+  studentPendingReportIcon: {
+    fontSize: 16,
+  },
+  studentPendingReportText: {
+    fontSize: 12,
+    color: '#B45309',
+    fontWeight: '600',
+    flex: 1,
+  },
+  recentPaymentBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    padding: 10,
+    marginTop: 12,
+  },
+  recentPaymentIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#E0F2FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
+  recentPaymentIcon: {
+    fontSize: 18,
+  },
+  recentPaymentTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  recentPaymentMeta: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  recentPaymentLink: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0284C7',
+    marginLeft: 8,
+  },
   emptyMenuBox: {
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
@@ -897,6 +1191,32 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     marginLeft: 8,
     fontWeight: '300',
+  },
+  duesPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    marginLeft: 6,
+  },
+  duesPillPending: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+  },
+  duesPillClear: {
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  duesPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  duesTextPending: {
+    color: '#B45309',
+  },
+  duesTextClear: {
+    color: '#16A34A',
   },
 });
 

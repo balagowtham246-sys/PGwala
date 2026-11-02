@@ -54,6 +54,31 @@ interface PaymentItem {
   payment_date: string;
   status: 'approved' | 'reversed';
   notes: string | null;
+  reversal_reason?: string | null;
+  reversed_at?: string | null;
+}
+
+interface AllocationItem {
+  id: string;
+  charge_id: string;
+  payment_id: string;
+  settled_amount_paise: number;
+  status: 'active' | 'reversed';
+  receipt_number?: string;
+  payment_date?: string;
+  method?: string;
+}
+
+function getPeriodLabel(start: string, end: string): string {
+  if (!start) return 'General Charges';
+  try {
+    const d = new Date(start);
+    if (!isNaN(d.getTime())) {
+      const monthYear = d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
+      return `${monthYear} (${start} to ${end || 'ongoing'})`;
+    }
+  } catch {}
+  return `${start} to ${end || 'ongoing'}`;
 }
 
 interface StudentReportItem {
@@ -115,8 +140,31 @@ export default function BillingManagementScreen() {
   const [openingReference, setOpeningReference] = useState('');
   const [submittingOpening, setSubmittingOpening] = useState(false);
 
+  // Reject Student Report Modal
+  const [rejectingReport, setRejectingReport] = useState<StudentReportItem | null>(null);
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [submittingReject, setSubmittingReject] = useState(false);
+
+  // Review & Approve Student Report Modal
+  const [reviewingReport, setReviewingReport] = useState<StudentReportItem | null>(null);
+  const [approvedAmountRupees, setApprovedAmountRupees] = useState('');
+  const [approvedMethod, setApprovedMethod] = useState<'upi' | 'cash'>('upi');
+  const [approvedDate, setApprovedDate] = useState('');
+  const [approvalNotes, setApprovalNotes] = useState('');
+  const [submittingApproval, setSubmittingApproval] = useState(false);
+
+  // Resident detail filters
+  const [chargeFilter, setChargeFilter] = useState<'all' | 'outstanding' | 'settled'>('all');
+  const [residentCategoryFilter, setResidentCategoryFilter] = useState<
+    'all' | 'rent' | 'electricity' | 'washing_machine' | 'opening_balance'
+  >('all');
+  const [paymentFilter, setPaymentFilter] = useState<'all' | 'approved' | 'reversed'>('all');
+  const [residentAllocations, setResidentAllocations] = useState<AllocationItem[]>([]);
+
   // Load all billing data
   const loadData = useCallback(async () => {
+    if (!user?.id) return;
+
     try {
       setLoading(true);
 
@@ -124,7 +172,9 @@ export default function BillingManagementScreen() {
       const { data: properties, error: propError } = await supabase
         .from('properties')
         .select('id, name')
+        .eq('owner_id', user.id)
         .eq('is_active', true)
+        .order('created_at', { ascending: true })
         .limit(1);
 
       if (propError) throw propError;
@@ -247,8 +297,10 @@ export default function BillingManagementScreen() {
   }, []);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (user?.id) {
+      loadData();
+    }
+  }, [user?.id, loadData]);
 
   // Load specific resident details (charges & payments)
   const openResidentDetail = async (item: ResidentBillingItem) => {
@@ -279,6 +331,38 @@ export default function BillingManagementScreen() {
         .filter((p) => p.status === 'approved')
         .reduce((acc, p) => acc + (p.unallocated_amount_paise || 0), 0);
       setResidentCreditPaise(unalloc);
+
+      // Fetch payment allocations for this resident
+      try {
+        const { data: allocData } = await supabase
+          .from('payment_allocations')
+          .select('id, charge_id, payment_id, settled_amount_paise, status')
+          .eq('status', 'active');
+
+        if (allocData) {
+          const payMap = new Map<string, PaymentItem>();
+          for (const p of loadedPayments) {
+            payMap.set(p.id, p);
+          }
+
+          const mapped: AllocationItem[] = allocData.map((a: any) => {
+            const p = payMap.get(a.payment_id);
+            return {
+              id: a.id,
+              charge_id: a.charge_id,
+              payment_id: a.payment_id,
+              settled_amount_paise: a.settled_amount_paise,
+              status: a.status,
+              receipt_number: p?.receipt_number,
+              payment_date: p?.payment_date,
+              method: p?.method,
+            };
+          });
+          setResidentAllocations(mapped);
+        }
+      } catch (allocErr) {
+        console.warn('[BillingManagement] Allocation load error:', allocErr);
+      }
     } catch (err: any) {
       console.error('[BillingManagement] Resident detail error:', err);
     } finally {
@@ -494,74 +578,93 @@ export default function BillingManagementScreen() {
     }
   };
 
-  // Approve Student Report RPC
-  const handleApproveReport = (report: StudentReportItem) => {
-    Alert.alert(
-      'Approve Payment Report',
-      `Approve payment of ₹${report.amount_paise / 100} claimed via ${report.claimed_method.toUpperCase()} for ${report.resident?.full_name}?\n\nThis will record an authoritative payment and settle complete charges in oldest-first order.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
+  // Open Review & Approval Modal (Allows Owner Verification & Audit-logged Corrections)
+  const handleOpenApproveModal = (report: StudentReportItem) => {
+    setReviewingReport(report);
+    setApprovedAmountRupees(String(report.amount_paise / 100));
+    setApprovedMethod(report.claimed_method);
+    setApprovedDate(report.payment_date);
+    setApprovalNotes(report.notes || '');
+  };
+
+  const handleConfirmApprove = async () => {
+    if (!reviewingReport || !propertyId || submittingApproval) return;
+
+    const amountNum = parseFloat(approvedAmountRupees);
+    if (isNaN(amountNum) || amountNum <= 0) {
+      Alert.alert('Invalid Amount', 'Please enter a valid approved payment amount.');
+      return;
+    }
+
+    setSubmittingApproval(true);
+    try {
+      const amountPaise = Math.round(amountNum * 100);
+
+      const { data, error } = await supabase.rpc('approve_payment_and_allocate', {
+        p_property_id: propertyId,
+        p_resident_id: reviewingReport.resident_id,
+        p_amount_paise: amountPaise,
+        p_method: approvedMethod,
+        p_payment_date: approvedDate || reviewingReport.payment_date,
+        p_notes: approvalNotes.trim() || null,
+        p_student_report_id: reviewingReport.id,
+      });
+
+      if (error) throw error;
+      if (!data?.success) {
+        Alert.alert('Approval Failed', data?.error || 'Could not approve report.');
+        return;
+      }
+
+      Alert.alert('Payment Approved & Allocated', data.message || 'Payment recorded successfully.', [
         {
-          text: 'Approve & Settle',
-          onPress: async () => {
-            if (!propertyId) return;
-            try {
-              const { data, error } = await supabase.rpc('approve_payment_and_allocate', {
-                p_property_id: propertyId,
-                p_resident_id: report.resident_id,
-                p_amount_paise: report.amount_paise,
-                p_method: report.claimed_method,
-                p_payment_date: report.payment_date,
-                p_notes: report.notes,
-                p_student_report_id: report.id,
+          text: 'View Receipt',
+          onPress: () => {
+            const pid = data.payment_id;
+            setReviewingReport(null);
+            loadData();
+            if (pid) {
+              router.push({
+                pathname: '/receipt-detail',
+                params: { id: pid },
               });
-
-              if (error) throw error;
-              if (!data?.success) {
-                Alert.alert('Approval Failed', data?.error || 'Could not approve report.');
-                return;
-              }
-
-              Alert.alert('Report Approved', data.message);
-              loadData();
-            } catch (err: any) {
-              Alert.alert('Error', err.message || 'Failed to approve report.');
             }
           },
         },
-      ]
-    );
+        {
+          text: 'Done',
+          onPress: () => {
+            setReviewingReport(null);
+            loadData();
+          },
+        },
+      ]);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Failed to approve report.');
+    } finally {
+      setSubmittingApproval(false);
+    }
   };
 
-  // Reject Student Report RPC
-  const handleRejectReport = (report: StudentReportItem) => {
-    Alert.prompt
-      ? Alert.prompt(
-          'Reject Payment Report',
-          'Enter the reason for rejecting this payment report:',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Reject',
-              style: 'destructive',
-              onPress: async (reason?: string) => {
-                if (!reason || !reason.trim()) {
-                  Alert.alert('Required', 'A reason is required to reject a payment report.');
-                  return;
-                }
-                executeReject(report.id, reason.trim());
-              },
-            },
-          ]
-        )
-      : executeReject(report.id, 'Payment not received / unverified transaction.');
+  // Open Rejection Modal (Cross-Platform Android & iOS)
+  const handleOpenRejectModal = (report: StudentReportItem) => {
+    setRejectingReport(report);
+    setRejectionReason('');
   };
 
-  const executeReject = async (reportId: string, reason: string) => {
+  const handleConfirmReject = async () => {
+    if (!rejectingReport || submittingReject) return;
+    const trimmed = rejectionReason.trim();
+    if (!trimmed) {
+      Alert.alert('Reason Required', 'Please provide a reason for rejecting this payment report.');
+      return;
+    }
+
+    setSubmittingReject(true);
     try {
       const { data, error } = await supabase.rpc('reject_student_payment_report', {
-        p_report_id: reportId,
-        p_rejection_reason: reason,
+        p_report_id: rejectingReport.id,
+        p_rejection_reason: trimmed,
       });
 
       if (error) throw error;
@@ -570,10 +673,14 @@ export default function BillingManagementScreen() {
         return;
       }
 
-      Alert.alert('Report Rejected', data.message);
+      Alert.alert('Report Rejected', data.message || 'Payment report marked as rejected.');
+      setRejectingReport(null);
+      setRejectionReason('');
       loadData();
     } catch (err: any) {
       Alert.alert('Error', err.message || 'Failed to reject report.');
+    } finally {
+      setSubmittingReject(false);
     }
   };
 
@@ -692,13 +799,13 @@ export default function BillingManagementScreen() {
                     <View style={styles.reportActionsRow}>
                       <Pressable
                         style={styles.rejectBtn}
-                        onPress={() => handleRejectReport(report)}>
+                        onPress={() => handleOpenRejectModal(report)}>
                         <Text style={styles.rejectBtnText}>Reject</Text>
                       </Pressable>
                       <Pressable
                         style={styles.approveBtn}
-                        onPress={() => handleApproveReport(report)}>
-                        <Text style={styles.approveBtnText}>Approve & Settle</Text>
+                        onPress={() => handleOpenApproveModal(report)}>
+                        <Text style={styles.approveBtnText}>Review & Approve</Text>
                       </Pressable>
                     </View>
                   </View>
@@ -902,76 +1009,333 @@ export default function BillingManagementScreen() {
                   </Pressable>
                 </View>
 
-                {/* Charges Section */}
-                <Text style={styles.subSectionTitle}>Individual Charges</Text>
-                {residentCharges.length === 0 ? (
-                  <Text style={styles.emptyText}>No charges recorded yet.</Text>
-                ) : (
-                  residentCharges.map((ch) => (
-                    <View key={ch.id} style={styles.chargeRow}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.chargeDesc}>{ch.description}</Text>
-                        <Text style={styles.chargeDate}>
-                          Due: {ch.due_date} • Category: {ch.category.toUpperCase()}
-                        </Text>
-                      </View>
-                      <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={styles.chargeAmount}>
-                          ₹{(ch.amount_paise / 100).toLocaleString('en-IN')}
-                        </Text>
+                {/* Charges Section with Filters */}
+                <View style={styles.filterSectionHeader}>
+                  <Text style={styles.subSectionTitle}>Individual Charges & Dues</Text>
+                  <View style={styles.miniFilterRow}>
+                    {(['all', 'outstanding', 'settled'] as const).map((f) => (
+                      <Pressable
+                        key={f}
+                        style={[
+                          styles.miniFilterPill,
+                          chargeFilter === f && styles.miniFilterPillActive,
+                        ]}
+                        onPress={() => setChargeFilter(f)}>
                         <Text
                           style={[
-                            styles.chargeStatus,
-                            ch.status === 'settled'
-                              ? styles.chargeSettled
-                              : ch.status === 'cancelled'
-                              ? styles.chargeCancelled
-                              : styles.chargeOutstanding,
+                            styles.miniFilterText,
+                            chargeFilter === f && styles.miniFilterTextActive,
                           ]}>
-                          {ch.status.toUpperCase()}
+                          {f.toUpperCase()}
                         </Text>
-                      </View>
-                    </View>
-                  ))
-                )}
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
 
-                {/* Payments Section */}
-                <Text style={[styles.subSectionTitle, { marginTop: 20 }]}>
-                  Payment History & Receipts
-                </Text>
-                {residentPayments.length === 0 ? (
-                  <Text style={styles.emptyText}>No payments recorded yet.</Text>
-                ) : (
-                  residentPayments.map((p) => (
+                {/* Category Filter for Resident Charges */}
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.residentCategoryScroll}>
+                  {(
+                    [
+                      { key: 'all', label: 'All Categories' },
+                      { key: 'rent', label: '🏠 Rent' },
+                      { key: 'electricity', label: '⚡ EB' },
+                      { key: 'washing_machine', label: '🧺 Washing' },
+                      { key: 'opening_balance', label: '📋 Opening' },
+                    ] as const
+                  ).map((cat) => (
                     <Pressable
-                      key={p.id}
-                      style={styles.paymentRow}
-                      onPress={() =>
-                        router.push({
-                          pathname: '/receipt-detail',
-                          params: { id: p.id },
-                        })
-                      }>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.paymentReceiptNo}>{p.receipt_number}</Text>
-                        <Text style={styles.paymentMeta}>
-                          {p.payment_date} • {p.method.toUpperCase()}
-                        </Text>
-                        {p.unallocated_amount_paise > 0 && (
-                          <Text style={styles.unallocText}>
-                            Unallocated: ₹{(p.unallocated_amount_paise / 100).toLocaleString('en-IN')}
-                          </Text>
-                        )}
-                      </View>
-                      <View style={{ alignItems: 'flex-end' }}>
-                        <Text style={styles.paymentAmount}>
-                          ₹{(p.amount_paise / 100).toLocaleString('en-IN')}
-                        </Text>
-                        <Text style={styles.viewReceiptLink}>View Receipt ›</Text>
-                      </View>
+                      key={cat.key}
+                      style={[
+                        styles.residentCategoryPill,
+                        residentCategoryFilter === cat.key && styles.residentCategoryPillActive,
+                      ]}
+                      onPress={() => setResidentCategoryFilter(cat.key)}>
+                      <Text
+                        style={[
+                          styles.residentCategoryPillText,
+                          residentCategoryFilter === cat.key &&
+                            styles.residentCategoryPillTextActive,
+                        ]}>
+                        {cat.label}
+                      </Text>
                     </Pressable>
-                  ))
-                )}
+                  ))}
+                </ScrollView>
+
+                {(() => {
+                  const todayStr = new Date().toISOString().split('T')[0];
+
+                  const filteredCharges = residentCharges.filter((ch) => {
+                    if (chargeFilter !== 'all' && ch.status !== chargeFilter) return false;
+                    if (
+                      residentCategoryFilter !== 'all' &&
+                      ch.category !== residentCategoryFilter
+                    )
+                      return false;
+                    return true;
+                  });
+
+                  if (filteredCharges.length === 0) {
+                    return (
+                      <Text style={styles.emptyText}>
+                        No charges found for the selected filters.
+                      </Text>
+                    );
+                  }
+
+                  // Group charges by billing period
+                  const periodMap = new Map<string, ChargeItem[]>();
+                  for (const ch of filteredCharges) {
+                    const key = ch.billing_period_start || 'general';
+                    if (!periodMap.has(key)) {
+                      periodMap.set(key, []);
+                    }
+                    periodMap.get(key)!.push(ch);
+                  }
+
+                  const sortedKeys = Array.from(periodMap.keys()).sort((a, b) =>
+                    b.localeCompare(a)
+                  );
+
+                  return sortedKeys.map((pKey) => {
+                    const groupCharges = periodMap.get(pKey)!;
+                    const periodLabel = getPeriodLabel(
+                      groupCharges[0]?.billing_period_start,
+                      groupCharges[0]?.billing_period_end
+                    );
+
+                    return (
+                      <View key={pKey} style={styles.residentPeriodGroup}>
+                        <View style={styles.residentPeriodHeader}>
+                          <Text style={styles.residentPeriodTitle}>{periodLabel}</Text>
+                          <Text style={styles.residentPeriodCount}>
+                            {groupCharges.length} charge{groupCharges.length === 1 ? '' : 's'}
+                          </Text>
+                        </View>
+
+                        {groupCharges.map((ch) => {
+                          const isSettled = ch.status === 'settled';
+                          const isOver = ch.status === 'outstanding' && ch.due_date < todayStr;
+                          const allocs = residentAllocations.filter((a) => a.charge_id === ch.id);
+                          const remainingPaise = isSettled ? 0 : ch.amount_paise;
+
+                          return (
+                            <View key={ch.id} style={styles.residentChargeCardDetailed}>
+                              <View style={styles.residentChargeTopRow}>
+                                <View style={styles.categoryPill}>
+                                  <Text style={styles.categoryPillText}>
+                                    {ch.category === 'rent'
+                                      ? '🏠 RENT'
+                                      : ch.category === 'electricity'
+                                      ? '⚡ EB'
+                                      : ch.category === 'washing_machine'
+                                      ? '🧺 WASHING'
+                                      : '📋 OPENING'}
+                                  </Text>
+                                </View>
+                                <View
+                                  style={[
+                                    styles.chargeStatusBadge,
+                                    isSettled
+                                      ? styles.chargeSettledBadge
+                                      : isOver
+                                      ? styles.chargeOverdueBadge
+                                      : styles.chargeOutstandingBadge,
+                                  ]}>
+                                  <Text
+                                    style={[
+                                      styles.chargeStatusBadgeText,
+                                      isSettled
+                                        ? styles.chargeSettledBadgeText
+                                        : isOver
+                                        ? styles.chargeOverdueBadgeText
+                                        : styles.chargeOutstandingBadgeText,
+                                    ]}>
+                                    {isSettled ? 'SETTLED' : isOver ? 'OVERDUE' : 'OUTSTANDING'}
+                                  </Text>
+                                </View>
+                              </View>
+
+                              <Text style={styles.chargeDesc}>{ch.description}</Text>
+                              <Text style={styles.chargeDate}>
+                                Period: {ch.billing_period_start} to {ch.billing_period_end} • Due:{' '}
+                                {ch.due_date}
+                              </Text>
+
+                              <View style={styles.chargeItemDivider} />
+
+                              <View style={styles.chargeAmountsRow}>
+                                <View>
+                                  <Text style={styles.chargeSmallLabel}>Amount</Text>
+                                  <Text style={styles.chargeAmount}>
+                                    ₹{(ch.amount_paise / 100).toLocaleString('en-IN')}
+                                  </Text>
+                                </View>
+                                <View style={{ alignItems: 'flex-end' }}>
+                                  <Text style={styles.chargeSmallLabel}>Remaining Balance</Text>
+                                  <Text
+                                    style={[
+                                      styles.chargeRemainingText,
+                                      isSettled
+                                        ? styles.remainingSettledText
+                                        : styles.remainingDueText,
+                                    ]}>
+                                    ₹{(remainingPaise / 100).toLocaleString('en-IN')}
+                                  </Text>
+                                </View>
+                              </View>
+
+                              {/* Allocated Payments info */}
+                              {allocs.length > 0 ? (
+                                <View style={styles.residentAllocBox}>
+                                  <Text style={styles.residentAllocTitle}>Allocated Payment:</Text>
+                                  {allocs.map((a) => (
+                                    <Pressable
+                                      key={a.id}
+                                      style={styles.residentAllocRow}
+                                      onPress={() =>
+                                        router.push({
+                                          pathname: '/receipt-detail',
+                                          params: { id: a.payment_id },
+                                        })
+                                      }>
+                                      <Text style={styles.residentAllocReceipt}>
+                                        Receipt {a.receipt_number || 'N/A'} (
+                                        {a.method?.toUpperCase() || 'PAID'})
+                                      </Text>
+                                      <Text style={styles.residentAllocAmt}>
+                                        ₹{(a.settled_amount_paise / 100).toLocaleString('en-IN')} ›
+                                      </Text>
+                                    </Pressable>
+                                  ))}
+                                </View>
+                              ) : isSettled ? (
+                                <View style={styles.residentAllocBox}>
+                                  <Text style={styles.residentAllocSettled}>
+                                    ✓ Settled via approved payment
+                                  </Text>
+                                </View>
+                              ) : null}
+                            </View>
+                          );
+                        })}
+                      </View>
+                    );
+                  });
+                })()}
+
+                {/* Payments Section with Status Filter */}
+                <View style={[styles.filterSectionHeader, { marginTop: 20 }]}>
+                  <Text style={styles.subSectionTitle}>Payment History & Receipts</Text>
+                  <View style={styles.miniFilterRow}>
+                    {(['all', 'approved', 'reversed'] as const).map((f) => (
+                      <Pressable
+                        key={f}
+                        style={[
+                          styles.miniFilterPill,
+                          paymentFilter === f && styles.miniFilterPillActive,
+                        ]}
+                        onPress={() => setPaymentFilter(f)}>
+                        <Text
+                          style={[
+                            styles.miniFilterText,
+                            paymentFilter === f && styles.miniFilterTextActive,
+                          ]}>
+                          {f.toUpperCase()}
+                        </Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+
+                {(() => {
+                  const filteredPayments = residentPayments.filter(
+                    (p) => paymentFilter === 'all' || p.status === paymentFilter
+                  );
+
+                  return filteredPayments.length === 0 ? (
+                    <Text style={styles.emptyText}>
+                      No {paymentFilter !== 'all' ? paymentFilter : ''} payments found.
+                    </Text>
+                  ) : (
+                    filteredPayments.map((p) => {
+                      const isReversed = p.status === 'reversed';
+                      return (
+                        <Pressable
+                          key={p.id}
+                          style={[
+                            styles.paymentRow,
+                            isReversed && styles.paymentRowReversed,
+                          ]}
+                          onPress={() =>
+                            router.push({
+                              pathname: '/receipt-detail',
+                              params: { id: p.id },
+                            })
+                          }>
+                          <View style={{ flex: 1, paddingRight: 8 }}>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                              <Text
+                                style={[
+                                  styles.paymentReceiptNo,
+                                  isReversed && styles.paymentReceiptNoReversed,
+                                ]}>
+                                {p.receipt_number}
+                              </Text>
+                              <View
+                                style={[
+                                  styles.paymentStatusBadge,
+                                  isReversed ? styles.badgeReversed : styles.badgeApprovedMini,
+                                ]}>
+                                <Text
+                                  style={[
+                                    styles.paymentStatusText,
+                                    isReversed ? styles.textReversed : styles.textApprovedMini,
+                                  ]}>
+                                  {p.status.toUpperCase()}
+                                </Text>
+                              </View>
+                            </View>
+
+                            <Text style={styles.paymentMeta}>
+                              {p.payment_date} • {p.method.toUpperCase()}
+                            </Text>
+
+                            {isReversed && p.reversal_reason && (
+                              <View style={styles.ownerReversalBox}>
+                                <Text style={styles.ownerReversalText}>
+                                  Reversed: {p.reversal_reason}
+                                </Text>
+                              </View>
+                            )}
+
+                            {!isReversed && p.unallocated_amount_paise > 0 && (
+                              <Text style={styles.unallocText}>
+                                Unallocated Credit: ₹
+                                {(p.unallocated_amount_paise / 100).toLocaleString('en-IN')}
+                              </Text>
+                            )}
+                          </View>
+
+                          <View style={{ alignItems: 'flex-end' }}>
+                            <Text
+                              style={[
+                                styles.paymentAmount,
+                                isReversed && styles.paymentAmountReversed,
+                              ]}>
+                              ₹{(p.amount_paise / 100).toLocaleString('en-IN')}
+                            </Text>
+                            <Text style={styles.viewReceiptLink}>View Receipt ›</Text>
+                          </View>
+                        </Pressable>
+                      );
+                    })
+                  );
+                })()}
               </>
             )}
           </ScrollView>
@@ -1117,6 +1481,206 @@ export default function BillingManagementScreen() {
                   <ActivityIndicator color="#FFFFFF" size="small" />
                 ) : (
                   <Text style={styles.modalConfirmText}>Save Balance</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 5. Reject Student Report Modal (Cross-Platform Android & iOS) */}
+      <Modal
+        visible={!!rejectingReport}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!submittingReject) setRejectingReport(null);
+        }}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Reject Payment Report</Text>
+            <Text style={styles.modalSub}>
+              {rejectingReport?.resident?.full_name} claimed ₹
+              {((rejectingReport?.amount_paise || 0) / 100).toLocaleString('en-IN')} via{' '}
+              {rejectingReport?.claimed_method?.toUpperCase()}
+            </Text>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Preset Reasons</Text>
+              <View style={styles.presetChipsRow}>
+                {[
+                  'UTR / Ref not found in statement',
+                  'Incorrect amount reported',
+                  'Payment not received',
+                  'Duplicate report submission',
+                ].map((chip) => (
+                  <Pressable
+                    key={chip}
+                    style={[
+                      styles.reasonChip,
+                      rejectionReason === chip && styles.reasonChipActive,
+                    ]}
+                    onPress={() => setRejectionReason(chip)}>
+                    <Text
+                      style={[
+                        styles.reasonChipText,
+                        rejectionReason === chip && styles.reasonChipTextActive,
+                      ]}>
+                      {chip}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Reason for Rejection *</Text>
+              <TextInput
+                style={[styles.modalInput, { height: 75, textAlignVertical: 'top' }]}
+                multiline
+                placeholder="Explain why this payment report was rejected..."
+                placeholderTextColor="#94A3B8"
+                value={rejectionReason}
+                onChangeText={setRejectionReason}
+              />
+            </View>
+
+            <View style={styles.modalBtnRow}>
+              <Pressable
+                disabled={submittingReject}
+                style={styles.modalCancelBtn}
+                onPress={() => setRejectingReport(null)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                disabled={submittingReject || !rejectionReason.trim()}
+                style={[
+                  styles.modalDangerBtn,
+                  (submittingReject || !rejectionReason.trim()) && styles.btnDisabled,
+                ]}
+                onPress={handleConfirmReject}>
+                {submittingReject ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.modalDangerText}>Confirm Rejection</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 6. Review & Approve Student Report Modal (With Owner Correction Support) */}
+      <Modal
+        visible={!!reviewingReport}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!submittingApproval) setReviewingReport(null);
+        }}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Review & Approve Payment</Text>
+            <Text style={styles.modalSub}>
+              {reviewingReport?.resident?.full_name} (Room {reviewingReport?.resident?.room_number})
+            </Text>
+
+            <View style={styles.originalClaimBox}>
+              <Text style={styles.originalClaimLabel}>Student Claimed Details:</Text>
+              <Text style={styles.originalClaimText}>
+                ₹{((reviewingReport?.amount_paise || 0) / 100).toLocaleString('en-IN')} via{' '}
+                {reviewingReport?.claimed_method?.toUpperCase()} on {reviewingReport?.payment_date}
+              </Text>
+              {reviewingReport?.reference_number ? (
+                <Text style={styles.originalClaimMeta}>
+                  UTR / Ref: {reviewingReport.reference_number}
+                </Text>
+              ) : null}
+              {reviewingReport?.notes ? (
+                <Text style={styles.originalClaimMeta}>Note: {reviewingReport.notes}</Text>
+              ) : null}
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Approved Amount (₹) *</Text>
+              <TextInput
+                style={styles.modalInput}
+                keyboardType="numeric"
+                value={approvedAmountRupees}
+                onChangeText={setApprovedAmountRupees}
+                placeholder="e.g. 9000"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Payment Method</Text>
+              <View style={styles.methodToggleRow}>
+                {(['upi', 'cash'] as const).map((m) => (
+                  <Pressable
+                    key={m}
+                    style={[styles.methodBtn, approvedMethod === m && styles.methodBtnActive]}
+                    onPress={() => setApprovedMethod(m)}>
+                    <Text
+                      style={[
+                        styles.methodBtnText,
+                        approvedMethod === m && styles.methodBtnTextActive,
+                      ]}>
+                      {m.toUpperCase()}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Payment Date (YYYY-MM-DD)</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={approvedDate}
+                onChangeText={setApprovedDate}
+                placeholder="YYYY-MM-DD"
+              />
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Verification Note / Correction Reason</Text>
+              <TextInput
+                style={styles.modalInput}
+                value={approvalNotes}
+                onChangeText={setApprovalNotes}
+                placeholder="Optional notes or adjustment reason..."
+              />
+            </View>
+
+            {reviewingReport &&
+            (parseFloat(approvedAmountRupees) * 100 !== reviewingReport.amount_paise ||
+              approvedMethod !== reviewingReport.claimed_method ||
+              approvedDate !== reviewingReport.payment_date) ? (
+              <View style={styles.correctionNotice}>
+                <Text style={styles.correctionNoticeText}>
+                  ℹ️ Changes to student-reported values will be automatically recorded in the correction audit trail.
+                </Text>
+              </View>
+            ) : null}
+
+            <View style={styles.modalBtnRow}>
+              <Pressable
+                disabled={submittingApproval}
+                style={styles.modalCancelBtn}
+                onPress={() => setReviewingReport(null)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                disabled={submittingApproval || !approvedAmountRupees}
+                style={[
+                  styles.modalConfirmBtn,
+                  (submittingApproval || !approvedAmountRupees) && styles.btnDisabled,
+                ]}
+                onPress={handleConfirmApprove}>
+                {submittingApproval ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.modalConfirmText}>Approve & Settle</Text>
                 )}
               </Pressable>
             </View>
@@ -1618,6 +2182,169 @@ const styles = StyleSheet.create({
     fontStyle: 'italic',
     paddingVertical: 10,
   },
+  residentCategoryScroll: {
+    paddingBottom: 8,
+    gap: 8,
+  },
+  residentCategoryPill: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  residentCategoryPillActive: {
+    backgroundColor: '#0284C7',
+    borderColor: '#0284C7',
+  },
+  residentCategoryPillText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  residentCategoryPillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  residentPeriodGroup: {
+    marginBottom: 12,
+  },
+  residentPeriodHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    marginBottom: 6,
+  },
+  residentPeriodTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#1E293B',
+  },
+  residentPeriodCount: {
+    fontSize: 10,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  residentChargeCardDetailed: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 8,
+  },
+  residentChargeTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  categoryPill: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  categoryPillText: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: '#475569',
+  },
+  chargeStatusBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  chargeSettledBadge: {
+    backgroundColor: '#DCFCE7',
+  },
+  chargeOverdueBadge: {
+    backgroundColor: '#FEE2E2',
+  },
+  chargeOutstandingBadge: {
+    backgroundColor: '#E0F2FE',
+  },
+  chargeStatusBadgeText: {
+    fontSize: 9,
+    fontWeight: '800',
+  },
+  chargeSettledBadgeText: {
+    color: '#15803D',
+  },
+  chargeOverdueBadgeText: {
+    color: '#DC2626',
+  },
+  chargeOutstandingBadgeText: {
+    color: '#0369A1',
+  },
+  chargeItemDivider: {
+    height: 1,
+    backgroundColor: '#F1F5F9',
+    marginVertical: 8,
+  },
+  chargeAmountsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  chargeSmallLabel: {
+    fontSize: 10,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  chargeRemainingText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  remainingSettledText: {
+    color: '#16A34A',
+  },
+  remainingDueText: {
+    color: '#DC2626',
+  },
+  residentAllocBox: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    padding: 8,
+    marginTop: 8,
+  },
+  residentAllocTitle: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#166534',
+    marginBottom: 2,
+  },
+  residentAllocRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  residentAllocReceipt: {
+    fontSize: 11,
+    color: '#15803D',
+    fontWeight: '600',
+  },
+  residentAllocAmt: {
+    fontSize: 11,
+    color: '#166534',
+    fontWeight: '700',
+  },
+  residentAllocSettled: {
+    fontSize: 11,
+    color: '#166534',
+    fontWeight: '600',
+  },
   chargeRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1693,6 +2420,32 @@ const styles = StyleSheet.create({
     color: '#0284C7',
     fontWeight: '600',
     marginTop: 2,
+  },
+  paymentRowReversed: {
+    backgroundColor: '#FAFAFA',
+    borderColor: '#E2E8F0',
+    opacity: 0.85,
+  },
+  paymentReceiptNoReversed: {
+    color: '#64748B',
+    textDecorationLine: 'line-through',
+  },
+  ownerReversalBox: {
+    backgroundColor: '#FEF2F2',
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    marginTop: 4,
+    alignSelf: 'flex-start',
+  },
+  ownerReversalText: {
+    fontSize: 11,
+    color: '#DC2626',
+    fontWeight: '500',
+  },
+  paymentAmountReversed: {
+    color: '#94A3B8',
+    textDecorationLine: 'line-through',
   },
   methodToggleRow: {
     flexDirection: 'row',
@@ -1783,6 +2536,134 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '700',
+  },
+  filterSectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  miniFilterRow: {
+    flexDirection: 'row',
+    gap: 6,
+  },
+  miniFilterPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  miniFilterPillActive: {
+    backgroundColor: '#E0F2FE',
+    borderColor: '#0284C7',
+  },
+  miniFilterText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#64748B',
+  },
+  miniFilterTextActive: {
+    color: '#0284C7',
+  },
+  paymentStatusBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginTop: 3,
+  },
+  badgeReversed: {
+    backgroundColor: '#FEE2E2',
+  },
+  badgeApprovedMini: {
+    backgroundColor: '#DCFCE7',
+  },
+  paymentStatusText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  textReversed: {
+    color: '#DC2626',
+  },
+  textApprovedMini: {
+    color: '#16A34A',
+  },
+  presetChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 8,
+  },
+  reasonChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  reasonChipActive: {
+    backgroundColor: '#FEE2E2',
+    borderColor: '#EF4444',
+  },
+  reasonChipText: {
+    fontSize: 11,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  reasonChipTextActive: {
+    color: '#DC2626',
+    fontWeight: '700',
+  },
+  modalDangerBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    backgroundColor: '#DC2626',
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modalDangerText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  originalClaimBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 14,
+  },
+  originalClaimLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#64748B',
+    marginBottom: 2,
+  },
+  originalClaimText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  originalClaimMeta: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  correctionNotice: {
+    backgroundColor: '#EFF6FF',
+    padding: 10,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    marginTop: 6,
+  },
+  correctionNoticeText: {
+    fontSize: 11,
+    color: '#1D4ED8',
+    lineHeight: 16,
   },
 });
 

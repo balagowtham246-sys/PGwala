@@ -30,6 +30,8 @@ async function runPgIntegrationTests() {
         CREATE ROLE authenticated;
     EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+    GRANT USAGE ON SCHEMA public TO anon, authenticated;
+
     CREATE TABLE IF NOT EXISTS auth.users (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         email TEXT UNIQUE,
@@ -84,6 +86,10 @@ async function runPgIntegrationTests() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
     );
+
+    GRANT SELECT ON TABLE public.profiles TO authenticated;
+    GRANT SELECT ON TABLE public.properties TO authenticated;
+    GRANT SELECT ON TABLE public.residents TO authenticated;
 
     -- Helpers
     CREATE OR REPLACE FUNCTION public.set_updated_at()
@@ -222,15 +228,33 @@ async function runPgIntegrationTests() {
   console.log('  ✓ Legacy schema created with legacy table-wide constraint uq_payment_allocation_charge.');
 
   // --------------------------------------------------------------------------
-  // STEP 3: Apply the Migration Script (supabase/billing_and_payments_migration.sql)
+  // STEP 3: Apply Billing, Account Linking & Security Hardening Migrations
   // --------------------------------------------------------------------------
-  console.log('\n[Step 3] Applying supabase/billing_and_payments_migration.sql to existing schema...');
+  console.log('\n[Step 3] Applying migrations to existing schema...');
   const migrationSqlPath = path.resolve(__dirname, '../supabase/billing_and_payments_migration.sql');
   const migrationSql = fs.readFileSync(migrationSqlPath, 'utf8');
 
+  const linkMigrationPath = path.resolve(__dirname, '../supabase/link_resident_migration.sql');
+  const linkMigrationSql = fs.readFileSync(linkMigrationPath, 'utf8');
+
+  const hardeningMigrationPath = path.resolve(__dirname, '../supabase/billing_security_hardening.sql');
+  const hardeningMigrationSql = fs.readFileSync(hardeningMigrationPath, 'utf8');
+
+  const complaintsMigrationPath = path.resolve(__dirname, '../supabase/complaints_migration.sql');
+  const complaintsMigrationSql = fs.readFileSync(complaintsMigrationPath, 'utf8');
+
   try {
     await db.exec(migrationSql);
-    console.log('  ✓ Migration executed successfully without syntax or dependency errors.');
+    console.log('  ✓ billing_and_payments_migration.sql executed successfully.');
+
+    await db.exec(linkMigrationSql);
+    console.log('  ✓ link_resident_migration.sql executed successfully.');
+
+    await db.exec(hardeningMigrationSql);
+    console.log('  ✓ billing_security_hardening.sql executed successfully.');
+
+    await db.exec(complaintsMigrationSql);
+    console.log('  ✓ complaints_migration.sql executed successfully.');
   } catch (err) {
     console.error('  ✗ Migration failed:', err);
     throw err;
@@ -273,17 +297,20 @@ async function runPgIntegrationTests() {
 
   // Students Auth
   const student1Auth = '33333333-3333-3333-3333-333333333333';
+  const student2Auth = '44444444-4444-4444-4444-444444444444';
 
   await db.exec(`
     INSERT INTO auth.users (id, email) VALUES
       ('${owner1Id}', 'owner1@pgwala.test'),
       ('${owner2Id}', 'owner2@pgwala.test'),
-      ('${student1Auth}', 'alice@student.test');
+      ('${student1Auth}', 'alice@student.test'),
+      ('${student2Auth}', 'bob@student.test');
 
     INSERT INTO public.profiles (id, full_name, role) VALUES
       ('${owner1Id}', 'Owner One', 'owner'),
       ('${owner2Id}', 'Owner Two', 'owner'),
-      ('${student1Auth}', 'Alice Student', 'student');
+      ('${student1Auth}', 'Alice Student', 'student'),
+      ('${student2Auth}', 'Bob Student', 'student');
 
     INSERT INTO public.properties (id, name, owner_id, is_active) VALUES
       ('${prop1Id}', 'Sunrise PG', '${owner1Id}', true),
@@ -291,15 +318,30 @@ async function runPgIntegrationTests() {
 
     INSERT INTO public.residents (id, property_id, profile_id, full_name, room_number, is_active) VALUES
       ('${res1Id}', '${prop1Id}', '${student1Auth}', 'Alice Smith', '101', true),
-      ('${res2Id}', '${prop1Id}', NULL, 'Bob Jones', '101', true),
+      ('${res2Id}', '${prop1Id}', '${student2Auth}', 'Bob Jones', '101', true),
       ('${res3Id}', '${prop1Id}', NULL, 'Charlie Brown', '101', true),
       ('${res4Id}', '${prop2Id}', NULL, 'David Miller', '201', true);
   `);
   console.log('  ✓ Seeded 2 owners, 2 properties, and 4 residents.');
 
-  // Helper to set auth context
-  async function asUser(userId) {
-    await db.exec(`SET request.jwt.claim.sub = '${userId || ''}';`);
+  // Helper to set auth context and role
+  async function asUser(userId, role = 'postgres') {
+    if (role === 'anon') {
+      await db.exec(`
+        SET ROLE anon;
+        SET request.jwt.claim.sub = '';
+      `);
+    } else if (role === 'authenticated') {
+      await db.exec(`
+        SET ROLE authenticated;
+        SET request.jwt.claim.sub = '${userId || ''}';
+      `);
+    } else {
+      await db.exec(`
+        RESET ROLE;
+        SET request.jwt.claim.sub = '${userId || ''}';
+      `);
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -662,12 +704,299 @@ async function runPgIntegrationTests() {
   assert(crossEb.rows[0].res.error.includes('do not own this property'));
   console.log('  ✓ Cross-property modification prevented: Owner 2 cannot bill Owner 1 property.');
 
-  // Direct table modification revoked check: authenticated role cannot write to charges or payments directly
-  // (In Supabase, grants to authenticated enforce this; tested via explicit REVOKE statements)
-  console.log('  ✓ Scoped privileges confirmed: direct INSERT/UPDATE/DELETE revoked from authenticated.');
+  // --------------------------------------------------------------------------
+  // TEST H: Security Hardening & Least-Privilege Verification
+  // --------------------------------------------------------------------------
+  console.log('\n[Test H] Security Hardening & Least-Privilege Verification:');
+
+  // H.1 Unauthenticated caller (anon role) denied
+  console.log('  Testing unauthenticated (anon) caller access...');
+  await asUser(null, 'anon');
+
+  // Anon calling generate_monthly_charges
+  let anonBlocked = false;
+  try {
+    const res = await db.query(`SELECT public.generate_monthly_charges('${prop1Id}', '2026-11-01'::DATE, 900000) AS res;`);
+    anonBlocked = res.rows[0].res.success === false;
+  } catch (err) {
+    anonBlocked = true; // permission denied error from revoke
+  }
+  assert.strictEqual(anonBlocked, true, 'Anon must not execute generate_monthly_charges');
+
+  // Anon calling generate_receipt_number helper
+  let anonReceiptBlocked = false;
+  try {
+    await db.query(`SELECT public.generate_receipt_number('${prop1Id}');`);
+  } catch (err) {
+    anonReceiptBlocked = true;
+  }
+  assert.strictEqual(anonReceiptBlocked, true, 'Anon must not execute internal generate_receipt_number helper');
+
+  // Anon querying billing tables directly
+  let anonSelectBlocked = false;
+  try {
+    await db.query(`SELECT * FROM public.charges;`);
+  } catch (err) {
+    anonSelectBlocked = true;
+  }
+  assert.strictEqual(anonSelectBlocked, true, 'Anon must not SELECT from public.charges');
+  console.log('  ✓ Unauthenticated (anon) caller completely denied.');
+
+  // H.2 Student attempting owner-only RPCs denied
+  console.log('  Testing student attempting owner-only RPCs...');
+  await asUser(student1Auth, 'authenticated');
+
+  const ownerOnlyCalls = [
+    { name: 'generate_monthly_charges', sql: `SELECT public.generate_monthly_charges('${prop1Id}', '2026-11-01'::DATE, 900000) AS res;` },
+    { name: 'approve_payment_and_allocate', sql: `SELECT public.approve_payment_and_allocate('${prop1Id}', '${res1Id}', 50000, 'cash', '2026-11-01'::DATE, 'Test') AS res;` },
+    { name: 'reverse_payment', sql: `SELECT public.reverse_payment('${payment1Id}', 'Test reversal') AS res;` },
+    { name: 'reject_student_payment_report', sql: `SELECT public.reject_student_payment_report('${reportId}', 'Test reject') AS res;` },
+    { name: 'allocate_eb_bill', sql: `SELECT public.allocate_eb_bill('${prop1Id}', '101', '2026-11-01'::DATE, '2026-11-30'::DATE, '2026-12-05'::DATE, 100000, ARRAY['${res1Id}']::UUID[], 'Test') AS res;` },
+    { name: 'record_opening_balance', sql: `SELECT public.record_opening_balance('${res1Id}', 'rent', 50000, '2026-11-01'::DATE, 'Test') AS res;` },
+    { name: 'toggle_washing_machine', sql: `SELECT public.toggle_washing_machine('${res1Id}', true) AS res;` },
+    { name: 'apply_unallocated_credit', sql: `SELECT public.apply_unallocated_credit('${res1Id}') AS res;` },
+    { name: 'link_resident_profile', sql: `SELECT public.link_resident_profile('${res2Id}', 'alice@example.com') AS res;` },
+    { name: 'unlink_resident_profile', sql: `SELECT public.unlink_resident_profile('${res1Id}') AS res;` },
+  ];
+
+  for (const call of ownerOnlyCalls) {
+    const res = await db.query(call.sql);
+    assert.strictEqual(res.rows[0].res.success, false, `Student must be denied for ${call.name}`);
+    assert(res.rows[0].res.error.toLowerCase().includes('unauthorized'), `Error must state unauthorized for ${call.name}`);
+  }
+  console.log('  ✓ All 10 owner-only RPCs verified: student invocation strictly rejected.');
+
+  // H.3 Student reading another resident's billing data denied under RLS
+  console.log('  Testing student RLS isolation...');
+  const crossCharges = await db.query(`
+    SELECT * FROM public.charges WHERE resident_id = '${res2Id}';
+  `);
+  assert.strictEqual(crossCharges.rows.length, 0, 'Student must not see another resident charges');
+
+  const crossPayments = await db.query(`
+    SELECT * FROM public.payments WHERE resident_id = '${res2Id}';
+  `);
+  assert.strictEqual(crossPayments.rows.length, 0, 'Student must not see another resident payments');
+
+  const ownCharges = await db.query(`
+    SELECT * FROM public.charges WHERE resident_id = '${res1Id}';
+  `);
+  assert(ownCharges.rows.length > 0, 'Student can read own charges under RLS');
+  console.log('  ✓ RLS isolation confirmed: student cannot read another resident charges or payments.');
+
+  // H.4 Student attempting direct financial mutations denied (least-privilege table grants)
+  console.log('  Testing direct table write revokes on authenticated...');
+  let payInsertDenied = false;
+  try {
+    await db.query(`INSERT INTO public.payments (property_id, resident_id, receipt_number, amount_paise, method, payment_date, recorded_by) VALUES ('${prop1Id}', '${res1Id}', 'HACK-1', 10000, 'cash', '2026-11-01'::DATE, '${student1Auth}');`);
+  } catch (err) {
+    payInsertDenied = true;
+  }
+  assert.strictEqual(payInsertDenied, true, 'Direct INSERT into payments must be denied');
+
+  let allocInsertDenied = false;
+  try {
+    await db.query(`INSERT INTO public.payment_allocations (payment_id, charge_id, settled_amount_paise) VALUES ('${payment1Id}', '${res1Id}', 1000);`);
+  } catch (err) {
+    allocInsertDenied = true;
+  }
+  assert.strictEqual(allocInsertDenied, true, 'Direct INSERT into payment_allocations must be denied');
+
+  let chargeUpdateDenied = false;
+  try {
+    await db.query(`UPDATE public.charges SET status = 'settled' WHERE resident_id = '${res1Id}';`);
+  } catch (err) {
+    chargeUpdateDenied = true;
+  }
+  assert.strictEqual(chargeUpdateDenied, true, 'Direct UPDATE on charges must be denied');
+
+  let chargeTruncateDenied = false;
+  try {
+    await db.query(`TRUNCATE public.charges;`);
+  } catch (err) {
+    chargeTruncateDenied = true;
+  }
+  assert.strictEqual(chargeTruncateDenied, true, 'TRUNCATE on charges must be denied');
+
+  let reportDeleteDenied = false;
+  try {
+    await db.query(`DELETE FROM public.student_payment_reports WHERE resident_id = '${res1Id}';`);
+  } catch (err) {
+    reportDeleteDenied = true;
+  }
+  assert.strictEqual(reportDeleteDenied, true, 'Direct DELETE on student_payment_reports must be denied');
+  console.log('  ✓ Least-privilege confirmed: Direct financial table writes and TRUNCATE blocked.');
+
+  // H.5 Student payment report INSERT security
+  console.log('  Testing student payment report insertion policies...');
+  // Status column injection prevented
+  let statusInjectionDenied = false;
+  try {
+    await db.query(`
+      INSERT INTO public.student_payment_reports (
+        property_id, resident_id, amount_paise, claimed_method, payment_date, status
+      ) VALUES (
+        '${prop1Id}', '${res1Id}', 50000, 'upi', '2026-11-01'::DATE, 'approved'
+      );
+    `);
+  } catch (err) {
+    statusInjectionDenied = true;
+  }
+  assert.strictEqual(statusInjectionDenied, true, 'Student cannot inject status into payment report');
+
+  // Submitting report for another resident denied under RLS
+  let crossResidentReportDenied = false;
+  try {
+    await db.query(`
+      INSERT INTO public.student_payment_reports (
+        property_id, resident_id, amount_paise, claimed_method, payment_date
+      ) VALUES (
+        '${prop1Id}', '${res2Id}', 50000, 'upi', '2026-11-01'::DATE
+      );
+    `);
+  } catch (err) {
+    crossResidentReportDenied = true;
+  }
+  assert.strictEqual(crossResidentReportDenied, true, 'Student cannot submit report for another resident');
+
+  // Legitimate student report succeeds
+  const legitReport = await db.query(`
+    INSERT INTO public.student_payment_reports (
+      property_id, resident_id, amount_paise, claimed_method, payment_date, reference_number, notes
+    ) VALUES (
+      '${prop1Id}', '${res1Id}', 50000, 'upi', '2026-11-01'::DATE, 'UPI-LEGIT', 'Legitimate claim'
+    ) RETURNING id;
+  `);
+  assert.strictEqual(legitReport.rows.length, 1, 'Legitimate student report must succeed');
+  console.log('  ✓ Payment report workflow secured: status injection blocked, cross-resident submission blocked, legitimate submission verified.');
+
+  // ==========================================================================
+  // [Test I] Complaints & Maintenance Ticketing Invariants & Workflow
+  // ==========================================================================
+  console.log('\n[Test I] Complaints & Maintenance Ticketing Invariants & Workflow:');
+
+  // I.1 Student Alice submits a valid complaint
+  await asUser(student1Auth, 'authenticated');
+  const aliceComplaint = await db.query(`
+    INSERT INTO public.complaints (
+      property_id, resident_id, category, priority, title, description
+    ) VALUES (
+      '${prop1Id}', '${res1Id}', 'plumbing', 'high', 'Geyser not heating water', 'Cold water since this morning in Room 101'
+    ) RETURNING id, status, created_at;
+  `);
+  assert.strictEqual(aliceComplaint.rows.length, 1, 'Alice must be able to submit a complaint');
+  const complaintId = aliceComplaint.rows[0].id;
+  assert.strictEqual(aliceComplaint.rows[0].status, 'open', 'Complaint default status must be open');
+  console.log('  ✓ Student Alice submitted plumbing complaint with default status "open".');
+
+  // I.2 Student status injection denied
+  let complaintStatusTamperDenied = false;
+  try {
+    await db.query(`
+      INSERT INTO public.complaints (
+        property_id, resident_id, category, priority, title, description, status
+      ) VALUES (
+        '${prop1Id}', '${res1Id}', 'electrical', 'low', 'Tubelight flickering', 'Flickering in Room 101', 'resolved'
+      );
+    `);
+  } catch (err) {
+    complaintStatusTamperDenied = true;
+  }
+  assert.strictEqual(complaintStatusTamperDenied, true, 'Student cannot inject resolved status on insert');
+  console.log('  ✓ Column privilege enforced: Student status injection on complaint insert rejected.');
+
+  // I.3 Cross-resident complaint submission denied under RLS
+  let crossResidentComplaintDenied = false;
+  try {
+    await db.query(`
+      INSERT INTO public.complaints (
+        property_id, resident_id, category, priority, title, description
+      ) VALUES (
+        '${prop1Id}', '${res2Id}', 'wifi_internet', 'urgent', 'Wi-Fi not working', 'Wi-Fi dead in Room 102'
+      );
+    `);
+  } catch (err) {
+    crossResidentComplaintDenied = true;
+  }
+  assert.strictEqual(crossResidentComplaintDenied, true, 'Alice cannot file complaint on behalf of Bob');
+  console.log('  ✓ RLS enforced: Cross-resident complaint creation rejected.');
+
+  // I.4 Owner 1 views complaint for Property 1
+  await asUser(owner1Id, 'authenticated');
+  const owner1Complaints = await db.query(`
+    SELECT id, title, status FROM public.complaints
+    WHERE property_id = '${prop1Id}';
+  `);
+  assert.strictEqual(owner1Complaints.rows.length, 1, 'Owner 1 must see Alice complaint');
+  assert.strictEqual(owner1Complaints.rows[0].id, complaintId);
+  console.log('  ✓ Owner 1 successfully viewed complaint for Property 1.');
+
+  // I.5 Cross-tenant isolation: Owner 2 and Student Bob cannot view Alice complaint
+  await asUser(owner2Id, 'authenticated');
+  const owner2Complaints = await db.query(`
+    SELECT id FROM public.complaints WHERE id = '${complaintId}';
+  `);
+  assert.strictEqual(owner2Complaints.rows.length, 0, 'Owner 2 must not see Owner 1 complaint under RLS');
+
+  await asUser(student2Auth, 'authenticated');
+  const bobComplaints = await db.query(`
+    SELECT id FROM public.complaints WHERE id = '${complaintId}';
+  `);
+  assert.strictEqual(bobComplaints.rows.length, 0, 'Student Bob must not see Alice complaint under RLS');
+  console.log('  ✓ Cross-tenant RLS confirmed: Neither Owner 2 nor Student Bob can view Alice complaint.');
+
+  // I.6 Owner 1 updates ticket: in_progress -> resolved
+  await asUser(owner1Id, 'authenticated');
+  await db.query(`
+    UPDATE public.complaints
+    SET status = 'in_progress', owner_notes = 'Plumber booked for 2 PM'
+    WHERE id = '${complaintId}';
+  `);
+
+  const inProgCheck = await db.query(`
+    SELECT status, owner_notes FROM public.complaints WHERE id = '${complaintId}';
+  `);
+  assert.strictEqual(inProgCheck.rows[0].status, 'in_progress');
+  assert.strictEqual(inProgCheck.rows[0].owner_notes, 'Plumber booked for 2 PM');
+
+  // Mark resolved
+  await db.query(`
+    UPDATE public.complaints
+    SET status = 'resolved', owner_notes = 'Heating element replaced by vendor', resolved_at = now()
+    WHERE id = '${complaintId}';
+  `);
+
+  const resolvedCheck = await db.query(`
+    SELECT status, owner_notes, resolved_at FROM public.complaints WHERE id = '${complaintId}';
+  `);
+  assert.strictEqual(resolvedCheck.rows[0].status, 'resolved');
+  assert.ok(resolvedCheck.rows[0].resolved_at !== null, 'resolved_at must be populated');
+  console.log('  ✓ Owner 1 updated complaint lifecycle to in_progress and then resolved with vendor notes.');
+
+  // I.7 Student Alice verifies resolution notes and resolved status
+  await asUser(student1Auth, 'authenticated');
+  const aliceView = await db.query(`
+    SELECT status, owner_notes, resolved_at FROM public.complaints WHERE id = '${complaintId}';
+  `);
+  assert.strictEqual(aliceView.rows.length, 1);
+  assert.strictEqual(aliceView.rows[0].status, 'resolved');
+  assert.strictEqual(aliceView.rows[0].owner_notes, 'Heating element replaced by vendor');
+  console.log('  ✓ Student Alice verified the resolved status and resolution note.');
+
+  // I.8 Unauthenticated access denied
+  await asUser(null, 'anon');
+  let anonComplaintDenied = false;
+  try {
+    await db.query(`SELECT * FROM public.complaints;`);
+  } catch (err) {
+    anonComplaintDenied = true;
+  }
+  assert.strictEqual(anonComplaintDenied, true, 'Anonymous users must be completely denied on complaints table');
+  console.log('  ✓ Anonymous caller completely denied access to complaints.');
+  await asUser(null);
 
   console.log('\n===============================================================');
-  console.log('   ALL POSTGRESQL DATABASE INTEGRATION TESTS PASSED (7/7)      ');
+  console.log('   ALL POSTGRESQL DATABASE INTEGRATION TESTS PASSED (9/9)      ');
   console.log('===============================================================');
 }
 

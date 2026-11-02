@@ -335,12 +335,16 @@ REVOKE ALL ON TABLE public.payments FROM anon;
 REVOKE ALL ON TABLE public.payment_allocations FROM anon;
 REVOKE ALL ON TABLE public.student_payment_reports FROM anon;
 
--- Direct write is revoked from authenticated; mutations go through audited policies or RPCs
-REVOKE INSERT, UPDATE, DELETE ON TABLE public.charges FROM authenticated;
-REVOKE INSERT, UPDATE, DELETE ON TABLE public.eb_room_bills FROM authenticated;
-REVOKE INSERT, UPDATE, DELETE ON TABLE public.eb_allocations FROM authenticated;
-REVOKE INSERT, UPDATE, DELETE ON TABLE public.payments FROM authenticated;
-REVOKE INSERT, UPDATE, DELETE ON TABLE public.payment_allocations FROM authenticated;
+-- Direct write and truncation are revoked from authenticated and client-facing roles;
+-- Mutations go through audited policies or validated SECURITY DEFINER RPCs.
+REVOKE TRUNCATE, INSERT, UPDATE, DELETE ON TABLE public.charges FROM anon, authenticated, PUBLIC;
+REVOKE TRUNCATE, INSERT, UPDATE, DELETE ON TABLE public.payments FROM anon, authenticated, PUBLIC;
+REVOKE TRUNCATE, INSERT, UPDATE, DELETE ON TABLE public.payment_allocations FROM anon, authenticated, PUBLIC;
+REVOKE TRUNCATE, INSERT, UPDATE, DELETE ON TABLE public.eb_room_bills FROM anon, authenticated, PUBLIC;
+REVOKE TRUNCATE, INSERT, UPDATE, DELETE ON TABLE public.eb_allocations FROM anon, authenticated, PUBLIC;
+REVOKE TRUNCATE, INSERT, UPDATE, DELETE ON TABLE public.resident_opt_ins FROM anon, authenticated, PUBLIC;
+REVOKE TRUNCATE, UPDATE, DELETE ON TABLE public.student_payment_reports FROM anon, authenticated, PUBLIC;
+REVOKE INSERT ON TABLE public.student_payment_reports FROM anon, PUBLIC;
 
 -- Authenticated can SELECT from tables under RLS
 GRANT SELECT ON TABLE public.resident_opt_ins TO authenticated;
@@ -386,8 +390,9 @@ CREATE POLICY "charges_student_select_own"
 
 -- === RLS POLICIES: resident_opt_ins ===
 DROP POLICY IF EXISTS "opt_ins_owner_all" ON public.resident_opt_ins;
-CREATE POLICY "opt_ins_owner_all"
-    ON public.resident_opt_ins FOR ALL
+DROP POLICY IF EXISTS "opt_ins_owner_select" ON public.resident_opt_ins;
+CREATE POLICY "opt_ins_owner_select"
+    ON public.resident_opt_ins FOR SELECT
     TO authenticated
     USING (
         resident_id IN (
@@ -507,13 +512,12 @@ CREATE POLICY "student_reports_student_insert"
     TO authenticated
     WITH CHECK (
         status = 'pending' AND
-        resident_id IN (
-            SELECT r.id FROM public.residents r
-            WHERE r.profile_id = (SELECT auth.uid()) AND r.is_active = true
-        ) AND
-        property_id IN (
-            SELECT r.property_id FROM public.residents r
-            WHERE r.profile_id = (SELECT auth.uid()) AND r.is_active = true
+        EXISTS (
+            SELECT 1 FROM public.residents r
+            WHERE r.id = student_payment_reports.resident_id
+              AND r.property_id = student_payment_reports.property_id
+              AND r.profile_id = (SELECT auth.uid())
+              AND r.is_active = true
         )
     );
 
@@ -1675,14 +1679,23 @@ $$;
 
 -- 15. Grant Execute on Functions to Authenticated Users
 REVOKE EXECUTE ON FUNCTION public.generate_monthly_charges(UUID, DATE, BIGINT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.generate_monthly_charges(UUID, DATE, BIGINT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.allocate_eb_bill(UUID, TEXT, DATE, DATE, DATE, BIGINT, UUID[], TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.allocate_eb_bill(UUID, TEXT, DATE, DATE, DATE, BIGINT, UUID[], TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.record_opening_balance(UUID, public.charge_category, BIGINT, DATE, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.record_opening_balance(UUID, public.charge_category, BIGINT, DATE, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.approve_payment_and_allocate(UUID, UUID, BIGINT, public.billing_payment_method, DATE, TEXT, UUID) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.approve_payment_and_allocate(UUID, UUID, BIGINT, public.billing_payment_method, DATE, TEXT, UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.reject_student_payment_report(UUID, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.reject_student_payment_report(UUID, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.reverse_payment(UUID, TEXT) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.reverse_payment(UUID, TEXT) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.toggle_washing_machine(UUID, BOOLEAN) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.toggle_washing_machine(UUID, BOOLEAN) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.get_resident_billing_summary(UUID) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.get_resident_billing_summary(UUID) FROM anon;
 REVOKE EXECUTE ON FUNCTION public.apply_unallocated_credit(UUID) FROM PUBLIC;
+REVOKE EXECUTE ON FUNCTION public.apply_unallocated_credit(UUID) FROM anon;
 
 GRANT EXECUTE ON FUNCTION public.generate_monthly_charges(UUID, DATE, BIGINT) TO authenticated;
 GRANT EXECUTE ON FUNCTION public.allocate_eb_bill(UUID, TEXT, DATE, DATE, DATE, BIGINT, UUID[], TEXT) TO authenticated;

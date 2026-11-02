@@ -60,13 +60,17 @@ export default function EbBillingScreen() {
 
   // Load property and residents
   const loadData = useCallback(async () => {
+    if (!user?.id) return;
+
     try {
       setLoading(true);
 
       const { data: properties, error: propError } = await supabase
         .from('properties')
         .select('id, name')
+        .eq('owner_id', user.id)
         .eq('is_active', true)
+        .order('created_at', { ascending: true })
         .limit(1);
 
       if (propError) throw propError;
@@ -134,8 +138,10 @@ export default function EbBillingScreen() {
   }, []);
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    if (user?.id) {
+      loadData();
+    }
+  }, [user?.id, loadData]);
 
   // When selected room changes, auto-select all residents currently in that room
   useEffect(() => {

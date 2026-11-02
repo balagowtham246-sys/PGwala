@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { router } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,7 +12,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
 
 import { BottomTabInset } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -61,7 +61,7 @@ interface ActivityItem {
 }
 
 export default function OwnerDashboard() {
-  const { profile, signOut } = useAuth();
+  const { user, session, profile, isLoading: authLoading, signOut } = useAuth();
 
   // Dashboard state powered by live Supabase queries
   const [loading, setLoading] = useState(true);
@@ -75,8 +75,13 @@ export default function OwnerDashboard() {
     studentsInside: 0,
     studentsOutside: 0,
     studentsUnknown: 0,
+    totalCollectedPaise: 0,
+    outstandingPaise: 0,
+    overduePaise: 0,
+    pendingReportsCount: 0,
     pendingBillsCount: 0,
     pendingBillsAmount: 0,
+    openComplaintsCount: 0,
   });
 
   const [recentActivities, setRecentActivities] = useState<ActivityItem[]>([]);
@@ -91,14 +96,21 @@ export default function OwnerDashboard() {
 
   // Fetch all dashboard data from Supabase
   const loadDashboardData = useCallback(async () => {
+    // Defense-in-depth: Never fire queries if unauthenticated or not an owner
+    if (!user?.id || profile?.role !== 'owner') {
+      return;
+    }
+
     try {
       setErrorMessage(null);
 
-      // 1. Fetch the owner's property
+      // 1. Fetch the owner's property (scoped explicitly to authenticated owner)
       const { data: properties, error: propError } = await supabase
         .from('properties')
         .select('id, name')
+        .eq('owner_id', user.id)
         .eq('is_active', true)
+        .order('created_at', { ascending: true })
         .limit(1);
 
       if (propError) throw propError;
@@ -110,8 +122,13 @@ export default function OwnerDashboard() {
           studentsInside: 0,
           studentsOutside: 0,
           studentsUnknown: 0,
+          totalCollectedPaise: 0,
+          outstandingPaise: 0,
+          overduePaise: 0,
+          pendingReportsCount: 0,
           pendingBillsCount: 0,
           pendingBillsAmount: 0,
+          openComplaintsCount: 0,
         });
         setRecentActivities([]);
         setLoading(false);
@@ -140,8 +157,13 @@ export default function OwnerDashboard() {
           studentsInside: 0,
           studentsOutside: 0,
           studentsUnknown: 0,
+          totalCollectedPaise: 0,
+          outstandingPaise: 0,
+          overduePaise: 0,
+          pendingReportsCount: 0,
           pendingBillsCount: 0,
           pendingBillsAmount: 0,
+          openComplaintsCount: 0,
         });
         setRecentActivities([]);
         setLoading(false);
@@ -185,22 +207,78 @@ export default function OwnerDashboard() {
         }
       }
 
-      // 4b. Fetch live outstanding billing totals (fails softly if migration not yet run)
+      // 4b. Fetch live billing records (fails softly if billing tables not yet migrated)
+      let totalCollectedPaise = 0;
+      let outstandingPaise = 0;
+      let overduePaise = 0;
+      let pendingReportsCount = 0;
       let pendingBillsCount = 0;
       let pendingBillsAmount = 0;
+
+      const todayIso = new Date().toISOString().split('T')[0];
+
       try {
-        const { data: billsData } = await supabase
-          .from('charges')
+        // Authoritative query 1: Approved payments (strictly excludes reversed payments)
+        const { data: paymentsData } = await supabase
+          .from('payments')
           .select('amount_paise')
+          .eq('property_id', activeProp.id)
+          .eq('status', 'approved');
+
+        if (paymentsData && paymentsData.length > 0) {
+          totalCollectedPaise = paymentsData.reduce(
+            (acc, curr) => acc + (curr.amount_paise || 0),
+            0
+          );
+        }
+
+        // Authoritative query 2: Outstanding charges & overdue calculation
+        const { data: chargesData } = await supabase
+          .from('charges')
+          .select('amount_paise, due_date')
           .eq('property_id', activeProp.id)
           .eq('status', 'outstanding');
 
-        if (billsData && billsData.length > 0) {
-          pendingBillsCount = billsData.length;
-          pendingBillsAmount = billsData.reduce((acc, curr) => acc + (curr.amount_paise || 0), 0);
+        if (chargesData && chargesData.length > 0) {
+          pendingBillsCount = chargesData.length;
+          for (const ch of chargesData) {
+            const amt = ch.amount_paise || 0;
+            outstandingPaise += amt;
+            if (ch.due_date && ch.due_date < todayIso) {
+              overduePaise += amt;
+            }
+          }
+          pendingBillsAmount = outstandingPaise;
         }
-      } catch {
-        // Table not created yet; fail softly
+
+        // Authoritative query 3: Pending student payment reports awaiting verification
+        const { data: reportsData } = await supabase
+          .from('student_payment_reports')
+          .select('id')
+          .eq('property_id', activeProp.id)
+          .eq('status', 'pending');
+
+        if (reportsData) {
+          pendingReportsCount = reportsData.length;
+        }
+      } catch (billingErr) {
+        console.warn('[OwnerDashboard] Could not fetch billing overview:', billingErr);
+      }
+
+      // 4c. Fetch open maintenance complaints count
+      let openComplaintsCount = 0;
+      try {
+        const { data: compData } = await supabase
+          .from('complaints')
+          .select('id')
+          .eq('property_id', activeProp.id)
+          .eq('status', 'open');
+
+        if (compData) {
+          openComplaintsCount = compData.length;
+        }
+      } catch (compErr) {
+        console.warn('[OwnerDashboard] Could not fetch complaints count:', compErr);
       }
 
       setStats({
@@ -208,8 +286,13 @@ export default function OwnerDashboard() {
         studentsInside: insideCount,
         studentsOutside: outsideCount,
         studentsUnknown: unknownCount,
+        totalCollectedPaise,
+        outstandingPaise,
+        overduePaise,
+        pendingReportsCount,
         pendingBillsCount,
         pendingBillsAmount,
+        openComplaintsCount,
       });
 
       // 5. Build recent gate activity feed from the latest 5 logs
@@ -246,16 +329,49 @@ export default function OwnerDashboard() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[OwnerDashboard] Error loading data:', err);
-      setErrorMessage(`Failed to load dashboard: ${msg}`);
+      if (
+        typeof err === 'object' &&
+        err !== null &&
+        'code' in err &&
+        (err as { code: string }).code === '42501'
+      ) {
+        setErrorMessage(
+          'Session expired or unauthorized. Please log out and sign in again.'
+        );
+      } else {
+        setErrorMessage(`Failed to load dashboard: ${msg}`);
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [user?.id, profile?.role]);
 
   useEffect(() => {
-    loadDashboardData();
-  }, [loadDashboardData]);
+    // Wait until auth initialization completes
+    if (authLoading) return;
+
+    // Handle signed-out state: active redirect to login
+    if (!session || !user?.id) {
+      router.replace('/login');
+      return;
+    }
+
+    // Handle student role: active redirect to student portal
+    if (profile && profile.role !== 'owner') {
+      if (profile.role === 'student') {
+        router.replace('/student-dashboard');
+      } else {
+        router.replace('/login');
+      }
+      return;
+    }
+
+    // Owner verified: load dashboard data
+    if (profile?.role === 'owner') {
+      loadDashboardData();
+    }
+  }, [authLoading, session, user?.id, profile?.role, loadDashboardData]);
 
   // Pull-to-refresh handler
   const handleRefresh = () => {
@@ -272,6 +388,7 @@ export default function OwnerDashboard() {
         style: 'destructive',
         onPress: async () => {
           await signOut();
+          router.replace('/login');
         },
       },
     ]);
@@ -286,6 +403,69 @@ export default function OwnerDashboard() {
     );
   };
 
+  // 1. Initial auth loading state (restoring session from storage)
+  if (authLoading) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.authLoadingContainer}>
+          <ActivityIndicator size="large" color="#0284C7" />
+          <Text style={styles.authNoticeText}>Initializing session...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // 2. Signed-out state: prevents getting stuck on loading screen
+  if (!session || !user) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.authLoadingContainer}>
+          <ActivityIndicator size="large" color="#0284C7" />
+          <Text style={styles.authNoticeText}>Redirecting to login...</Text>
+          <Pressable
+            style={styles.authActionButton}
+            onPress={() => router.replace('/login')}>
+            <Text style={styles.authActionButtonText}>Go to Login</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // 3. User authenticated but profile missing or failed to fetch
+  if (!profile) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.authLoadingContainer}>
+          <Text style={styles.authErrorTitle}>Profile Not Found</Text>
+          <Text style={styles.authNoticeText}>
+            Could not load user profile. Please sign in again.
+          </Text>
+          <Pressable
+            style={styles.authActionButton}
+            onPress={async () => {
+              await signOut();
+              router.replace('/login');
+            }}>
+            <Text style={styles.authActionButtonText}>Sign Out & Retry</Text>
+          </Pressable>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  // 4. Non-owner account accessing owner dashboard
+  if (profile.role !== 'owner') {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.authLoadingContainer}>
+          <ActivityIndicator size="large" color="#0284C7" />
+          <Text style={styles.authNoticeText}>Redirecting to student portal...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
@@ -298,7 +478,7 @@ export default function OwnerDashboard() {
             colors={['#0284C7']}
           />
         }>
-        
+
         {/* Header Section */}
         <View style={styles.header}>
           <View>
@@ -344,15 +524,15 @@ export default function OwnerDashboard() {
           </View>
         )}
 
-        {/* Section: Overview / Summary */}
+        {/* Section: Gate Status */}
         <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Today's Overview</Text>
+          <Text style={styles.sectionTitle}>Gate & Resident Status</Text>
           <Text style={styles.sectionMeta}>
             Total {stats.totalResidents} Active Resident{stats.totalResidents === 1 ? '' : 's'}
           </Text>
         </View>
 
-        {/* Live Summary Cards */}
+        {/* Gate Summary Cards */}
         {loading ? (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="small" color="#0284C7" />
@@ -372,17 +552,72 @@ export default function OwnerDashboard() {
               sublabel="Checked out"
               accentColor="#EA580C" // Orange
             />
+          </View>
+        )}
+
+        {/* Section: Financial & Billing Overview */}
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionTitle}>Financial & Billing</Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => router.push('/billing-management')}>
+            <Text style={styles.linkText}>Manage Bills ›</Text>
+          </Pressable>
+        </View>
+
+        {/* Pending Reports Notification Banner */}
+        {stats.pendingReportsCount > 0 && (
+          <Pressable
+            style={styles.pendingReportsBanner}
+            onPress={() => router.push('/billing-management')}>
+            <View style={styles.pendingReportsLeft}>
+              <Text style={styles.pendingReportsIcon}>🔔</Text>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pendingReportsTitle}>
+                  {stats.pendingReportsCount} Payment Report{stats.pendingReportsCount > 1 ? 's' : ''} Pending
+                </Text>
+                <Text style={styles.pendingReportsSub}>
+                  Student payments awaiting verification & approval
+                </Text>
+              </View>
+            </View>
+            <View style={styles.reviewBadge}>
+              <Text style={styles.reviewBadgeText}>Review</Text>
+            </View>
+          </Pressable>
+        )}
+
+        {/* Live Financial Cards */}
+        {loading ? (
+          <View style={styles.loadingBox}>
+            <ActivityIndicator size="small" color="#0284C7" />
+            <Text style={styles.loadingText}>Loading financial summary...</Text>
+          </View>
+        ) : (
+          <View style={styles.gridContainer}>
             <SummaryCard
-              label="Pending Bills"
-              value={stats.pendingBillsAmount > 0 ? `₹${(stats.pendingBillsAmount / 100).toLocaleString('en-IN')}` : '₹0'}
-              sublabel={stats.pendingBillsCount > 0 ? `${stats.pendingBillsCount} dues pending` : 'All settled'}
+              label="Total Collected"
+              value={`₹${(stats.totalCollectedPaise / 100).toLocaleString('en-IN')}`}
+              sublabel="Approved payments"
+              accentColor="#16A34A"
+            />
+            <SummaryCard
+              label="Outstanding"
+              value={`₹${(stats.outstandingPaise / 100).toLocaleString('en-IN')}`}
+              sublabel={`${stats.pendingBillsCount} pending charge${stats.pendingBillsCount === 1 ? '' : 's'}`}
               accentColor="#0284C7"
             />
             <SummaryCard
-              label="Open Issues"
-              value="—"
-              sublabel="Coming soon"
-              accentColor="#94A3B8" // Slate gray placeholder
+              label="Overdue Balance"
+              value={`₹${(stats.overduePaise / 100).toLocaleString('en-IN')}`}
+              sublabel={stats.overduePaise > 0 ? 'Past due date' : 'All up to date'}
+              accentColor={stats.overduePaise > 0 ? '#DC2626' : '#64748B'}
+            />
+            <SummaryCard
+              label="Pending Reports"
+              value={stats.pendingReportsCount}
+              sublabel={stats.pendingReportsCount > 0 ? 'Action required' : 'No pending reports'}
+              accentColor={stats.pendingReportsCount > 0 ? '#D97706' : '#16A34A'}
             />
           </View>
         )}
@@ -416,15 +651,13 @@ export default function OwnerDashboard() {
           />
           <ActionButton
             iconText="🔧"
-            title="Maintenance"
-            subtitle="Maintenance requests (Coming soon)"
-            onPress={() => handleQuickAction('Maintenance')}
-          />
-          <ActionButton
-            iconText="⚠️"
-            title="Complaints & Issues"
-            subtitle="Resident complaints (Coming soon)"
-            onPress={() => handleQuickAction('Issues')}
+            title="Maintenance & Issues"
+            subtitle={
+              stats.openComplaintsCount > 0
+                ? `${stats.openComplaintsCount} open complaint${stats.openComplaintsCount === 1 ? '' : 's'} to resolve`
+                : 'View & manage resident maintenance requests'
+            }
+            onPress={() => router.push('/owner-complaints')}
           />
         </View>
 
@@ -671,6 +904,48 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#64748B',
   },
+  pendingReportsBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 16,
+  },
+  pendingReportsLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: 10,
+  },
+  pendingReportsIcon: {
+    fontSize: 22,
+  },
+  pendingReportsTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#92400E',
+  },
+  pendingReportsSub: {
+    fontSize: 12,
+    color: '#B45309',
+    marginTop: 2,
+  },
+  reviewBadge: {
+    backgroundColor: '#D97706',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    marginLeft: 8,
+  },
+  reviewBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
   gridContainer: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -816,5 +1091,36 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '600',
     color: '#334155',
+  },
+  authLoadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  authNoticeText: {
+    fontSize: 14,
+    color: '#64748B',
+    marginTop: 12,
+    textAlign: 'center',
+  },
+  authErrorTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  authActionButton: {
+    backgroundColor: '#0284C7',
+    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    marginTop: 16,
+  },
+  authActionButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });

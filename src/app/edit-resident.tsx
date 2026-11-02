@@ -62,8 +62,10 @@ export default function EditResidentScreen() {
 
   // 1. Fetch the resident details from Supabase
   const loadResident = useCallback(async () => {
-    if (!id) {
-      setErrorMessage('No resident ID provided.');
+    if (!id || !user?.id) {
+      if (!id) {
+        setErrorMessage('No resident ID provided.');
+      }
       setLoading(false);
       return;
     }
@@ -127,8 +129,10 @@ export default function EditResidentScreen() {
   }, [id]);
 
   useEffect(() => {
-    loadResident();
-  }, [loadResident]);
+    if (id && user?.id) {
+      loadResident();
+    }
+  }, [id, user?.id, loadResident]);
 
   // 2. Handle Edit / Update Resident (full_name, room_number, phone_number)
   // Strictly preserves property_id, profile_id, and is_active untouched.

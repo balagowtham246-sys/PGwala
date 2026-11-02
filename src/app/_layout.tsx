@@ -30,11 +30,16 @@ function RootNavigationLayout() {
     }
 
     if (isOwner) {
-      // Owner should not be on /login, /student-dashboard, or /student-billing
+      // Owner should not be on /login or student-specific screens
+      const studentRoutes = [
+        'student-dashboard',
+        'student-billing',
+        'student-complaints',
+        'student-gate-history',
+      ];
       if (
         inAuthGroup ||
-        currentSegment === 'student-dashboard' ||
-        currentSegment === 'student-billing'
+        (currentSegment && studentRoutes.includes(currentSegment))
       ) {
         router.replace('/(tabs)');
       }
@@ -48,6 +53,7 @@ function RootNavigationLayout() {
         'food-menu',
         'billing-management',
         'eb-billing',
+        'owner-complaints',
       ];
       if (
         inAuthGroup ||
@@ -85,6 +91,9 @@ function RootNavigationLayout() {
       <Stack.Screen name="eb-billing" />
       <Stack.Screen name="student-billing" />
       <Stack.Screen name="receipt-detail" />
+      <Stack.Screen name="owner-complaints" />
+      <Stack.Screen name="student-complaints" />
+      <Stack.Screen name="student-gate-history" />
     </Stack>
   );
 }
