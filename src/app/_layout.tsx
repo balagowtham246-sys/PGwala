@@ -36,6 +36,7 @@ function RootNavigationLayout() {
         'student-billing',
         'student-complaints',
         'student-gate-history',
+        'student-settings',
       ];
       if (
         inAuthGroup ||
@@ -54,6 +55,7 @@ function RootNavigationLayout() {
         'billing-management',
         'eb-billing',
         'owner-complaints',
+        'owner-settings',
       ];
       if (
         inAuthGroup ||
@@ -94,6 +96,8 @@ function RootNavigationLayout() {
       <Stack.Screen name="owner-complaints" />
       <Stack.Screen name="student-complaints" />
       <Stack.Screen name="student-gate-history" />
+      <Stack.Screen name="student-settings" />
+      <Stack.Screen name="owner-settings" />
     </Stack>
   );
 }

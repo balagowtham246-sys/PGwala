@@ -91,6 +91,21 @@ async function runPgIntegrationTests() {
     GRANT SELECT ON TABLE public.properties TO authenticated;
     GRANT SELECT ON TABLE public.residents TO authenticated;
 
+    -- Mock storage tables (pre-managed in live Supabase)
+    CREATE SCHEMA IF NOT EXISTS storage;
+    CREATE TABLE IF NOT EXISTS storage.buckets (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        public BOOLEAN DEFAULT false
+    );
+    CREATE TABLE IF NOT EXISTS storage.objects (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        bucket_id TEXT REFERENCES storage.buckets(id),
+        name TEXT,
+        owner UUID,
+        created_at TIMESTAMPTZ DEFAULT now()
+    );
+
     -- Helpers
     CREATE OR REPLACE FUNCTION public.set_updated_at()
     RETURNS TRIGGER
@@ -243,6 +258,18 @@ async function runPgIntegrationTests() {
   const complaintsMigrationPath = path.resolve(__dirname, '../supabase/complaints_migration.sql');
   const complaintsMigrationSql = fs.readFileSync(complaintsMigrationPath, 'utf8');
 
+  const wmStatusMigrationPath = path.resolve(__dirname, '../supabase/washing_machine_status_migration.sql');
+  const wmStatusMigrationSql = fs.readFileSync(wmStatusMigrationPath, 'utf8');
+
+  const onboardingMigrationPath = path.resolve(__dirname, '../supabase/unified_resident_onboarding_migration.sql');
+  const onboardingMigrationSql = fs.readFileSync(onboardingMigrationPath, 'utf8');
+
+  const movementMigrationPath = path.resolve(__dirname, '../supabase/student_movement_attendance_migration.sql');
+  const movementMigrationSql = fs.readFileSync(movementMigrationPath, 'utf8');
+
+  const simplifiedBillingPath = path.resolve(__dirname, '../supabase/simplified_monthly_billing_migration.sql');
+  const simplifiedBillingSql = fs.readFileSync(simplifiedBillingPath, 'utf8');
+
   try {
     await db.exec(migrationSql);
     console.log('  ✓ billing_and_payments_migration.sql executed successfully.');
@@ -255,6 +282,18 @@ async function runPgIntegrationTests() {
 
     await db.exec(complaintsMigrationSql);
     console.log('  ✓ complaints_migration.sql executed successfully.');
+
+    await db.exec(wmStatusMigrationSql);
+    console.log('  ✓ washing_machine_status_migration.sql executed successfully.');
+
+    await db.exec(onboardingMigrationSql);
+    console.log('  ✓ unified_resident_onboarding_migration.sql executed successfully.');
+
+    await db.exec(movementMigrationSql);
+    console.log('  ✓ student_movement_attendance_migration.sql executed successfully.');
+
+    await db.exec(simplifiedBillingSql);
+    console.log('  ✓ simplified_monthly_billing_migration.sql executed successfully.');
   } catch (err) {
     console.error('  ✗ Migration failed:', err);
     throw err;
@@ -995,8 +1034,497 @@ async function runPgIntegrationTests() {
   console.log('  ✓ Anonymous caller completely denied access to complaints.');
   await asUser(null);
 
+  // ==========================================================================
+  // [Test J] Real-time Washing Machine Availability & Atomic State Invariants
+  // ==========================================================================
+  console.log('\n[Test J] Real-time Washing Machine Availability & Atomic State Invariants:');
+
+  // J.1 Initialization: Property machine defaults to 'free' with NULL occupant
+  await asUser(owner1Id, 'authenticated');
+  const initRes = await db.query(`SELECT public.get_or_create_wm_status('${prop1Id}') AS res;`);
+  assert.strictEqual(initRes.rows[0].res.success, true);
+  assert.strictEqual(initRes.rows[0].res.status, 'free');
+  assert.strictEqual(initRes.rows[0].res.current_resident_id, null);
+  console.log('  ✓ Machine initialized to "free" status with NULL occupant.');
+
+  // J.2 Owner read-only enforcement: Owner cannot call start_washing_machine
+  const ownerStartRes = await db.query(`SELECT public.start_washing_machine('${prop1Id}') AS res;`);
+  assert.strictEqual(ownerStartRes.rows[0].res.success, false);
+  assert(ownerStartRes.rows[0].res.error.includes('Only active residents'));
+  console.log('  ✓ Owner read-only confirmed: Owner cannot start washing machine session.');
+
+  // J.3 Authorized Resident Alice starts using the free machine
+  await asUser(student1Auth, 'authenticated');
+  const aliceStartRes = await db.query(`SELECT public.start_washing_machine('${prop1Id}') AS res;`);
+  assert.strictEqual(aliceStartRes.rows[0].res.success, true);
+  assert.strictEqual(aliceStartRes.rows[0].res.status, 'in_use');
+  assert.strictEqual(aliceStartRes.rows[0].res.current_resident_id, res1Id);
+  assert.strictEqual(aliceStartRes.rows[0].res.current_resident_name, 'Alice Smith');
+  console.log('  ✓ Resident Alice started washing machine session. State is now "in_use".');
+
+  // J.4 Database Check Invariant: status = 'in_use' requires current_resident_id and started_at
+  const dbCheckInUse = await db.query(`SELECT * FROM public.washing_machine_status WHERE property_id = '${prop1Id}';`);
+  assert.strictEqual(dbCheckInUse.rows[0].status, 'in_use');
+  assert.strictEqual(dbCheckInUse.rows[0].current_resident_id, res1Id);
+  assert.ok(dbCheckInUse.rows[0].started_at !== null);
+  console.log('  ✓ Database invariant verified: status "in_use" holds non-null resident ID and started_at.');
+
+  // J.5 Concurrency / Duplicate protection: Second resident Bob attempts to start occupied machine
+  await asUser(student2Auth, 'authenticated');
+  const bobStartAttempt = await db.query(`SELECT public.start_washing_machine('${prop1Id}') AS res;`);
+  assert.strictEqual(bobStartAttempt.rows[0].res.success, false);
+  assert(bobStartAttempt.rows[0].res.error.includes('currently in use'));
+  console.log('  ✓ Concurrency protection: Second resident rejected from starting occupied machine.');
+
+  // J.6 Tamper protection: Second resident Bob attempts to release Alice session
+  const bobReleaseAttempt = await db.query(`SELECT public.release_washing_machine('${prop1Id}') AS res;`);
+  assert.strictEqual(bobReleaseAttempt.rows[0].res.success, false);
+  assert(bobReleaseAttempt.rows[0].res.error.includes('Only the resident who started this wash session'));
+  console.log('  ✓ Session security: Unauthorized resident blocked from releasing someone else session.');
+
+  // J.7 Cross-property isolation: Resident from Prop 1 cannot access Prop 2 machine
+  const crossPropAttempt = await db.query(`SELECT public.get_or_create_wm_status('${prop2Id}') AS res;`);
+  assert.strictEqual(crossPropAttempt.rows[0].res.success, false);
+  assert(crossPropAttempt.rows[0].res.error.includes('Unauthorized'));
+  console.log('  ✓ Multi-tenant isolation: Resident cannot inspect or mutate another property machine.');
+
+  // J.8 Direct table writes & TRUNCATE blocked by least-privilege
+  let directWmUpdateBlocked = false;
+  try {
+    await db.query(`UPDATE public.washing_machine_status SET status = 'free' WHERE property_id = '${prop1Id}';`);
+  } catch (err) {
+    directWmUpdateBlocked = true;
+  }
+  assert.strictEqual(directWmUpdateBlocked, true, 'Direct UPDATE on washing_machine_status must be blocked');
+  console.log('  ✓ Least-privilege verified: Direct table mutations on washing_machine_status blocked.');
+
+  // J.9 Session Owner Alice marks machine free
+  await asUser(student1Auth, 'authenticated');
+  const aliceReleaseRes = await db.query(`SELECT public.release_washing_machine('${prop1Id}') AS res;`);
+  assert.strictEqual(aliceReleaseRes.rows[0].res.success, true);
+  assert.strictEqual(aliceReleaseRes.rows[0].res.status, 'free');
+  console.log('  ✓ Resident Alice marked machine free.');
+
+  // J.10 Database Check Invariant: status = 'free' clears resident and started_at
+  const dbCheckFree = await db.query(`SELECT * FROM public.washing_machine_status WHERE property_id = '${prop1Id}';`);
+  assert.strictEqual(dbCheckFree.rows[0].status, 'free');
+  assert.strictEqual(dbCheckFree.rows[0].current_resident_id, null);
+  assert.strictEqual(dbCheckFree.rows[0].started_at, null);
+  console.log('  ✓ Database invariant verified: status "free" clears resident ID and started_at.');
+
+  // J.11 Unauthenticated (anon) caller completely denied
+  await asUser(null, 'anon');
+  let anonWmDenied = false;
+  try {
+    await db.query(`SELECT * FROM public.washing_machine_status;`);
+  } catch (err) {
+    anonWmDenied = true;
+  }
+  assert.strictEqual(anonWmDenied, true, 'Anon cannot query washing_machine_status table');
+  console.log('  ✓ Anonymous caller completely denied access to washing machine status.');
+  await asUser(null);
+
+  // ==========================================================================
+  // [Test K] Unified Resident & Auth Onboarding Invariants
+  // ==========================================================================
+  console.log('\n[Test K] Unified Resident & Auth Onboarding Invariants:');
+
+  const newStudentAuthId = '55555555-5555-5555-5555-555555555555';
+  await db.exec(`INSERT INTO auth.users (id, email) VALUES ('${newStudentAuthId}', 'rahul@student.test');`);
+
+  // K.1 Owner 1 creates resident linked to new student auth account
+  await asUser(owner1Id, 'authenticated');
+  const createRes = await db.query(`
+    SELECT public.create_or_link_resident_with_auth(
+      '${prop1Id}',
+      '${newStudentAuthId}',
+      'Rahul Sharma',
+      '103',
+      '9876543210',
+      true
+    ) AS res;
+  `);
+  assert.strictEqual(createRes.rows[0].res.success, true);
+  assert.strictEqual(createRes.rows[0].res.is_existing, false);
+  const newResidentId = createRes.rows[0].res.resident_id;
+  console.log('  ✓ Owner 1 created resident profile and linked auth user atomically.');
+
+  // K.2 Verify database records
+  const profileCheck = await db.query(`SELECT role, must_change_password FROM public.profiles WHERE id = '${newStudentAuthId}';`);
+  assert.strictEqual(profileCheck.rows[0].role, 'student');
+  assert.strictEqual(profileCheck.rows[0].must_change_password, true);
+
+  const residentCheck = await db.query(`SELECT property_id, room_number, profile_id FROM public.residents WHERE id = '${newResidentId}';`);
+  assert.strictEqual(residentCheck.rows[0].property_id, prop1Id);
+  assert.strictEqual(residentCheck.rows[0].room_number, '103');
+  assert.strictEqual(residentCheck.rows[0].profile_id, newStudentAuthId);
+  console.log('  ✓ Verified: profile role=student, must_change_password=true, resident room=103.');
+
+  // K.3 Cross-property owner isolation: Owner 2 cannot link resident to Owner 1 property
+  await asUser(owner2Id, 'authenticated');
+  const crossOwnerAttempt = await db.query(`
+    SELECT public.create_or_link_resident_with_auth(
+      '${prop1Id}',
+      '${newStudentAuthId}',
+      'Rahul Hacker',
+      '999'
+    ) AS res;
+  `);
+  assert.strictEqual(crossOwnerAttempt.rows[0].res.success, false);
+  assert(crossOwnerAttempt.rows[0].res.error.includes('Unauthorized'));
+  console.log('  ✓ Cross-property isolation: Owner 2 cannot create/modify resident on Owner 1 property.');
+
+  // K.4 Student privilege boundary: Student cannot invoke create_or_link_resident_with_auth
+  await asUser(student1Auth, 'authenticated');
+  const studentAttempt = await db.query(`
+    SELECT public.create_or_link_resident_with_auth(
+      '${prop1Id}',
+      '${newStudentAuthId}',
+      'Student Hack',
+      '101'
+    ) AS res;
+  `);
+  assert.strictEqual(studentAttempt.rows[0].res.success, false);
+  assert(studentAttempt.rows[0].res.error.includes('Unauthorized'));
+  console.log('  ✓ Role privilege enforced: Student cannot call create_or_link_resident_with_auth.');
+
+  // K.5 Owner account protection: Cannot convert an existing owner profile into a resident
+  await asUser(owner1Id, 'authenticated');
+  const ownerConvertAttempt = await db.query(`
+    SELECT public.create_or_link_resident_with_auth(
+      '${prop1Id}',
+      '${owner2Id}',
+      'Owner Two As Student',
+      '105'
+    ) AS res;
+  `);
+  assert.strictEqual(ownerConvertAttempt.rows[0].res.success, false);
+  assert(ownerConvertAttempt.rows[0].res.error.includes('owner account'));
+  console.log('  ✓ Role integrity enforced: Existing owner profile cannot be converted into a resident.');
+
+  // K.6 Password change must_change_password update grant verification
+  await asUser(newStudentAuthId, 'authenticated');
+  await db.query(`
+    UPDATE public.profiles
+    SET must_change_password = false
+    WHERE id = '${newStudentAuthId}';
+  `);
+  const updatedProf = await db.query(`SELECT must_change_password FROM public.profiles WHERE id = '${newStudentAuthId}';`);
+  assert.strictEqual(updatedProf.rows[0].must_change_password, false);
+  console.log('  ✓ Student successfully cleared must_change_password after password change.');
+  await asUser(null);
+
+  // ==========================================================================
+  // [Test L] Student-Driven Gate Movement & View-Only Attendance Invariants
+  // ==========================================================================
+  console.log('\n[Test L] Student-Driven Gate Movement & Attendance Invariants:');
+
+  // L.1 Student Alice records OUT with purpose, return time, and dinner required
+  await asUser(student1Auth, 'authenticated');
+  const aliceOutRes = await db.query(`
+    SELECT public.record_student_movement(
+      'OUT'::public.movement_direction,
+      'College',
+      '5:30 PM',
+      true,
+      'Attending lab sessions'
+    ) AS res;
+  `);
+  assert.strictEqual(aliceOutRes.rows[0].res.success, true);
+  assert.strictEqual(aliceOutRes.rows[0].res.direction, 'OUT');
+  assert.strictEqual(aliceOutRes.rows[0].res.purpose, 'College');
+  assert.strictEqual(aliceOutRes.rows[0].res.expected_return_time, '5:30 PM');
+  assert.strictEqual(aliceOutRes.rows[0].res.food_required, true);
+  console.log('  ✓ Student Alice marked OUT with purpose "College", return "5:30 PM", food_required=true.');
+
+  // L.2 Student Bob records OUT with food NOT required (dining outside)
+  await asUser(student2Auth, 'authenticated');
+  const bobOutRes = await db.query(`
+    SELECT public.record_student_movement(
+      'OUT'::public.movement_direction,
+      'Home Visit',
+      'Tomorrow 10:00 AM',
+      false,
+      'Visiting family for the weekend'
+    ) AS res;
+  `);
+  assert.strictEqual(bobOutRes.rows[0].res.success, true);
+  assert.strictEqual(bobOutRes.rows[0].res.direction, 'OUT');
+  assert.strictEqual(bobOutRes.rows[0].res.food_required, false);
+  console.log('  ✓ Student Bob marked OUT with food_required=false ("No dinner needed").');
+
+  // L.3 Owner 1 queries live movement logs and attendance status
+  await asUser(owner1Id, 'authenticated');
+  const ownerLogs = await db.query(`
+    SELECT ml.direction, ml.purpose, ml.expected_return_time, ml.food_required, r.full_name
+    FROM public.movement_logs ml
+    JOIN public.residents r ON r.id = ml.resident_id
+    WHERE r.property_id = '${prop1Id}'
+    ORDER BY ml.event_time DESC
+    LIMIT 2;
+  `);
+  assert.strictEqual(ownerLogs.rows.length, 2);
+  assert.strictEqual(ownerLogs.rows[0].full_name, 'Bob Jones');
+  assert.strictEqual(ownerLogs.rows[0].food_required, false);
+  assert.strictEqual(ownerLogs.rows[1].full_name, 'Alice Smith');
+  assert.strictEqual(ownerLogs.rows[1].food_required, true);
+
+  // Invariant: Inside residents ALWAYS want food; outside residents only count if food_required=true
+  // At this point: Alice is OUT (food=true), Bob is OUT (food=false), Charlie is IN (food=true), Rahul is IN (food=true).
+  // Total meals needed = 2 (Charlie + Rahul inside) + 1 (Alice outside with food) = 3.
+  const activeResidents = await db.query(`
+    SELECT r.id, r.full_name,
+      COALESCE((
+        SELECT ml.direction FROM public.movement_logs ml
+        WHERE ml.resident_id = r.id ORDER BY ml.event_time DESC LIMIT 1
+      ), 'IN') as status,
+      COALESCE((
+        SELECT ml.food_required FROM public.movement_logs ml
+        WHERE ml.resident_id = r.id ORDER BY ml.event_time DESC LIMIT 1
+      ), true) as food_required
+    FROM public.residents r
+    WHERE r.property_id = '${prop1Id}' AND r.is_active = true;
+  `);
+  const insideCount = activeResidents.rows.filter(r => r.status === 'IN').length;
+  const outsideMealsCount = activeResidents.rows.filter(r => r.status === 'OUT' && r.food_required).length;
+  const totalMealsNeeded = insideCount + outsideMealsCount;
+  assert.strictEqual(insideCount, 2, 'Charlie and Rahul are inside');
+  assert.strictEqual(outsideMealsCount, 1, 'Alice is the only outside resident needing food');
+  assert.strictEqual(totalMealsNeeded, 3, 'Total meals must be insideCount + outsideMealsCount');
+  console.log('  ✓ Owner 1 verified live attendance and food requirements (inside residents always counted in meals needed).');
+
+  // L.4 Student Alice returns and records IN (1-tap check-in)
+  await asUser(student1Auth, 'authenticated');
+  const aliceInRes = await db.query(`
+    SELECT public.record_student_movement('IN'::public.movement_direction) AS res;
+  `);
+  assert.strictEqual(aliceInRes.rows[0].res.success, true);
+  assert.strictEqual(aliceInRes.rows[0].res.direction, 'IN');
+  console.log('  ✓ Student Alice marked IN (1-tap check-in back at the PG).');
+
+  // L.5 Cross-tenant & unauthenticated isolation
+  await asUser(null, 'anon');
+  let anonMovementDenied = false;
+  try {
+    await db.query(`SELECT public.record_student_movement('IN'::public.movement_direction) AS res;`);
+  } catch (err) {
+    anonMovementDenied = true;
+  }
+  assert.strictEqual(anonMovementDenied, true, 'Anonymous caller must be denied from recording movement');
+  console.log('  ✓ Anonymous caller completely denied access to record_student_movement.');
+  await asUser(null);
+
+  // ==========================================================================
+  // [Test M] Simplified Month-Wise Billing & Payment Proof Invariants
+  // ==========================================================================
+  console.log('\n[Test M] Simplified Month-Wise Billing & Payment Proof Invariants:');
+
+  // Opt-in Alice to washing machine for test
+  await db.query(`
+    INSERT INTO public.resident_opt_ins (resident_id, feature_name, is_enabled, effective_from_date)
+    VALUES ('${res1Id}', 'washing_machine', true, CURRENT_DATE)
+    ON CONFLICT (resident_id, feature_name)
+    DO UPDATE SET is_enabled = true;
+  `);
+
+  // M.1 Owner 1 generates monthly bills for December 2026
+  await asUser(owner1Id, 'authenticated');
+  const genBillsRes = await db.query(`
+    SELECT public.generate_monthly_bills(
+      '${prop1Id}',
+      '2026-12-01'::DATE,
+      800000::BIGINT
+    ) AS res;
+  `);
+  assert.strictEqual(genBillsRes.rows[0].res.success, true);
+  assert(genBillsRes.rows[0].res.created_count >= 3);
+  console.log(`  ✓ Owner 1 generated December 2026 bills (${genBillsRes.rows[0].res.created_count} bills created).`);
+
+  // M.2 Verify rent + washing machine breakdown
+  const aliceBill = await db.query(`
+    SELECT id, amount_paise, rent_amount_paise, wm_amount_paise, status, description
+    FROM public.charges
+    WHERE resident_id = '${res1Id}' AND billing_period_start = '2026-12-01'::DATE;
+  `);
+  assert.strictEqual(aliceBill.rows.length, 1);
+  assert.strictEqual(Number(aliceBill.rows[0].rent_amount_paise), 800000); // ₹8,000
+  assert.strictEqual(Number(aliceBill.rows[0].wm_amount_paise), 50000); // ₹500
+  assert.strictEqual(Number(aliceBill.rows[0].amount_paise), 850000); // ₹8,500
+  assert.strictEqual(aliceBill.rows[0].status, 'outstanding');
+  const aliceChargeId = aliceBill.rows[0].id;
+  console.log('  ✓ Alice bill verified: ₹8,000 Rent + ₹500 Washing Machine = ₹8,500 Total.');
+
+  const bobBill = await db.query(`
+    SELECT id, amount_paise, rent_amount_paise, wm_amount_paise, status
+    FROM public.charges
+    WHERE resident_id = '${res2Id}' AND billing_period_start = '2026-12-01'::DATE;
+  `);
+  assert.strictEqual(bobBill.rows.length, 1);
+  assert.strictEqual(Number(bobBill.rows[0].wm_amount_paise), 0); // No washing machine
+  assert.strictEqual(Number(bobBill.rows[0].amount_paise), 800000); // ₹8,000
+  const bobChargeId = bobBill.rows[0].id;
+  console.log('  ✓ Bob bill verified: ₹8,000 Rent + ₹0 Washing Machine = ₹8,000 Total.');
+
+  // M.3 Idempotency: Running generate_monthly_bills again creates 0 new charges
+  const duplicateGen = await db.query(`
+    SELECT public.generate_monthly_bills(
+      '${prop1Id}',
+      '2026-12-01'::DATE,
+      800000::BIGINT
+    ) AS res;
+  `);
+  assert.strictEqual(duplicateGen.rows[0].res.created_count, 0, 'Duplicate bill generation must create 0 new charges');
+  console.log('  ✓ Idempotency verified: re-running bill generation skips already billed residents.');
+
+  // M.4 Student Alice submits payment proof (UPI with screenshot & ref)
+  await asUser(student1Auth, 'authenticated');
+  const submitProofRes = await db.query(`
+    SELECT public.submit_student_payment_proof(
+      '${aliceChargeId}',
+      'upi',
+      'https://supabase.co/storage/v1/object/public/payment-proofs/alice_nov_upi.png',
+      'UPI-DEC-ALICE-12345',
+      'Paid full ₹8500 via GPay'
+    ) AS res;
+  `);
+  assert.strictEqual(submitProofRes.rows[0].res.success, true);
+  const aliceProofReportId = submitProofRes.rows[0].res.report_id;
+  console.log('  ✓ Student Alice submitted UPI payment proof with screenshot URL and reference number.');
+
+  // M.5 Owner 1 reviews recent report and confirms payment
+  await asUser(owner1Id, 'authenticated');
+  const pendingReportQuery = await db.query(`
+    SELECT r.id, r.amount_paise, r.claimed_method, r.screenshot_url, r.reference_number, r.status
+    FROM public.student_payment_reports r
+    WHERE r.id = '${aliceProofReportId}';
+  `);
+  assert.strictEqual(pendingReportQuery.rows[0].status, 'pending');
+  assert.strictEqual(pendingReportQuery.rows[0].screenshot_url, 'https://supabase.co/storage/v1/object/public/payment-proofs/alice_nov_upi.png');
+
+  const confirmRes = await db.query(`
+    SELECT public.confirm_monthly_payment(
+      '${aliceChargeId}',
+      '${aliceProofReportId}',
+      'upi',
+      'Confirmed payment via UPI receipt'
+    ) AS res;
+  `);
+  assert.strictEqual(confirmRes.rows[0].res.success, true);
+  assert(confirmRes.rows[0].res.receipt_number.startsWith('RCT-'));
+
+  // Verify Alice charge is now settled and report approved
+  const aliceSettled = await db.query(`SELECT status FROM public.charges WHERE id = '${aliceChargeId}';`);
+  assert.strictEqual(aliceSettled.rows[0].status, 'settled');
+  const aliceReportApproved = await db.query(`SELECT status FROM public.student_payment_reports WHERE id = '${aliceProofReportId}';`);
+  assert.strictEqual(aliceReportApproved.rows[0].status, 'approved');
+  console.log('  ✓ Owner 1 confirmed payment: Charge marked settled, payment receipt generated, report approved.');
+
+  // M.6 Owner 1 marks Bob directly as Paid (Cash / In-person without student app submission)
+  const bobCashConfirm = await db.query(`
+    SELECT public.confirm_monthly_payment(
+      '${bobChargeId}',
+      NULL,
+      'cash',
+      'Received cash directly from student'
+    ) AS res;
+  `);
+  assert.strictEqual(bobCashConfirm.rows[0].res.success, true);
+  const bobSettled = await db.query(`SELECT status FROM public.charges WHERE id = '${bobChargeId}';`);
+  assert.strictEqual(bobSettled.rows[0].status, 'settled');
+  console.log('  ✓ Owner 1 directly marked Bob as Paid for in-person cash payment.');
+
+  // M.7 Cross-tenant isolation: Owner 2 cannot confirm Owner 1 charge
+  await asUser(owner2Id, 'authenticated');
+  const crossOwnerConfirm = await db.query(`
+    SELECT public.confirm_monthly_payment('${bobChargeId}') AS res;
+  `);
+  assert.strictEqual(crossOwnerConfirm.rows[0].res.success, false);
+  console.log('  ✓ Cross-tenant security: Owner 2 denied from confirming Owner 1 charges.');
+
+  // M.8 Owner 1 generates January 2027 bills with custom ₹9,000 rent (verifies p_default_rent_paise is respected)
+  await asUser(owner1Id, 'authenticated');
+  const customRentGenRes = await db.query(`
+    SELECT public.generate_monthly_bills(
+      '${prop1Id}',
+      '2027-01-01'::DATE,
+      900000::BIGINT
+    ) AS res;
+  `);
+  assert.strictEqual(customRentGenRes.rows[0].res.success, true);
+  assert(customRentGenRes.rows[0].res.created_count >= 3);
+
+  const bobJanBill = await db.query(`
+    SELECT amount_paise, rent_amount_paise, wm_amount_paise, status
+    FROM public.charges
+    WHERE resident_id = '${res2Id}' AND billing_period_start = '2027-01-01'::DATE;
+  `);
+  assert.strictEqual(Number(bobJanBill.rows[0].rent_amount_paise), 900000, 'Custom ₹9,000 rent must be applied');
+  assert.strictEqual(Number(bobJanBill.rows[0].amount_paise), 900000);
+  console.log('  ✓ Custom rent amount input verified: bills generated at ₹9,000.');
+
+  // M.9 Re-running generate_monthly_bills with new rent updates existing unpaid bills (does not get stuck)
+  const updateBillsGenRes = await db.query(`
+    SELECT public.generate_monthly_bills(
+      '${prop1Id}',
+      '2027-01-01'::DATE,
+      950000::BIGINT
+    ) AS res;
+  `);
+  assert.strictEqual(updateBillsGenRes.rows[0].res.success, true);
+  assert(updateBillsGenRes.rows[0].res.updated_count >= 3);
+
+  const bobJanUpdatedBill = await db.query(`
+    SELECT amount_paise, rent_amount_paise
+    FROM public.charges
+    WHERE resident_id = '${res2Id}' AND billing_period_start = '2027-01-01'::DATE;
+  `);
+  assert.strictEqual(Number(bobJanUpdatedBill.rows[0].rent_amount_paise), 950000, 'Unpaid bills must update to ₹9,500');
+  console.log('  ✓ Re-running with updated rent amount updates existing unpaid bills to ₹9,500.');
+
+  // M.10 Atomic RPC update_resident_rent updates resident profile and current unpaid charge
+  const updateRentRes = await db.query(`
+    SELECT public.update_resident_rent(
+      '${prop1Id}',
+      '${res2Id}',
+      1000000::BIGINT,
+      '2027-01-01'::DATE
+    ) AS res;
+  `);
+  assert.strictEqual(updateRentRes.rows[0].res.success, true);
+
+  const bobJanEditedBill = await db.query(`
+    SELECT amount_paise, rent_amount_paise
+    FROM public.charges
+    WHERE resident_id = '${res2Id}' AND billing_period_start = '2027-01-01'::DATE;
+  `);
+  assert.strictEqual(Number(bobJanEditedBill.rows[0].rent_amount_paise), 1000000);
+  assert.strictEqual(Number(bobJanEditedBill.rows[0].amount_paise), 1000000);
+  console.log('  ✓ update_resident_rent atomically updated resident rent and current unpaid bill to ₹10,000.');
+
+  // M.11 Atomic RPC toggle_resident_wm_billing updates washing machine opt-in and unpaid bill breakdown
+  const toggleWmRes = await db.query(`
+    SELECT public.toggle_resident_wm_billing(
+      '${prop1Id}',
+      '${res2Id}',
+      true,
+      '2027-01-01'::DATE
+    ) AS res;
+  `);
+  assert.strictEqual(toggleWmRes.rows[0].res.success, true);
+
+  const bobJanWmBill = await db.query(`
+    SELECT amount_paise, rent_amount_paise, wm_amount_paise
+    FROM public.charges
+    WHERE resident_id = '${res2Id}' AND billing_period_start = '2027-01-01'::DATE;
+  `);
+  assert.strictEqual(Number(bobJanWmBill.rows[0].rent_amount_paise), 1000000);
+  assert.strictEqual(Number(bobJanWmBill.rows[0].wm_amount_paise), 50000);
+  assert.strictEqual(Number(bobJanWmBill.rows[0].amount_paise), 1050000);
+  console.log('  ✓ toggle_resident_wm_billing atomically updated washing machine opt-in and bill total to ₹10,500.');
+  await asUser(null);
+
   console.log('\n===============================================================');
-  console.log('   ALL POSTGRESQL DATABASE INTEGRATION TESTS PASSED (9/9)      ');
+  console.log('   ALL POSTGRESQL DATABASE INTEGRATION TESTS PASSED (13/13)     ');
   console.log('===============================================================');
 }
 

@@ -32,6 +32,9 @@ interface MovementLog {
   direction: 'IN' | 'OUT';
   event_time: string;
   note: string | null;
+  purpose?: string | null;
+  expected_return_time?: string | null;
+  food_required?: boolean;
   recorded_by: string;
 }
 
@@ -366,6 +369,21 @@ export default function StudentGateHistoryScreen() {
 
                         <View style={styles.logDetails}>
                           <Text style={styles.logTime}>{formatEventTime(log.event_time)}</Text>
+                          {log.purpose && (
+                            <View style={styles.purposeTagRow}>
+                              <Text style={styles.purposeBadge}>{log.purpose}</Text>
+                              {log.expected_return_time && (
+                                <Text style={styles.returnBadge}>
+                                  Return: {log.expected_return_time}
+                                </Text>
+                              )}
+                            </View>
+                          )}
+                          {!isIn && typeof log.food_required === 'boolean' && (
+                            <Text style={[styles.foodBadge, log.food_required ? styles.foodNeeded : styles.foodNotNeeded]}>
+                              {log.food_required ? '🍽️ Dinner Required' : '❌ No Dinner Needed'}
+                            </Text>
+                          )}
                           {log.note && (
                             <Text style={styles.logNote}>Note: {log.note}</Text>
                           )}
@@ -668,6 +686,50 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748B',
     marginTop: 2,
+  },
+  purposeTagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 4,
+    flexWrap: 'wrap',
+  },
+  purposeBadge: {
+    backgroundColor: '#EFF6FF',
+    color: '#1D4ED8',
+    fontSize: 11,
+    fontWeight: '700',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+  },
+  returnBadge: {
+    backgroundColor: '#F8FAFC',
+    color: '#475569',
+    fontSize: 11,
+    fontWeight: '600',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  foodBadge: {
+    fontSize: 11,
+    fontWeight: '700',
+    marginTop: 4,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  foodNeeded: {
+    backgroundColor: '#DCFCE7',
+    color: '#15803D',
+  },
+  foodNotNeeded: {
+    backgroundColor: '#FEF3C7',
+    color: '#92400E',
   },
 });
 

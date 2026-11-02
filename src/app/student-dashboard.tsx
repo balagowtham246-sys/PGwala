@@ -2,12 +2,16 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,6 +20,7 @@ import { router } from 'expo-router';
 import { BottomTabInset } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
+import { WashingMachineCard } from '@/components/washing-machine-card';
 
 interface StudentResidentInfo {
   id: string;
@@ -41,6 +46,25 @@ export interface StudentFoodMenu {
   notes: string | null;
   is_published: boolean;
 }
+
+export interface StudentMovementRecord {
+  id: string;
+  direction: 'IN' | 'OUT';
+  event_time: string;
+  purpose: string | null;
+  expected_return_time: string | null;
+  food_required: boolean;
+  note: string | null;
+}
+
+const PURPOSE_OPTIONS = ['College', 'Work', 'Home Visit', 'Outing', 'Other'];
+const RETURN_TIME_OPTIONS = [
+  'Evening (~8:00 PM)',
+  'Night (~10:00 PM)',
+  'Late Night (~11:30 PM)',
+  'Tomorrow Morning',
+  'Custom',
+];
 
 const MEAL_CONFIG: Record<MealType, { title: string; icon: string; timeHint: string }> = {
   breakfast: {
@@ -77,6 +101,19 @@ function getTodayIsoDate(): string {
   return `${y}-${m}-${day}`;
 }
 
+function formatMovementTime(isoString: string): string {
+  try {
+    const d = new Date(isoString);
+    return d.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    });
+  } catch {
+    return isoString;
+  }
+}
+
 export default function StudentDashboardScreen() {
   const { user, profile, signOut } = useAuth();
 
@@ -102,6 +139,16 @@ export default function StudentDashboardScreen() {
     } | null;
   } | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Gate Movement / Attendance State
+  const [latestMovement, setLatestMovement] = useState<StudentMovementRecord | null>(null);
+  const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
+  const [leavingPurpose, setLeavingPurpose] = useState('College');
+  const [customPurpose, setCustomPurpose] = useState('');
+  const [returnTime, setReturnTime] = useState('Evening (~8:00 PM)');
+  const [customReturnTime, setCustomReturnTime] = useState('');
+  const [foodRequired, setFoodRequired] = useState(true);
+  const [savingMovement, setSavingMovement] = useState(false);
 
   /**
    * 1. Load authenticated student's resident record from Supabase.
@@ -249,6 +296,21 @@ export default function StudentDashboardScreen() {
         setPendingDuesPaise(null);
         setBillingSummary(null);
       }
+
+      // 4. Fetch latest gate movement status
+      try {
+        const { data: movementData } = await supabase
+          .from('movement_logs')
+          .select('id, direction, event_time, purpose, expected_return_time, food_required, note')
+          .eq('resident_id', residentInfo.id)
+          .order('event_time', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        setLatestMovement((movementData as StudentMovementRecord) || null);
+      } catch (movErr) {
+        console.warn('[StudentDashboard] Error fetching movement log:', movErr);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[StudentDashboard] Error loading student data:', err);
@@ -268,7 +330,72 @@ export default function StudentDashboardScreen() {
     loadStudentData();
   };
 
-  const handleSignOut = () => {
+  // 1-tap Check-In when back at PG
+  const handleMarkBackIn = async () => {
+    if (savingMovement) return;
+    setSavingMovement(true);
+
+    try {
+      const { data, error } = await supabase.rpc('record_student_movement', {
+        p_direction: 'IN',
+      });
+
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Failed to update attendance.');
+
+      Alert.alert('Welcome Back! 🏠', 'You have marked yourself INSIDE the PG.');
+      await loadStudentData();
+    } catch (err: any) {
+      Alert.alert('Update Failed', err.message || 'Could not record check-in.');
+    } finally {
+      setSavingMovement(false);
+    }
+  };
+
+  // Confirm Going Out with Purpose, Return Time & Food Requirement
+  const handleConfirmGoingOut = async () => {
+    if (savingMovement) return;
+    const resolvedPurpose = leavingPurpose === 'Other' ? customPurpose.trim() : leavingPurpose;
+    const resolvedReturn = returnTime === 'Custom' ? customReturnTime.trim() : returnTime;
+
+    if (!resolvedPurpose) {
+      Alert.alert('Purpose Required', 'Please specify the purpose of leaving.');
+      return;
+    }
+
+    setSavingMovement(true);
+
+    try {
+      const { data, error } = await supabase.rpc('record_student_movement', {
+        p_direction: 'OUT',
+        p_purpose: resolvedPurpose,
+        p_expected_return_time: resolvedReturn || undefined,
+        p_food_required: foodRequired,
+      });
+
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Failed to update attendance.');
+
+      setGoingOutModalVisible(false);
+      Alert.alert('Status Updated 🚶', 'You have marked yourself OUT of the PG.');
+      await loadStudentData();
+    } catch (err: any) {
+      Alert.alert('Update Failed', err.message || 'Could not record departure.');
+    } finally {
+      setSavingMovement(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (Platform.OS === 'web') {
+      const confirmed = typeof window !== 'undefined' ? window.confirm('Are you sure you want to sign out?') : true;
+      if (confirmed) {
+        await signOut();
+        router.replace('/login');
+      }
+      return;
+    }
+
     Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -276,6 +403,7 @@ export default function StudentDashboardScreen() {
         style: 'destructive',
         onPress: async () => {
           await signOut();
+          router.replace('/login');
         },
       },
     ]);
@@ -287,6 +415,8 @@ export default function StudentDashboardScreen() {
       `${description}\n\nThis feature is currently under active development.`
     );
   };
+
+  const isInside = !latestMovement || latestMovement.direction === 'IN';
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -311,16 +441,48 @@ export default function StudentDashboardScreen() {
             <Text style={styles.dateSubtitle}>{formatTodayDate()}</Text>
           </View>
 
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.signOutButton,
-              pressed && styles.signOutButtonPressed,
-            ]}
-            onPress={handleSignOut}>
-            <Text style={styles.signOutButtonText}>Sign Out</Text>
-          </Pressable>
+          <View style={styles.topBarActions}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open Settings"
+              style={({ pressed }) => [
+                styles.settingsButton,
+                pressed && styles.settingsButtonPressed,
+              ]}
+              onPress={() => router.push('/student-settings')}>
+              <Text style={styles.settingsButtonText}>⚙️ Settings</Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.signOutButton,
+                pressed && styles.signOutButtonPressed,
+              ]}
+              onPress={handleSignOut}>
+              <Text style={styles.signOutButtonText}>Sign Out</Text>
+            </Pressable>
+          </View>
         </View>
+
+        {/* Temporary Password Warning Banner */}
+        {user?.user_metadata?.must_change_password && (
+          <Pressable
+            style={({ pressed }) => [
+              styles.tempPasswordBanner,
+              pressed && { opacity: 0.8 },
+            ]}
+            onPress={() => router.push('/student-settings')}>
+            <Text style={styles.tempPasswordIcon}>🔑</Text>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.tempPasswordTitle}>Temporary Password Active</Text>
+              <Text style={styles.tempPasswordSubtitle}>
+                You are currently using an initial temporary password. Tap here to set your private password.
+              </Text>
+            </View>
+            <Text style={styles.tempPasswordActionText}>Change →</Text>
+          </Pressable>
+        )}
 
         {/* Error Banner */}
         {errorMessage && (
@@ -341,42 +503,176 @@ export default function StudentDashboardScreen() {
           </View>
         ) : resident ? (
           /* Enrolled Accommodation Card */
-          <View style={styles.residentCard}>
-            <View style={styles.residentHeaderRow}>
-              <View style={styles.propertyInfo}>
-                <Text style={styles.propertyIcon}>🏢</Text>
-                <View>
-                  <Text style={styles.propertyName}>
-                    {resident.property?.name || 'Your PG Accommodation'}
-                  </Text>
-                  {resident.property?.address && (
-                    <Text style={styles.propertyAddress}>
-                      {resident.property.address}
+          <>
+            <View style={styles.residentCard}>
+              <View style={styles.residentHeaderRow}>
+                <View style={styles.propertyInfo}>
+                  <Text style={styles.propertyIcon}>🏢</Text>
+                  <View>
+                    <Text style={styles.propertyName}>
+                      {resident.property?.name || 'Your PG Accommodation'}
                     </Text>
-                  )}
+                    {resident.property?.address && (
+                      <Text style={styles.propertyAddress}>
+                        {resident.property.address}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+
+                <View style={styles.activePill}>
+                  <View style={styles.activeDot} />
+                  <Text style={styles.activePillText}>Active</Text>
                 </View>
               </View>
 
-              <View style={styles.activePill}>
-                <View style={styles.activeDot} />
-                <Text style={styles.activePillText}>Active</Text>
+              <View style={styles.divider} />
+
+              <View style={styles.detailsRow}>
+                <View style={styles.detailItem}>
+                  <Text style={styles.detailLabel}>Assigned Room</Text>
+                  <Text style={styles.detailValue}>Room {resident.room_number}</Text>
+                </View>
+
+                <View style={styles.detailItem}>
+                  <Text style={styles.detailLabel}>Registered Name</Text>
+                  <Text style={styles.detailValue}>{resident.full_name}</Text>
+                </View>
               </View>
             </View>
 
-            <View style={styles.divider} />
+            {/* Live Washing Machine Status Card */}
+            <WashingMachineCard
+              propertyId={resident.property_id}
+              userRole="student"
+              currentResidentId={resident.id}
+            />
 
-            <View style={styles.detailsRow}>
-              <View style={styles.detailItem}>
-                <Text style={styles.detailLabel}>Assigned Room</Text>
-                <Text style={styles.detailValue}>Room {resident.room_number}</Text>
+            {/* Live Gate Attendance / Movement Card */}
+            <View style={styles.gateCard}>
+              <View style={styles.gateCardHeaderRow}>
+                <View style={styles.gateHeaderLeft}>
+                  <View
+                    style={[
+                      styles.gateIconWrap,
+                      isInside ? styles.gateIconWrapIn : styles.gateIconWrapOut,
+                    ]}>
+                    <Text style={styles.gateIconEmoji}>{isInside ? '🏠' : '🚶'}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.gateCardTitle}>Gate Attendance</Text>
+                    <Text style={styles.gateCardSubtitle}>
+                      {latestMovement?.event_time
+                        ? `${isInside ? 'Inside since' : 'Left at'} ${formatMovementTime(latestMovement.event_time)}`
+                        : 'Currently in accommodation'}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Status Pill */}
+                <View
+                  style={[
+                    styles.gateStatusPill,
+                    isInside ? styles.gatePillIn : styles.gatePillOut,
+                  ]}>
+                  <Text
+                    style={[
+                      styles.gateStatusPillText,
+                      isInside ? styles.gateTextIn : styles.gateTextOut,
+                    ]}>
+                    {isInside ? 'INSIDE PG' : 'OUTSIDE PG'}
+                  </Text>
+                </View>
               </View>
 
-              <View style={styles.detailItem}>
-                <Text style={styles.detailLabel}>Registered Name</Text>
-                <Text style={styles.detailValue}>{resident.full_name}</Text>
+              {/* Inside Details Summary */}
+              {isInside && (
+                <View style={styles.gateInsideDetailsBox}>
+                  <View style={styles.gateDetailRow}>
+                    <Text style={styles.gateDetailLabel}>Food Status:</Text>
+                    <Text style={[styles.gateDetailValue, styles.foodNeededText]}>
+                      🍽️ Eating at PG (Included)
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* OUT Details Summary */}
+              {!isInside && latestMovement && (
+                <View style={styles.gateOutDetailsBox}>
+                  {latestMovement.purpose ? (
+                    <View style={styles.gateDetailRow}>
+                      <Text style={styles.gateDetailLabel}>Purpose:</Text>
+                      <Text style={styles.gateDetailValue}>{latestMovement.purpose}</Text>
+                    </View>
+                  ) : null}
+                  {latestMovement.expected_return_time ? (
+                    <View style={styles.gateDetailRow}>
+                      <Text style={styles.gateDetailLabel}>Expected Return:</Text>
+                      <Text style={styles.gateDetailValue}>
+                        {latestMovement.expected_return_time}
+                      </Text>
+                    </View>
+                  ) : null}
+                  <View style={styles.gateDetailRow}>
+                    <Text style={styles.gateDetailLabel}>Dinner / Food:</Text>
+                    <Text
+                      style={[
+                        styles.gateDetailValue,
+                        latestMovement.food_required
+                          ? styles.foodNeededText
+                          : styles.foodNotNeededText,
+                      ]}>
+                      {latestMovement.food_required
+                        ? '🍽️ Dinner Required'
+                        : '❌ No Dinner Needed'}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {/* Action Buttons */}
+              <View style={styles.gateActionRow}>
+                {isInside ? (
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.gateActionBtn,
+                      styles.gateOutBtn,
+                      pressed && styles.pressed,
+                    ]}
+                    onPress={() => {
+                      setFoodRequired(true);
+                      setGoingOutModalVisible(true);
+                    }}>
+                    <Text style={styles.gateOutBtnText}>🚶 Going Out</Text>
+                  </Pressable>
+                ) : (
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.gateActionBtn,
+                      styles.gateInBtn,
+                      pressed && styles.pressed,
+                      savingMovement && styles.btnDisabled,
+                    ]}
+                    disabled={savingMovement}
+                    onPress={handleMarkBackIn}>
+                    {savingMovement ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text style={styles.gateInBtnText}>✓ I am Back (Mark Inside)</Text>
+                    )}
+                  </Pressable>
+                )}
+
+                <Pressable
+                  accessibilityRole="button"
+                  style={styles.gateHistoryLinkBtn}
+                  onPress={() => router.push('/student-gate-history')}>
+                  <Text style={styles.gateHistoryLinkText}>History ›</Text>
+                </Pressable>
               </View>
             </View>
-          </View>
+          </>
         ) : (
           /* Unlinked / Pending Allocation State */
           <View style={styles.unlinkedCard}>
@@ -410,7 +706,7 @@ export default function StudentDashboardScreen() {
             <View style={styles.billingOverviewCard}>
               <View style={styles.billingOverviewTop}>
                 <View>
-                  <Text style={styles.billingOverviewLabel}>Current Outstanding Dues</Text>
+                  <Text style={styles.billingOverviewLabel}>Current Month Bill</Text>
                   <Text
                     style={[
                       styles.billingOverviewAmount,
@@ -420,7 +716,7 @@ export default function StudentDashboardScreen() {
                     ]}>
                     {(billingSummary?.outstandingPaise || 0) > 0
                       ? `₹${((billingSummary?.outstandingPaise || 0) / 100).toLocaleString('en-IN')}`
-                      : '₹0 (All Settled)'}
+                      : '₹0 (All Paid)'}
                   </Text>
                 </View>
 
@@ -428,7 +724,7 @@ export default function StudentDashboardScreen() {
                   style={styles.payDuesButton}
                   onPress={() => router.push('/student-billing')}>
                   <Text style={styles.payDuesButtonText}>
-                    {(billingSummary?.outstandingPaise || 0) > 0 ? 'Pay Dues' : 'View Bills'}
+                    {(billingSummary?.outstandingPaise || 0) > 0 ? 'Pay Bill' : 'View Bills'}
                   </Text>
                 </Pressable>
               </View>
@@ -438,7 +734,7 @@ export default function StudentDashboardScreen() {
                 <View style={styles.studentOverdueBanner}>
                   <Text style={styles.studentOverdueIcon}>⚠️</Text>
                   <Text style={styles.studentOverdueText}>
-                    Overdue: ₹{((billingSummary!.overduePaise) / 100).toLocaleString('en-IN')} is past due date. Please clear your dues promptly.
+                    Bill past due date (₹{((billingSummary!.overduePaise) / 100).toLocaleString('en-IN')}). Please pay promptly.
                   </Text>
                 </View>
               )}
@@ -627,6 +923,136 @@ export default function StudentDashboardScreen() {
 
         <View style={{ height: BottomTabInset + 40 }} />
       </ScrollView>
+
+      {/* Modal: Mark Going Out */}
+      <Modal
+        visible={goingOutModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setGoingOutModalVisible(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalTitle}>Going Out of PG</Text>
+              <Pressable
+                hitSlop={8}
+                onPress={() => setGoingOutModalVisible(false)}>
+                <Text style={styles.modalCloseText}>✕</Text>
+              </Pressable>
+            </View>
+            <Text style={styles.modalSubtitle}>
+              Convey your purpose, expected return, and dinner requirement to the owner.
+            </Text>
+
+            {/* Purpose Selection */}
+            <Text style={styles.inputSectionLabel}>Purpose of Leaving</Text>
+            <View style={styles.chipsWrap}>
+              {PURPOSE_OPTIONS.map((opt) => (
+                <Pressable
+                  key={opt}
+                  style={[
+                    styles.chipBtn,
+                    leavingPurpose === opt && styles.chipBtnSelected,
+                  ]}
+                  onPress={() => setLeavingPurpose(opt)}>
+                  <Text
+                    style={[
+                      styles.chipText,
+                      leavingPurpose === opt && styles.chipTextSelected,
+                    ]}>
+                    {opt}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {leavingPurpose === 'Other' && (
+              <TextInput
+                style={styles.textInputBox}
+                placeholder="Specify your purpose"
+                placeholderTextColor="#94A3B8"
+                value={customPurpose}
+                onChangeText={setCustomPurpose}
+              />
+            )}
+
+            {/* Expected Return Time */}
+            <Text style={styles.inputSectionLabel}>Expected Return Time</Text>
+            <View style={styles.chipsWrap}>
+              {RETURN_TIME_OPTIONS.map((opt) => (
+                <Pressable
+                  key={opt}
+                  style={[
+                    styles.chipBtn,
+                    returnTime === opt && styles.chipBtnSelected,
+                  ]}
+                  onPress={() => setReturnTime(opt)}>
+                  <Text
+                    style={[
+                      styles.chipText,
+                      returnTime === opt && styles.chipTextSelected,
+                    ]}>
+                    {opt}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {returnTime === 'Custom' && (
+              <TextInput
+                style={styles.textInputBox}
+                placeholder="e.g. 7:30 PM, Sunday evening"
+                placeholderTextColor="#94A3B8"
+                value={customReturnTime}
+                onChangeText={setCustomReturnTime}
+              />
+            )}
+
+            {/* Food / Dinner Switch */}
+            <View style={styles.foodSwitchRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.foodSwitchTitle}>Dinner / Food Required?</Text>
+                <Text style={styles.foodSwitchSubtitle}>
+                  {foodRequired
+                    ? 'Yes, please prepare dinner for me.'
+                    : 'No dinner needed for me tonight.'}
+                </Text>
+              </View>
+              <Switch
+                value={foodRequired}
+                onValueChange={setFoodRequired}
+                trackColor={{ false: '#CBD5E1', true: '#86EFAC' }}
+                thumbColor={foodRequired ? '#16A34A' : '#F8FAFC'}
+              />
+            </View>
+
+            {/* Action Buttons */}
+            <View style={styles.modalActionRow}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => setGoingOutModalVisible(false)}>
+                <Text style={styles.modalCancelBtnText}>Cancel</Text>
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.modalConfirmBtn,
+                  savingMovement && styles.btnDisabled,
+                ]}
+                disabled={savingMovement}
+                onPress={handleConfirmGoingOut}>
+                {savingMovement ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.modalConfirmBtnText}>Confirm Going Out</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -668,6 +1094,27 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748B',
     marginTop: 2,
+  },
+  topBarActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  settingsButton: {
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  settingsButtonPressed: {
+    backgroundColor: '#F1F5F9',
+  },
+  settingsButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
   },
   signOutButton: {
     paddingVertical: 7,
@@ -1217,6 +1664,335 @@ const styles = StyleSheet.create({
   },
   duesTextClear: {
     color: '#16A34A',
+  },
+  tempPasswordBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 16,
+    gap: 10,
+  },
+  tempPasswordIcon: {
+    fontSize: 20,
+  },
+  tempPasswordTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#92400E',
+  },
+  tempPasswordSubtitle: {
+    fontSize: 11,
+    color: '#B45309',
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  tempPasswordActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B45309',
+    marginLeft: 6,
+  },
+  gateCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 16,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.05,
+        shadowRadius: 3,
+      },
+      android: {
+        elevation: 1,
+      },
+    }),
+  },
+  gateCardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  gateHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  gateIconWrap: {
+    width: 42,
+    height: 42,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gateIconWrapIn: {
+    backgroundColor: '#F0FDF4',
+  },
+  gateIconWrapOut: {
+    backgroundColor: '#FEF3C7',
+  },
+  gateIconEmoji: {
+    fontSize: 22,
+  },
+  gateCardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  gateCardSubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 1,
+  },
+  gateStatusPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  gatePillIn: {
+    backgroundColor: '#DCFCE7',
+  },
+  gatePillOut: {
+    backgroundColor: '#FEF3C7',
+  },
+  gateStatusPillText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  gateTextIn: {
+    color: '#15803D',
+  },
+  gateTextOut: {
+    color: '#B45309',
+  },
+  gateInsideDetailsBox: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#DCFCE7',
+  },
+  gateOutDetailsBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    padding: 12,
+    marginTop: 12,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  gateDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  gateDetailLabel: {
+    fontSize: 12,
+    color: '#64748B',
+    fontWeight: '500',
+  },
+  gateDetailValue: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  foodNeededText: {
+    color: '#15803D',
+  },
+  foodNotNeededText: {
+    color: '#B45309',
+  },
+  gateActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+    gap: 12,
+  },
+  gateActionBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  gateOutBtn: {
+    backgroundColor: '#EA580C',
+  },
+  gateOutBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  gateInBtn: {
+    backgroundColor: '#16A34A',
+  },
+  gateInBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  gateHistoryLinkBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+  },
+  gateHistoryLinkText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 20,
+    paddingBottom: 36,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  modalCloseText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#64748B',
+    padding: 4,
+  },
+  modalSubtitle: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 4,
+    marginBottom: 16,
+  },
+  inputSectionLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  chipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 12,
+  },
+  chipBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 8,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  chipBtnSelected: {
+    backgroundColor: '#E0F2FE',
+    borderColor: '#0284C7',
+  },
+  chipText: {
+    fontSize: 12,
+    color: '#475569',
+    fontWeight: '600',
+  },
+  chipTextSelected: {
+    color: '#0284C7',
+    fontWeight: '700',
+  },
+  textInputBox: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#0F172A',
+    marginBottom: 12,
+  },
+  foodSwitchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginVertical: 12,
+    gap: 12,
+  },
+  foodSwitchTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  foodSwitchSubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  modalActionRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 10,
+  },
+  modalCancelBtn: {
+    flex: 1,
+    paddingVertical: 13,
+    borderRadius: 8,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalCancelBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  modalConfirmBtn: {
+    flex: 2,
+    paddingVertical: 13,
+    borderRadius: 8,
+    backgroundColor: '#EA580C',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalConfirmBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  pressed: {
+    opacity: 0.8,
+  },
+  btnDisabled: {
+    opacity: 0.5,
   },
 });
 

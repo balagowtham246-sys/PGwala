@@ -9,6 +9,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BottomTabInset } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
+import { WashingMachineCard } from '@/components/washing-machine-card';
 
 // --- Types ---
 interface SummaryCardProps {
@@ -23,6 +25,8 @@ interface SummaryCardProps {
   value: number | string;
   sublabel: string;
   accentColor: string;
+  onPress?: () => void;
+  isLargeScreen?: boolean;
 }
 
 interface ActionButtonProps {
@@ -62,6 +66,8 @@ interface ActivityItem {
 
 export default function OwnerDashboard() {
   const { user, session, profile, isLoading: authLoading, signOut } = useAuth();
+  const { width } = useWindowDimensions();
+  const isLargeScreen = width >= 768;
 
   // Dashboard state powered by live Supabase queries
   const [loading, setLoading] = useState(true);
@@ -379,8 +385,17 @@ export default function OwnerDashboard() {
     loadDashboardData();
   };
 
-  // Sign out handler
-  const handleSignOut = () => {
+  // Sign out handler (Cross-platform: uses window.confirm on Web, Alert.alert on native)
+  const handleSignOut = async () => {
+    if (Platform.OS === 'web') {
+      const confirmed = typeof window !== 'undefined' ? window.confirm('Are you sure you want to log out of PGwala?') : true;
+      if (confirmed) {
+        await signOut();
+        router.replace('/login');
+      }
+      return;
+    }
+
     Alert.alert('Sign Out', 'Are you sure you want to log out of PGwala?', [
       { text: 'Cancel', style: 'cancel' },
       {
@@ -486,9 +501,16 @@ export default function OwnerDashboard() {
             <Text style={styles.appSubtitle}>{propertyName}</Text>
           </View>
           <View style={styles.headerActions}>
-            <View style={styles.badgeContainer}>
-              <Text style={styles.badgeText}>Owner Portal</Text>
-            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Open Settings"
+              style={({ pressed }) => [
+                styles.settingsButton,
+                pressed && styles.settingsButtonPressed,
+              ]}
+              onPress={() => router.push('/owner-settings')}>
+              <Text style={styles.settingsButtonText}>⚙️ Settings</Text>
+            </Pressable>
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Sign Out"
@@ -512,6 +534,14 @@ export default function OwnerDashboard() {
             Here is the live status of your PG accommodation.
           </Text>
         </View>
+
+        {/* Live Washing Machine Availability */}
+        {propertyId && (
+          <WashingMachineCard
+            propertyId={propertyId}
+            userRole="owner"
+          />
+        )}
 
         {/* Error Banner if query failed */}
         {errorMessage && (
@@ -545,12 +575,16 @@ export default function OwnerDashboard() {
               value={stats.studentsInside}
               sublabel={stats.studentsUnknown > 0 ? `${stats.studentsUnknown} unknown` : 'Checked in'}
               accentColor="#16A34A" // Green
+              onPress={() => router.push('/student-in-out')}
+              isLargeScreen={true}
             />
             <SummaryCard
               label="Outside PG"
               value={stats.studentsOutside}
               sublabel="Checked out"
               accentColor="#EA580C" // Orange
+              onPress={() => router.push('/student-in-out')}
+              isLargeScreen={true}
             />
           </View>
         )}
@@ -598,26 +632,33 @@ export default function OwnerDashboard() {
             <SummaryCard
               label="Total Collected"
               value={`₹${(stats.totalCollectedPaise / 100).toLocaleString('en-IN')}`}
-              sublabel="Approved payments"
+              sublabel="Confirmed payments"
               accentColor="#16A34A"
+              isLargeScreen={isLargeScreen}
             />
             <SummaryCard
-              label="Outstanding"
+              label="Unpaid Bills"
               value={`₹${(stats.outstandingPaise / 100).toLocaleString('en-IN')}`}
-              sublabel={`${stats.pendingBillsCount} pending charge${stats.pendingBillsCount === 1 ? '' : 's'}`}
+              sublabel={`${stats.pendingBillsCount} pending bill${stats.pendingBillsCount === 1 ? '' : 's'}`}
               accentColor="#0284C7"
+              onPress={() => router.push('/billing-management')}
+              isLargeScreen={isLargeScreen}
             />
             <SummaryCard
-              label="Overdue Balance"
+              label="Past Due"
               value={`₹${(stats.overduePaise / 100).toLocaleString('en-IN')}`}
               sublabel={stats.overduePaise > 0 ? 'Past due date' : 'All up to date'}
               accentColor={stats.overduePaise > 0 ? '#DC2626' : '#64748B'}
+              onPress={() => router.push('/billing-management')}
+              isLargeScreen={isLargeScreen}
             />
             <SummaryCard
-              label="Pending Reports"
+              label="Needs Review"
               value={stats.pendingReportsCount}
-              sublabel={stats.pendingReportsCount > 0 ? 'Action required' : 'No pending reports'}
+              sublabel={stats.pendingReportsCount > 0 ? 'Payment proof sent' : 'All confirmed'}
               accentColor={stats.pendingReportsCount > 0 ? '#D97706' : '#16A34A'}
+              onPress={() => router.push('/billing-management')}
+              isLargeScreen={isLargeScreen}
             />
           </View>
         )}
@@ -633,8 +674,8 @@ export default function OwnerDashboard() {
           />
           <ActionButton
             iconText="🚪"
-            title="Student In / Out"
-            subtitle="Record entry & exit gate logs"
+            title="Gate Attendance"
+            subtitle="Live attendance, return times & meal counts"
             onPress={() => router.push('/student-in-out')}
           />
           <ActionButton
@@ -646,7 +687,7 @@ export default function OwnerDashboard() {
           <ActionButton
             iconText="💵"
             title="Rent & Bills"
-            subtitle="Manage rent, EB, washing & payments"
+            subtitle="Manage monthly rent, washing machine & payments"
             onPress={() => router.push('/billing-management')}
           />
           <ActionButton
@@ -707,8 +748,8 @@ export default function OwnerDashboard() {
           )}
         </View>
 
-        {/* Bottom spacer to prevent native tab bar overlap */}
-        <View style={{ height: BottomTabInset + 20 }} />
+        {/* Bottom spacer */}
+        <View style={{ height: 40 }} />
       </ScrollView>
     </SafeAreaView>
   );
@@ -716,15 +757,52 @@ export default function OwnerDashboard() {
 
 // --- Sub-components ---
 
-function SummaryCard({ label, value, sublabel, accentColor }: SummaryCardProps) {
-  return (
-    <View style={styles.summaryCard}>
+function SummaryCard({
+  label,
+  value,
+  sublabel,
+  accentColor,
+  onPress,
+  isLargeScreen = false,
+}: SummaryCardProps) {
+  const content = (
+    <>
       <View style={[styles.cardAccentBar, { backgroundColor: accentColor }]} />
-      <Text style={[styles.summaryValue, { color: accentColor }]}>{value}</Text>
-      <Text style={styles.summaryLabel}>{label}</Text>
-      <Text style={styles.summarySublabel}>{sublabel}</Text>
-    </View>
+      <Text
+        style={[styles.summaryValue, { color: accentColor }]}
+        numberOfLines={1}
+        adjustsFontSizeToFit>
+        {value}
+      </Text>
+      <Text style={styles.summaryLabel} numberOfLines={1}>
+        {label}
+      </Text>
+      <Text style={styles.summarySublabel} numberOfLines={1}>
+        {sublabel}
+      </Text>
+    </>
   );
+
+  const cardStyle = [
+    styles.summaryCard,
+    isLargeScreen ? styles.summaryCardLarge : styles.summaryCardSmall,
+  ];
+
+  if (onPress) {
+    return (
+      <Pressable
+        accessibilityRole="button"
+        style={({ pressed }) => [
+          cardStyle,
+          pressed && { opacity: 0.85, transform: [{ scale: 0.99 }] },
+        ]}
+        onPress={onPress}>
+        {content}
+      </Pressable>
+    );
+  }
+
+  return <View style={cardStyle}>{content}</View>;
 }
 
 function ActionButton({ iconText, title, subtitle, onPress }: ActionButtonProps) {
@@ -757,6 +835,9 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 12,
+    width: '100%',
+    maxWidth: 1080,
+    alignSelf: 'center',
   },
   header: {
     flexDirection: 'row',
@@ -792,6 +873,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+  },
+  settingsButton: {
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  settingsButtonPressed: {
+    backgroundColor: '#F1F5F9',
+  },
+  settingsButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
   },
   signOutButton: {
     backgroundColor: '#FEE2E2', // light red
@@ -953,8 +1050,6 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   summaryCard: {
-    flexBasis: '47%',
-    flexGrow: 1,
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
     padding: 14,
@@ -962,6 +1057,15 @@ const styles = StyleSheet.create({
     borderColor: '#E2E8F0',
     position: 'relative',
     overflow: 'hidden',
+  },
+  summaryCardSmall: {
+    flexBasis: '47%',
+    flexGrow: 1,
+    minWidth: 140,
+  },
+  summaryCardLarge: {
+    flex: 1,
+    minWidth: 160,
   },
   cardAccentBar: {
     position: 'absolute',

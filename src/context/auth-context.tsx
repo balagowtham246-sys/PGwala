@@ -7,6 +7,7 @@ export interface UserProfile {
   full_name: string;
   phone_number: string | null;
   role: 'owner' | 'student';
+  must_change_password?: boolean;
 }
 
 interface AuthContextType {
@@ -38,7 +39,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     try {
       const { data, error } = await supabase
         .from('profiles')
-        .select('id, full_name, phone_number, role')
+        .select('id, full_name, phone_number, role, must_change_password')
         .eq('id', userId)
         .single();
 
@@ -85,15 +86,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, newSession) => {
-      setSession(newSession);
-      setUser(newSession?.user ?? null);
-
       if (newSession?.user) {
+        setIsLoading(true);
+        setSession(newSession);
+        setUser(newSession.user);
         await fetchProfile(newSession.user.id);
+        setIsLoading(false);
       } else {
+        setSession(null);
+        setUser(null);
         setProfile(null);
+        setIsLoading(false);
       }
-      setIsLoading(false);
     });
 
     return () => {

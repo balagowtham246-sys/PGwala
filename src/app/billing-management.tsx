@@ -2,6 +2,8 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -19,85 +21,68 @@ import { router } from 'expo-router';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
 
-interface ResidentBillingItem {
-  id: string;
+interface ResidentRentBillItem {
+  resident_id: string;
   full_name: string;
   room_number: string;
   phone_number: string | null;
-  is_active: boolean;
-  profile_id: string | null;
   opt_in_wm: boolean;
-  wm_opt_out_date?: string | null;
-  total_outstanding_paise: number;
-  total_overdue_paise: number;
+  monthly_rent_paise: number;
+  charge_id: string | null;
+  rent_paise: number;
+  wm_paise: number;
+  total_paise: number;
+  status: 'paid' | 'unpaid' | 'not_generated';
+  has_pending_report: boolean;
+  pending_report?: {
+    id: string;
+    claimed_method: 'cash' | 'upi';
+    amount_paise: number;
+    payment_date: string;
+    reference_number: string | null;
+    screenshot_url: string | null;
+    notes: string | null;
+  } | null;
+  receipt_number?: string | null;
+  paid_date?: string | null;
+  paid_method?: string | null;
 }
 
-interface ChargeItem {
-  id: string;
+interface ResidentEbBillItem {
   resident_id: string;
-  category: 'rent' | 'electricity' | 'washing_machine' | 'opening_balance';
-  description: string;
-  billing_period_start: string;
-  billing_period_end: string;
-  due_date: string;
+  full_name: string;
+  room_number: string;
+  phone_number: string | null;
+  charge_id: string | null;
   amount_paise: number;
-  status: 'outstanding' | 'settled' | 'cancelled';
-  is_opening_balance: boolean;
+  status: 'paid' | 'unpaid' | 'not_generated';
+  has_pending_report: boolean;
+  pending_report?: {
+    id: string;
+    claimed_method: 'cash' | 'upi';
+    amount_paise: number;
+    payment_date: string;
+    reference_number: string | null;
+    screenshot_url: string | null;
+    notes: string | null;
+  } | null;
+  receipt_number?: string | null;
+  paid_date?: string | null;
+  paid_method?: string | null;
 }
 
-interface PaymentItem {
+interface RoomResidentInfo {
   id: string;
-  receipt_number: string;
-  amount_paise: number;
-  unallocated_amount_paise: number;
-  method: 'cash' | 'upi';
-  payment_date: string;
-  status: 'approved' | 'reversed';
-  notes: string | null;
-  reversal_reason?: string | null;
-  reversed_at?: string | null;
+  full_name: string;
+  room_number: string;
 }
 
-interface AllocationItem {
-  id: string;
-  charge_id: string;
-  payment_id: string;
-  settled_amount_paise: number;
-  status: 'active' | 'reversed';
-  receipt_number?: string;
-  payment_date?: string;
-  method?: string;
+function formatPaiseToRupees(paise: number): string {
+  const rs = Math.round(paise / 100);
+  return `₹${rs.toLocaleString('en-IN')}`;
 }
 
-function getPeriodLabel(start: string, end: string): string {
-  if (!start) return 'General Charges';
-  try {
-    const d = new Date(start);
-    if (!isNaN(d.getTime())) {
-      const monthYear = d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-      return `${monthYear} (${start} to ${end || 'ongoing'})`;
-    }
-  } catch {}
-  return `${start} to ${end || 'ongoing'}`;
-}
-
-interface StudentReportItem {
-  id: string;
-  resident_id: string;
-  amount_paise: number;
-  claimed_method: 'cash' | 'upi';
-  payment_date: string;
-  reference_number: string | null;
-  notes: string | null;
-  status: 'pending' | 'approved' | 'rejected';
-  created_at: string;
-  resident?: {
-    full_name: string;
-    room_number: string;
-  };
-}
-
-export default function BillingManagementScreen() {
+export default function SimplifiedBillingManagementScreen() {
   const { user } = useAuth();
 
   const [loading, setLoading] = useState(true);
@@ -105,80 +90,98 @@ export default function BillingManagementScreen() {
   const [propertyId, setPropertyId] = useState<string | null>(null);
   const [propertyName, setPropertyName] = useState('My PG');
 
-  // Overview stats
-  const [totalOutstandingPaise, setTotalOutstandingPaise] = useState(0);
-  const [totalOverduePaise, setTotalOverduePaise] = useState(0);
+  // Top Section Mode: 'RENT' | 'EB'
+  const [billingMode, setBillingMode] = useState<'RENT' | 'EB'>('RENT');
 
-  // Lists
-  const [residents, setResidents] = useState<ResidentBillingItem[]>([]);
-  const [pendingReports, setPendingReports] = useState<StudentReportItem[]>([]);
+  // Month navigation: default to current month
+  const [selectedDate, setSelectedDate] = useState(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
 
-  // Generation Modal
-  const [showGenerateModal, setShowGenerateModal] = useState(false);
-  const [customRentRupees, setCustomRentRupees] = useState('9000');
-  const [generating, setGenerating] = useState(false);
+  // Rent Bills State
+  const [rentBills, setRentBills] = useState<ResidentRentBillItem[]>([]);
+  const [generateRentModalVisible, setGenerateRentModalVisible] = useState(false);
+  const [rentInputRupees, setRentInputRupees] = useState('8000');
+  const [generatingRent, setGeneratingRent] = useState(false);
 
-  // Resident Action Modal
-  const [selectedResident, setSelectedResident] = useState<ResidentBillingItem | null>(null);
-  const [residentCharges, setResidentCharges] = useState<ChargeItem[]>([]);
-  const [residentPayments, setResidentPayments] = useState<PaymentItem[]>([]);
-  const [residentCreditPaise, setResidentCreditPaise] = useState(0);
-  const [applyingCredit, setApplyingCredit] = useState(false);
-  const [loadingResidentDetail, setLoadingResidentDetail] = useState(false);
+  // Edit Individual Resident Rent State
+  const [editRentModalVisible, setEditRentModalVisible] = useState(false);
+  const [selectedResidentForEdit, setSelectedResidentForEdit] = useState<ResidentRentBillItem | null>(null);
+  const [editRentInputRupees, setEditRentInputRupees] = useState('8000');
+  const [updatingRent, setUpdatingRent] = useState(false);
 
-  // Record Payment Sub-Modal
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [paymentAmountRupees, setPaymentAmountRupees] = useState('');
-  const [paymentMethod, setPaymentMethod] = useState<'upi' | 'cash'>('upi');
-  const [paymentNotes, setPaymentNotes] = useState('');
-  const [submittingPayment, setSubmittingPayment] = useState(false);
+  // EB Bills State
+  const [ebBills, setEbBills] = useState<ResidentEbBillItem[]>([]);
+  const [allResidents, setAllResidents] = useState<RoomResidentInfo[]>([]);
+  const [availableRooms, setAvailableRooms] = useState<string[]>([]);
+  const [splitEbModalVisible, setSplitEbModalVisible] = useState(false);
+  const [selectedRoomForEb, setSelectedRoomForEb] = useState<string>('');
+  const [ebTotalRupeesInput, setEbTotalRupeesInput] = useState('');
+  const [generatingEb, setGeneratingEb] = useState(false);
 
-  // Opening Balance Sub-Modal
-  const [showOpeningModal, setShowOpeningModal] = useState(false);
-  const [openingCategory, setOpeningCategory] = useState<'rent' | 'electricity' | 'washing_machine'>('rent');
-  const [openingAmountRupees, setOpeningAmountRupees] = useState('');
-  const [openingReference, setOpeningReference] = useState('');
-  const [submittingOpening, setSubmittingOpening] = useState(false);
+  // Filter tabs: 'ALL' | 'REVIEW' | 'UNPAID' | 'PAID'
+  const [filterTab, setFilterTab] = useState<'ALL' | 'REVIEW' | 'UNPAID' | 'PAID'>('ALL');
 
-  // Reject Student Report Modal
-  const [rejectingReport, setRejectingReport] = useState<StudentReportItem | null>(null);
-  const [rejectionReason, setRejectionReason] = useState('');
-  const [submittingReject, setSubmittingReject] = useState(false);
+  // Review Report Modal
+  const [selectedReviewItem, setSelectedReviewItem] = useState<{
+    full_name: string;
+    room_number: string;
+    charge_id: string;
+    bill_title: string;
+    report: any;
+  } | null>(null);
+  const [reviewModalVisible, setReviewModalVisible] = useState(false);
+  const [confirmingPayment, setConfirmingPayment] = useState(false);
 
-  // Review & Approve Student Report Modal
-  const [reviewingReport, setReviewingReport] = useState<StudentReportItem | null>(null);
-  const [approvedAmountRupees, setApprovedAmountRupees] = useState('');
-  const [approvedMethod, setApprovedMethod] = useState<'upi' | 'cash'>('upi');
-  const [approvedDate, setApprovedDate] = useState('');
-  const [approvalNotes, setApprovalNotes] = useState('');
-  const [submittingApproval, setSubmittingApproval] = useState(false);
+  // Full Screen Image Viewer Modal
+  const [fullImageUrl, setFullImageUrl] = useState<string | null>(null);
 
-  // Resident detail filters
-  const [chargeFilter, setChargeFilter] = useState<'all' | 'outstanding' | 'settled'>('all');
-  const [residentCategoryFilter, setResidentCategoryFilter] = useState<
-    'all' | 'rent' | 'electricity' | 'washing_machine' | 'opening_balance'
-  >('all');
-  const [paymentFilter, setPaymentFilter] = useState<'all' | 'approved' | 'reversed'>('all');
-  const [residentAllocations, setResidentAllocations] = useState<AllocationItem[]>([]);
+  // Month labels
+  const monthLabel = selectedDate.toLocaleDateString('en-IN', {
+    month: 'long',
+    year: 'numeric',
+  });
+
+  const monthIsoStart = `${selectedDate.getFullYear()}-${String(
+    selectedDate.getMonth() + 1
+  ).padStart(2, '0')}-01`;
+
+  const nextMonthDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 0);
+  const monthIsoEnd = `${nextMonthDate.getFullYear()}-${String(
+    nextMonthDate.getMonth() + 1
+  ).padStart(2, '0')}-${String(nextMonthDate.getDate()).padStart(2, '0')}`;
+
+  const dueIsoDate = `${selectedDate.getFullYear()}-${String(
+    selectedDate.getMonth() + 1
+  ).padStart(2, '0')}-05`;
+
+  // Navigate months
+  const handlePrevMonth = () => {
+    setSelectedDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+  };
+
+  const handleNextMonth = () => {
+    setSelectedDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+  };
 
   // Load all billing data
-  const loadData = useCallback(async () => {
+  const loadBillingData = useCallback(async () => {
     if (!user?.id) return;
 
     try {
-      setLoading(true);
-
-      // 1. Fetch active property for owner
-      const { data: properties, error: propError } = await supabase
+      // 1. Fetch active property owned by caller
+      const { data: properties, error: propErr } = await supabase
         .from('properties')
         .select('id, name')
         .eq('owner_id', user.id)
         .eq('is_active', true)
-        .order('created_at', { ascending: true })
         .limit(1);
 
-      if (propError) throw propError;
+      if (propErr) throw propErr;
       if (!properties || properties.length === 0) {
+        setRentBills([]);
+        setEbBills([]);
         setLoading(false);
         return;
       }
@@ -187,1504 +190,1277 @@ export default function BillingManagementScreen() {
       setPropertyId(activeProp.id);
       setPropertyName(activeProp.name);
 
-      // 2. Fetch residents for this property
-      const { data: resData, error: resError } = await supabase
+      // 2. Fetch active residents of this property
+      const { data: resData, error: resErr } = await supabase
         .from('residents')
-        .select(`
-          id,
-          full_name,
-          room_number,
-          phone_number,
-          is_active,
-          profile_id,
-          resident_opt_ins (
-            feature_name,
-            is_enabled,
-            opt_out_effective_date
-          )
-        `)
+        .select('id, full_name, room_number, phone_number, monthly_rent_paise, is_active')
         .eq('property_id', activeProp.id)
+        .eq('is_active', true)
         .order('room_number', { ascending: true });
 
-      if (resError) throw resError;
+      if (resErr) throw resErr;
+      const residents = resData ?? [];
+      const residentIds = residents.map((r) => r.id);
 
-      // 3. Fetch all outstanding charges for this property to aggregate balances
-      const todayIso = new Date().toISOString().split('T')[0];
-      const { data: chargesData, error: chargesError } = await supabase
-        .from('charges')
-        .select('id, resident_id, amount_paise, due_date, status')
-        .eq('property_id', activeProp.id)
-        .eq('status', 'outstanding');
+      setAllResidents(residents);
+      const rooms = Array.from(new Set(residents.map((r) => r.room_number))).sort();
+      setAvailableRooms(rooms);
+      if (rooms.length > 0 && !selectedRoomForEb) {
+        setSelectedRoomForEb(rooms[0]);
+      }
 
-      if (chargesError) throw chargesError;
+      if (residentIds.length === 0) {
+        setRentBills([]);
+        setEbBills([]);
+        setLoading(false);
+        return;
+      }
 
-      const outstandingMap: Record<string, { total: number; overdue: number }> = {};
-      let propTotalOutstanding = 0;
-      let propTotalOverdue = 0;
+      // 3. Fetch washing machine opt-ins
+      const { data: optData } = await supabase
+        .from('resident_opt_ins')
+        .select('resident_id, is_enabled')
+        .eq('feature_name', 'washing_machine')
+        .in('resident_id', residentIds);
 
-      for (const ch of chargesData || []) {
-        if (!outstandingMap[ch.resident_id]) {
-          outstandingMap[ch.resident_id] = { total: 0, overdue: 0 };
-        }
-        outstandingMap[ch.resident_id].total += ch.amount_paise;
-        propTotalOutstanding += ch.amount_paise;
-
-        if (ch.due_date < todayIso) {
-          outstandingMap[ch.resident_id].overdue += ch.amount_paise;
-          propTotalOverdue += ch.amount_paise;
+      const wmMap = new Map<string, boolean>();
+      if (optData) {
+        for (const o of optData) {
+          wmMap.set(o.resident_id, o.is_enabled);
         }
       }
 
-      setTotalOutstandingPaise(propTotalOutstanding);
-      setTotalOverduePaise(propTotalOverdue);
+      // 4. Fetch all charges for this property and month (both rent & electricity)
+      const { data: chargeData, error: chgErr } = await supabase
+        .from('charges')
+        .select('id, resident_id, category, amount_paise, rent_amount_paise, wm_amount_paise, status')
+        .eq('property_id', activeProp.id)
+        .eq('billing_period_start', monthIsoStart);
 
-      const billingResidents: ResidentBillingItem[] = (resData || []).map((r: any) => {
-        const wmOpt = r.resident_opt_ins?.find(
-          (opt: any) => opt.feature_name === 'washing_machine'
-        );
-        const balances = outstandingMap[r.id] || { total: 0, overdue: 0 };
+      if (chgErr) throw chgErr;
 
-        return {
-          id: r.id,
-          full_name: r.full_name,
-          room_number: r.room_number,
-          phone_number: r.phone_number,
-          is_active: r.is_active,
-          profile_id: r.profile_id,
-          opt_in_wm: wmOpt?.is_enabled ?? false,
-          wm_opt_out_date: wmOpt?.opt_out_effective_date || null,
-          total_outstanding_paise: balances.total,
-          total_overdue_paise: balances.overdue,
-        };
-      });
+      const rentChargeMap = new Map<string, any>();
+      const ebChargeMap = new Map<string, any>();
+      const allChargeIds: string[] = [];
 
-      setResidents(billingResidents);
+      if (chargeData) {
+        for (const c of chargeData) {
+          allChargeIds.push(c.id);
+          if (c.category === 'rent') {
+            rentChargeMap.set(c.resident_id, c);
+          } else if (c.category === 'electricity') {
+            ebChargeMap.set(c.resident_id, c);
+          }
+        }
+      }
 
-      // 4. Fetch pending student payment reports
-      const { data: reportsData, error: reportsError } = await supabase
+      // 5. Fetch pending student payment reports
+      const { data: reportData } = await supabase
         .from('student_payment_reports')
-        .select(`
-          id,
-          resident_id,
-          amount_paise,
-          claimed_method,
-          payment_date,
-          reference_number,
-          notes,
-          status,
-          created_at,
-          resident:residents (
-            full_name,
-            room_number
-          )
-        `)
+        .select('id, resident_id, charge_id, amount_paise, claimed_method, payment_date, reference_number, screenshot_url, notes, status')
         .eq('property_id', activeProp.id)
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
 
-      if (reportsError) {
-        console.warn('[BillingManagement] Error fetching reports:', reportsError.message);
-      } else {
-        setPendingReports((reportsData as any) || []);
+      const reportByChargeMap = new Map<string, any>();
+      if (reportData) {
+        for (const rep of reportData) {
+          if (rep.charge_id && !reportByChargeMap.has(rep.charge_id)) {
+            reportByChargeMap.set(rep.charge_id, rep);
+          }
+        }
       }
+
+      // 6. Fetch approved payment receipts for settled charges
+      const settledChargeIds = (chargeData || [])
+        .filter((c) => c.status === 'settled')
+        .map((c) => c.id);
+
+      const paymentMap = new Map<string, { receipt: string; date: string; method: string }>();
+      if (settledChargeIds.length > 0) {
+        const { data: allocData } = await supabase
+          .from('payment_allocations')
+          .select(`
+            charge_id,
+            payment:payments (
+              receipt_number,
+              payment_date,
+              method
+            )
+          `)
+          .in('charge_id', settledChargeIds)
+          .eq('status', 'active');
+
+        if (allocData) {
+          for (const a of allocData) {
+            const p: any = Array.isArray(a.payment) ? a.payment[0] : a.payment;
+            if (p) {
+              paymentMap.set(a.charge_id, {
+                receipt: p.receipt_number,
+                date: p.payment_date,
+                method: p.method,
+              });
+            }
+          }
+        }
+      }
+
+      // 7. Assemble Rent Bills
+      const rentItems: ResidentRentBillItem[] = residents.map((r) => {
+        const optWm = wmMap.get(r.id) ?? false;
+        const defaultRent = r.monthly_rent_paise || 800000;
+        const chg = rentChargeMap.get(r.id);
+        const rep = chg ? reportByChargeMap.get(chg.id) : null;
+
+        if (chg) {
+          const isSettled = chg.status === 'settled';
+          const pInfo = paymentMap.get(chg.id);
+
+          return {
+            resident_id: r.id,
+            full_name: r.full_name,
+            room_number: r.room_number,
+            phone_number: r.phone_number,
+            opt_in_wm: optWm,
+            monthly_rent_paise: defaultRent,
+            charge_id: chg.id,
+            rent_paise: chg.rent_amount_paise || defaultRent,
+            wm_paise: chg.wm_amount_paise || (optWm ? 50000 : 0),
+            total_paise: chg.amount_paise,
+            status: isSettled ? 'paid' : 'unpaid',
+            has_pending_report: Boolean(rep),
+            pending_report: rep || null,
+            receipt_number: pInfo?.receipt || null,
+            paid_date: pInfo?.date || null,
+            paid_method: pInfo?.method || null,
+          };
+        }
+
+        return {
+          resident_id: r.id,
+          full_name: r.full_name,
+          room_number: r.room_number,
+          phone_number: r.phone_number,
+          opt_in_wm: optWm,
+          monthly_rent_paise: defaultRent,
+          charge_id: null,
+          rent_paise: defaultRent,
+          wm_paise: optWm ? 50000 : 0,
+          total_paise: defaultRent + (optWm ? 50000 : 0),
+          status: 'not_generated',
+          has_pending_report: false,
+          pending_report: null,
+          receipt_number: null,
+          paid_date: null,
+          paid_method: null,
+        };
+      });
+
+      // 8. Assemble EB Bills
+      const ebItems: ResidentEbBillItem[] = residents.map((r) => {
+        const chg = ebChargeMap.get(r.id);
+        const rep = chg ? reportByChargeMap.get(chg.id) : null;
+
+        if (chg) {
+          const isSettled = chg.status === 'settled';
+          const pInfo = paymentMap.get(chg.id);
+
+          return {
+            resident_id: r.id,
+            full_name: r.full_name,
+            room_number: r.room_number,
+            phone_number: r.phone_number,
+            charge_id: chg.id,
+            amount_paise: chg.amount_paise,
+            status: isSettled ? 'paid' : 'unpaid',
+            has_pending_report: Boolean(rep),
+            pending_report: rep || null,
+            receipt_number: pInfo?.receipt || null,
+            paid_date: pInfo?.date || null,
+            paid_method: pInfo?.method || null,
+          };
+        }
+
+        return {
+          resident_id: r.id,
+          full_name: r.full_name,
+          room_number: r.room_number,
+          phone_number: r.phone_number,
+          charge_id: null,
+          amount_paise: 0,
+          status: 'not_generated',
+          has_pending_report: false,
+          pending_report: null,
+          receipt_number: null,
+          paid_date: null,
+          paid_method: null,
+        };
+      });
+
+      setRentBills(rentItems);
+      setEbBills(ebItems);
     } catch (err: any) {
       console.error('[BillingManagement] Load error:', err);
-      Alert.alert('Load Failed', err.message || 'Could not load billing information.');
+      Alert.alert('Load Error', err.message || 'Could not load billing information.');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [user?.id, monthIsoStart]);
 
   useEffect(() => {
-    if (user?.id) {
-      loadData();
-    }
-  }, [user?.id, loadData]);
+    loadBillingData();
+  }, [loadBillingData]);
 
-  // Load specific resident details (charges & payments)
-  const openResidentDetail = async (item: ResidentBillingItem) => {
-    setSelectedResident(item);
-    setLoadingResidentDetail(true);
-
-    try {
-      // Fetch charges
-      const { data: chData } = await supabase
-        .from('charges')
-        .select('*')
-        .eq('resident_id', item.id)
-        .order('due_date', { ascending: false });
-
-      setResidentCharges(chData || []);
-
-      // Fetch payments
-      const { data: payData } = await supabase
-        .from('payments')
-        .select('*')
-        .eq('resident_id', item.id)
-        .order('payment_date', { ascending: false });
-
-      const loadedPayments: PaymentItem[] = payData || [];
-      setResidentPayments(loadedPayments);
-
-      const unalloc = loadedPayments
-        .filter((p) => p.status === 'approved')
-        .reduce((acc, p) => acc + (p.unallocated_amount_paise || 0), 0);
-      setResidentCreditPaise(unalloc);
-
-      // Fetch payment allocations for this resident
-      try {
-        const { data: allocData } = await supabase
-          .from('payment_allocations')
-          .select('id, charge_id, payment_id, settled_amount_paise, status')
-          .eq('status', 'active');
-
-        if (allocData) {
-          const payMap = new Map<string, PaymentItem>();
-          for (const p of loadedPayments) {
-            payMap.set(p.id, p);
-          }
-
-          const mapped: AllocationItem[] = allocData.map((a: any) => {
-            const p = payMap.get(a.payment_id);
-            return {
-              id: a.id,
-              charge_id: a.charge_id,
-              payment_id: a.payment_id,
-              settled_amount_paise: a.settled_amount_paise,
-              status: a.status,
-              receipt_number: p?.receipt_number,
-              payment_date: p?.payment_date,
-              method: p?.method,
-            };
-          });
-          setResidentAllocations(mapped);
-        }
-      } catch (allocErr) {
-        console.warn('[BillingManagement] Allocation load error:', allocErr);
-      }
-    } catch (err: any) {
-      console.error('[BillingManagement] Resident detail error:', err);
-    } finally {
-      setLoadingResidentDetail(false);
-    }
+  const handleRefresh = () => {
+    setRefreshing(true);
+    loadBillingData();
   };
 
-  // Apply Unallocated Credit RPC
-  const handleApplyCredit = async () => {
-    if (!selectedResident) return;
-    setApplyingCredit(true);
-    try {
-      const { data, error } = await supabase.rpc('apply_unallocated_credit', {
-        p_resident_id: selectedResident.id,
-      });
+  // Generate or update monthly Rent bills with custom rent amount
+  const handleConfirmGenerateRent = async () => {
+    if (!propertyId || generatingRent) return;
 
-      if (error) throw error;
-      if (!data?.success) {
-        Alert.alert('Apply Credit Failed', data?.error || 'Could not apply credit.');
-        return;
-      }
-
-      Alert.alert('Credit Applied', data.message || 'Credit applied to complete charges.');
-      await openResidentDetail(selectedResident);
-      await loadData();
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to apply credit.');
-    } finally {
-      setApplyingCredit(false);
-    }
-  };
-
-  // Generate Monthly Charges RPC
-  const handleGenerateMonthly = async () => {
-    if (!propertyId) return;
-
-    const rentRupees = parseInt(customRentRupees, 10);
-    if (isNaN(rentRupees) || rentRupees <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid monthly rent amount.');
+    const parsedRupees = parseFloat(rentInputRupees.trim());
+    if (isNaN(parsedRupees) || parsedRupees <= 0) {
+      Alert.alert('Invalid Amount', 'Please enter a valid rent amount in Rupees.');
       return;
     }
 
-    setGenerating(true);
-    try {
-      const today = new Date();
-      const billingMonthIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-01`;
+    const rentPaise = Math.round(parsedRupees * 100);
 
-      const { data, error } = await supabase.rpc('generate_monthly_charges', {
+    try {
+      setGeneratingRent(true);
+      const { data, error } = await supabase.rpc('generate_monthly_bills', {
         p_property_id: propertyId,
-        p_billing_month: billingMonthIso,
-        p_custom_rent_paise: rentRupees * 100,
+        p_billing_month: monthIsoStart,
+        p_default_rent_paise: rentPaise,
       });
 
       if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Failed to generate bills.');
 
-      if (!data?.success) {
-        Alert.alert('Generation Failed', data?.error || 'Could not generate charges.');
-        return;
-      }
+      setGenerateRentModalVisible(false);
+      const created = data.created_count || 0;
+      const updated = data.updated_count || 0;
+      const parts = [];
+      if (created > 0) parts.push(`${created} new bill${created > 1 ? 's' : ''} created`);
+      if (updated > 0) parts.push(`${updated} bill${updated > 1 ? 's' : ''} updated to ₹${parsedRupees.toLocaleString('en-IN')}`);
 
-      Alert.alert('Success', data.message || 'Monthly charges generated.');
-      setShowGenerateModal(false);
-      await loadData();
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Could not generate monthly charges.');
-    } finally {
-      setGenerating(false);
-    }
-  };
-
-  // Toggle Washing Machine RPC
-  const handleToggleWm = async (item: ResidentBillingItem, value: boolean) => {
-    try {
-      const { data, error } = await supabase.rpc('toggle_washing_machine', {
-        p_resident_id: item.id,
-        p_enabled: value,
-      });
-
-      if (error) throw error;
-      if (!data?.success) {
-        Alert.alert('Update Failed', data?.error || 'Could not update washing machine setting.');
-        return;
-      }
-
-      setResidents((prev) =>
-        prev.map((r) =>
-          r.id === item.id
-            ? {
-                ...r,
-                opt_in_wm: value,
-                wm_opt_out_date: data?.opt_out_effective_date || null,
-              }
-            : r
-        )
+      Alert.alert(
+        'Rent Bills Updated! 📄',
+        `${parts.join(', ') || 'Bills ready'} for ${monthLabel}.${
+          data.skipped_count > 0 ? ` (${data.skipped_count} paid bills preserved)` : ''
+        }`
       );
-      if (selectedResident?.id === item.id) {
-        setSelectedResident((prev) =>
-          prev
-            ? {
-                ...prev,
-                opt_in_wm: value,
-                wm_opt_out_date: data?.opt_out_effective_date || null,
-              }
-            : null
-        );
-      }
-      if (data?.message) {
-        Alert.alert('Washing Machine', data.message);
-      }
+      await loadBillingData();
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to update washing machine opt-in.');
+      Alert.alert('Generation Failed', err.message || 'Could not generate rent bills.');
+    } finally {
+      setGeneratingRent(false);
     }
   };
 
-  // Record Payment RPC
-  const handleRecordPayment = async () => {
-    if (!selectedResident || !propertyId) return;
+  // Open Edit Rent Modal for a single resident
+  const handleOpenEditRent = (res: ResidentRentBillItem) => {
+    setSelectedResidentForEdit(res);
+    setEditRentInputRupees((res.rent_paise / 100).toString());
+    setEditRentModalVisible(true);
+  };
 
-    const amountRupees = parseFloat(paymentAmountRupees);
-    if (isNaN(amountRupees) || amountRupees <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid payment amount.');
+  // Confirm Individual Rent Update
+  const handleConfirmEditRent = async () => {
+    if (!propertyId || !selectedResidentForEdit || updatingRent) return;
+
+    const parsedRupees = parseFloat(editRentInputRupees.trim());
+    if (isNaN(parsedRupees) || parsedRupees <= 0) {
+      Alert.alert('Invalid Amount', 'Please enter a valid rent amount in Rupees.');
       return;
     }
 
-    setSubmittingPayment(true);
-    try {
-      const todayIso = new Date().toISOString().split('T')[0];
-      const amountPaise = Math.round(amountRupees * 100);
+    const rentPaise = Math.round(parsedRupees * 100);
 
-      const { data, error } = await supabase.rpc('approve_payment_and_allocate', {
+    try {
+      setUpdatingRent(true);
+      const { data, error } = await supabase.rpc('update_resident_rent', {
         p_property_id: propertyId,
-        p_resident_id: selectedResident.id,
-        p_amount_paise: amountPaise,
-        p_method: paymentMethod,
-        p_payment_date: todayIso,
-        p_notes: paymentNotes.trim() || null,
-        p_student_report_id: null,
+        p_resident_id: selectedResidentForEdit.resident_id,
+        p_rent_paise: rentPaise,
+        p_billing_month: monthIsoStart,
       });
 
       if (error) throw error;
-      if (!data?.success) {
-        Alert.alert('Payment Failed', data?.error || 'Could not record payment.');
-        return;
-      }
+      if (!data?.success) throw new Error(data?.error || 'Failed to update rent.');
 
-      Alert.alert('Payment Recorded', data.message || 'Payment allocated successfully.', [
-        {
-          text: 'View Receipt',
-          onPress: () => {
-            setShowPaymentModal(false);
-            setSelectedResident(null);
-            router.push({
-              pathname: '/receipt-detail',
-              params: { id: data.payment_id },
-            });
-          },
-        },
-        {
-          text: 'Done',
-          onPress: () => {
-            setShowPaymentModal(false);
-            openResidentDetail(selectedResident);
-            loadData();
-          },
-        },
-      ]);
+      setEditRentModalVisible(false);
+      setSelectedResidentForEdit(null);
+      Alert.alert(
+        'Rent Updated! ✅',
+        `Monthly rent for ${selectedResidentForEdit.full_name} set to ₹${parsedRupees.toLocaleString('en-IN')}.`
+      );
+      await loadBillingData();
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to record payment.');
+      Alert.alert('Update Failed', err.message || 'Could not update rent amount.');
     } finally {
-      setSubmittingPayment(false);
+      setUpdatingRent(false);
     }
   };
 
-  // Record Opening Balance RPC
-  const handleRecordOpeningBalance = async () => {
-    if (!selectedResident) return;
+  // Split Room EB Bill
+  const handleConfirmSplitEb = async () => {
+    if (!propertyId || generatingEb || !selectedRoomForEb) return;
 
-    const amountRupees = parseFloat(openingAmountRupees);
-    if (isNaN(amountRupees) || amountRupees <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid amount.');
+    const parsedRupees = parseFloat(ebTotalRupeesInput.trim());
+    if (isNaN(parsedRupees) || parsedRupees <= 0) {
+      Alert.alert('Invalid Amount', 'Please enter a valid meter bill amount in Rupees.');
       return;
     }
 
-    setSubmittingOpening(true);
-    try {
-      const todayIso = new Date().toISOString().split('T')[0];
-      const amountPaise = Math.round(amountRupees * 100);
-
-      const { data, error } = await supabase.rpc('record_opening_balance', {
-        p_resident_id: selectedResident.id,
-        p_category: openingCategory,
-        p_amount_paise: amountPaise,
-        p_due_date: todayIso,
-        p_reference: openingReference.trim() || null,
-      });
-
-      if (error) throw error;
-      if (!data?.success) {
-        Alert.alert('Failed', data?.error || 'Could not record opening balance.');
-        return;
-      }
-
-      Alert.alert('Success', data.message || 'Opening balance recorded.');
-      setShowOpeningModal(false);
-      setOpeningAmountRupees('');
-      setOpeningReference('');
-      openResidentDetail(selectedResident);
-      loadData();
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to record opening balance.');
-    } finally {
-      setSubmittingOpening(false);
-    }
-  };
-
-  // Open Review & Approval Modal (Allows Owner Verification & Audit-logged Corrections)
-  const handleOpenApproveModal = (report: StudentReportItem) => {
-    setReviewingReport(report);
-    setApprovedAmountRupees(String(report.amount_paise / 100));
-    setApprovedMethod(report.claimed_method);
-    setApprovedDate(report.payment_date);
-    setApprovalNotes(report.notes || '');
-  };
-
-  const handleConfirmApprove = async () => {
-    if (!reviewingReport || !propertyId || submittingApproval) return;
-
-    const amountNum = parseFloat(approvedAmountRupees);
-    if (isNaN(amountNum) || amountNum <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid approved payment amount.');
+    const roomResidents = allResidents.filter((r) => r.room_number === selectedRoomForEb);
+    if (roomResidents.length === 0) {
+      Alert.alert('No Residents', `No active residents found in Room ${selectedRoomForEb}.`);
       return;
     }
 
-    setSubmittingApproval(true);
-    try {
-      const amountPaise = Math.round(amountNum * 100);
+    const residentIds = roomResidents.map((r) => r.id);
+    const totalPaise = Math.round(parsedRupees * 100);
 
-      const { data, error } = await supabase.rpc('approve_payment_and_allocate', {
+    try {
+      setGeneratingEb(true);
+      const { data, error } = await supabase.rpc('allocate_eb_bill', {
         p_property_id: propertyId,
-        p_resident_id: reviewingReport.resident_id,
-        p_amount_paise: amountPaise,
-        p_method: approvedMethod,
-        p_payment_date: approvedDate || reviewingReport.payment_date,
-        p_notes: approvalNotes.trim() || null,
-        p_student_report_id: reviewingReport.id,
+        p_room_number: selectedRoomForEb,
+        p_period_start: monthIsoStart,
+        p_period_end: monthIsoEnd,
+        p_due_date: dueIsoDate,
+        p_total_amount_paise: totalPaise,
+        p_resident_ids: residentIds,
+        p_notes: `${monthLabel} Room ${selectedRoomForEb} Electricity Bill`,
       });
 
       if (error) throw error;
-      if (!data?.success) {
-        Alert.alert('Approval Failed', data?.error || 'Could not approve report.');
-        return;
-      }
+      if (!data?.success) throw new Error(data?.error || 'Failed to allocate EB bill.');
 
-      Alert.alert('Payment Approved & Allocated', data.message || 'Payment recorded successfully.', [
-        {
-          text: 'View Receipt',
-          onPress: () => {
-            const pid = data.payment_id;
-            setReviewingReport(null);
-            loadData();
-            if (pid) {
-              router.push({
-                pathname: '/receipt-detail',
-                params: { id: pid },
-              });
-            }
-          },
-        },
-        {
-          text: 'Done',
-          onPress: () => {
-            setReviewingReport(null);
-            loadData();
-          },
-        },
-      ]);
+      setSplitEbModalVisible(false);
+      setEbTotalRupeesInput('');
+      Alert.alert(
+        'EB Bill Split! ⚡',
+        `Split ₹${parsedRupees.toLocaleString('en-IN')} equally across ${roomResidents.length} resident${
+          roomResidents.length > 1 ? 's' : ''
+        } in Room ${selectedRoomForEb}.`
+      );
+      await loadBillingData();
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to approve report.');
+      Alert.alert('EB Split Failed', err.message || 'Could not split EB bill.');
     } finally {
-      setSubmittingApproval(false);
+      setGeneratingEb(false);
     }
   };
 
-  // Open Rejection Modal (Cross-Platform Android & iOS)
-  const handleOpenRejectModal = (report: StudentReportItem) => {
-    setRejectingReport(report);
-    setRejectionReason('');
-  };
-
-  const handleConfirmReject = async () => {
-    if (!rejectingReport || submittingReject) return;
-    const trimmed = rejectionReason.trim();
-    if (!trimmed) {
-      Alert.alert('Reason Required', 'Please provide a reason for rejecting this payment report.');
-      return;
-    }
-
-    setSubmittingReject(true);
+  // Toggle Washing Machine opt-in (updates resident_opt_ins AND any unpaid current charge)
+  const handleToggleWashingMachine = async (resident: ResidentRentBillItem) => {
+    if (!propertyId) return;
+    const nextVal = !resident.opt_in_wm;
     try {
-      const { data, error } = await supabase.rpc('reject_student_payment_report', {
-        p_report_id: rejectingReport.id,
-        p_rejection_reason: trimmed,
+      const { data, error } = await supabase.rpc('toggle_resident_wm_billing', {
+        p_property_id: propertyId,
+        p_resident_id: resident.resident_id,
+        p_is_enabled: nextVal,
+        p_billing_month: monthIsoStart,
       });
 
       if (error) throw error;
-      if (!data?.success) {
-        Alert.alert('Failed', data?.error || 'Could not reject report.');
-        return;
-      }
-
-      Alert.alert('Report Rejected', data.message || 'Payment report marked as rejected.');
-      setRejectingReport(null);
-      setRejectionReason('');
-      loadData();
+      if (!data?.success) throw new Error(data?.error || 'Failed to toggle washing machine.');
+      await loadBillingData();
     } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to reject report.');
-    } finally {
-      setSubmittingReject(false);
+      Alert.alert('Update Error', err.message || 'Could not update washing machine setting.');
     }
   };
+
+  // Confirm student payment or mark as paid in person
+  const handleConfirmPayment = async (
+    chargeId: string,
+    reportId?: string | null,
+    method: 'upi' | 'cash' = 'upi'
+  ) => {
+    if (confirmingPayment) return;
+
+    try {
+      setConfirmingPayment(true);
+      const { data, error } = await supabase.rpc('confirm_monthly_payment', {
+        p_charge_id: chargeId,
+        p_report_id: reportId || undefined,
+        p_method: method,
+        p_notes: reportId
+          ? 'Payment confirmed via student app proof'
+          : 'Payment received directly in person',
+      });
+
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Failed to confirm payment.');
+
+      setReviewModalVisible(false);
+      setSelectedReviewItem(null);
+      Alert.alert('Payment Confirmed! ✅', `Receipt Number: ${data.receipt_number}`);
+      await loadBillingData();
+    } catch (err: any) {
+      Alert.alert('Confirmation Failed', err.message || 'Could not confirm payment.');
+    } finally {
+      setConfirmingPayment(false);
+    }
+  };
+
+  // RENT Metrics & Filtering
+  const rentTotalCount = rentBills.length;
+  const rentPaidCount = rentBills.filter((r) => r.status === 'paid').length;
+  const rentReviewCount = rentBills.filter((r) => r.has_pending_report && r.status !== 'paid').length;
+  const rentUnpaidCount = rentBills.filter((r) => r.status === 'unpaid').length;
+  const rentUngeneratedCount = rentBills.filter((r) => r.status === 'not_generated').length;
+
+  const rentTotalBilledPaise = rentBills.reduce((acc, r) => acc + (r.charge_id ? r.total_paise : 0), 0);
+  const rentTotalCollectedPaise = rentBills.reduce(
+    (acc, r) => acc + (r.status === 'paid' ? r.total_paise : 0),
+    0
+  );
+
+  const filteredRentList = rentBills.filter((r) => {
+    if (filterTab === 'REVIEW') return r.has_pending_report && r.status !== 'paid';
+    if (filterTab === 'UNPAID') return r.status === 'unpaid' || r.status === 'not_generated';
+    if (filterTab === 'PAID') return r.status === 'paid';
+    return true;
+  });
+
+  // EB Metrics & Filtering
+  const ebBilledResidents = ebBills.filter((r) => r.charge_id !== null);
+  const ebTotalCount = ebBilledResidents.length;
+  const ebPaidCount = ebBilledResidents.filter((r) => r.status === 'paid').length;
+  const ebReviewCount = ebBilledResidents.filter((r) => r.has_pending_report && r.status !== 'paid').length;
+  const ebUnpaidCount = ebBilledResidents.filter((r) => r.status === 'unpaid').length;
+
+  const ebTotalBilledPaise = ebBilledResidents.reduce((acc, r) => acc + r.amount_paise, 0);
+  const ebTotalCollectedPaise = ebBilledResidents.reduce(
+    (acc, r) => acc + (r.status === 'paid' ? r.amount_paise : 0),
+    0
+  );
+
+  const filteredEbList = ebBilledResidents.filter((r) => {
+    if (filterTab === 'REVIEW') return r.has_pending_report && r.status !== 'paid';
+    if (filterTab === 'UNPAID') return r.status === 'unpaid';
+    if (filterTab === 'PAID') return r.status === 'paid';
+    return true;
+  });
+
+  // Active counts for current mode
+  const currentTotalBilled = billingMode === 'RENT' ? rentTotalBilledPaise : ebTotalBilledPaise;
+  const currentTotalCollected = billingMode === 'RENT' ? rentTotalCollectedPaise : ebTotalCollectedPaise;
+  const currentReviewCount = billingMode === 'RENT' ? rentReviewCount : ebReviewCount;
+  const currentUnpaidCount = billingMode === 'RENT' ? rentUnpaidCount : ebUnpaidCount;
+  const currentPaidCount = billingMode === 'RENT' ? rentPaidCount : ebPaidCount;
+  const currentTotalCount = billingMode === 'RENT' ? rentTotalCount : ebTotalCount;
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={() => {
-              setRefreshing(true);
-              loadData();
-            }}
+            onRefresh={handleRefresh}
             colors={['#0284C7']}
           />
         }>
-        {/* Header */}
+
+        {/* Top Header */}
         <View style={styles.topBar}>
           <Pressable
             accessibilityRole="button"
-            style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
+            style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
             onPress={() => router.back()}>
-            <Text style={styles.backButtonText}>‹ Back</Text>
+            <Text style={styles.backBtnText}>‹ Back</Text>
           </Pressable>
-          <View style={styles.headerTitleWrap}>
-            <Text style={styles.screenTitle}>Billing & Dues</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.screenTitle}>Monthly Billing</Text>
             <Text style={styles.screenSubtitle}>{propertyName}</Text>
           </View>
         </View>
 
+        {/* Top Mode Toggle: Rent vs EB */}
+        <View style={styles.modeToggleBar}>
+          <Pressable
+            style={[styles.modeBtn, billingMode === 'RENT' && styles.modeBtnActive]}
+            onPress={() => setBillingMode('RENT')}>
+            <Text style={[styles.modeBtnText, billingMode === 'RENT' && styles.modeBtnTextActive]}>
+              🏠 Room Rent Bills
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[styles.modeBtn, billingMode === 'EB' && styles.modeBtnActive]}
+            onPress={() => setBillingMode('EB')}>
+            <Text style={[styles.modeBtnText, billingMode === 'EB' && styles.modeBtnTextActive]}>
+              ⚡ Electricity (EB)
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* Month Selector Bar */}
+        <View style={styles.monthSelectorBar}>
+          <Pressable
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.monthNavBtn, pressed && styles.pressed]}
+            onPress={handlePrevMonth}>
+            <Text style={styles.monthNavArrow}>‹</Text>
+          </Pressable>
+          <View style={styles.monthLabelWrap}>
+            <Text style={styles.monthLabelText}>📅 {monthLabel}</Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            style={({ pressed }) => [styles.monthNavBtn, pressed && styles.pressed]}
+            onPress={handleNextMonth}>
+            <Text style={styles.monthNavArrow}>›</Text>
+          </Pressable>
+        </View>
+
+        {/* Summary Metric Cards */}
+        <View style={styles.summaryRow}>
+          <View style={[styles.summaryCard, styles.cardBorderTotal]}>
+            <Text style={styles.summaryNum} numberOfLines={1} adjustsFontSizeToFit>
+              {formatPaiseToRupees(currentTotalBilled)}
+            </Text>
+            <Text style={styles.summaryLbl} numberOfLines={1}>Total Billed</Text>
+            <Text style={styles.summarySubNote} numberOfLines={1}>
+              Paid: {formatPaiseToRupees(currentTotalCollected)}
+            </Text>
+          </View>
+
+          <View style={[styles.summaryCard, styles.cardBorderReview]}>
+            <Text style={[styles.summaryNum, { color: '#D97706' }]} numberOfLines={1}>
+              {currentReviewCount}
+            </Text>
+            <Text style={styles.summaryLbl} numberOfLines={1}>Needs Review</Text>
+            <Text style={styles.summarySubNote} numberOfLines={1}>Proofs waiting</Text>
+          </View>
+
+          <View style={[styles.summaryCard, styles.cardBorderUnpaid]}>
+            <Text style={[styles.summaryNum, { color: '#DC2626' }]} numberOfLines={1}>
+              {currentUnpaidCount}
+            </Text>
+            <Text style={styles.summaryLbl} numberOfLines={1}>Unpaid</Text>
+            <Text style={styles.summarySubNote} numberOfLines={1}>{currentPaidCount} Paid</Text>
+          </View>
+        </View>
+
+        {/* Action Generator Box */}
+        {billingMode === 'RENT' ? (
+          rentUngeneratedCount > 0 ? (
+            <View style={styles.generatorBanner}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.generatorTitle}>Generate {monthLabel} Rent Bills</Text>
+                <Text style={styles.generatorSub}>
+                  {rentUngeneratedCount} resident{rentUngeneratedCount > 1 ? 's' : ''} not yet billed for rent.
+                </Text>
+              </View>
+              <Pressable
+                style={styles.generatorActionBtn}
+                onPress={() => setGenerateRentModalVisible(true)}>
+                <Text style={styles.generatorActionBtnText}>⚡ Generate</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.allDoneBox}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.allDoneText}>
+                  ✓ All {rentTotalCount} residents have rent bills for {monthLabel}.
+                </Text>
+                <Text style={styles.allDoneSub}>
+                  Tap update to adjust rent amounts or re-apply settings.
+                </Text>
+              </View>
+              <Pressable
+                style={styles.updateRentActionBtn}
+                onPress={() => setGenerateRentModalVisible(true)}>
+                <Text style={styles.updateRentActionBtnText}>⚡ Update Rent</Text>
+              </Pressable>
+            </View>
+          )
+        ) : (
+          <View style={styles.generatorBanner}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.generatorTitle}>Room Electricity (EB) Splitter</Text>
+              <Text style={styles.generatorSub}>
+                Enter total room meter bill and split equally among occupants.
+              </Text>
+            </View>
+            <Pressable
+              style={[styles.generatorActionBtn, { backgroundColor: '#D97706' }]}
+              onPress={() => setSplitEbModalVisible(true)}>
+              <Text style={styles.generatorActionBtnText}>⚡ Split Room EB</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {/* Filter Tabs */}
+        <View style={styles.filterTabsRow}>
+          <Pressable
+            style={[styles.filterTab, filterTab === 'ALL' && styles.filterTabActive]}
+            onPress={() => setFilterTab('ALL')}>
+            <Text style={[styles.filterTabText, filterTab === 'ALL' && styles.filterTabTextActive]}>
+              All ({currentTotalCount})
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[styles.filterTab, filterTab === 'REVIEW' && styles.filterTabActive]}
+            onPress={() => setFilterTab('REVIEW')}>
+            <Text style={[styles.filterTabText, filterTab === 'REVIEW' && styles.filterTabTextActive]}>
+              Review ({currentReviewCount})
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[styles.filterTab, filterTab === 'UNPAID' && styles.filterTabActive]}
+            onPress={() => setFilterTab('UNPAID')}>
+            <Text style={[styles.filterTabText, filterTab === 'UNPAID' && styles.filterTabTextActive]}>
+              Unpaid ({billingMode === 'RENT' ? rentUnpaidCount + rentUngeneratedCount : ebUnpaidCount})
+            </Text>
+          </Pressable>
+
+          <Pressable
+            style={[styles.filterTab, filterTab === 'PAID' && styles.filterTabActive]}
+            onPress={() => setFilterTab('PAID')}>
+            <Text style={[styles.filterTabText, filterTab === 'PAID' && styles.filterTabTextActive]}>
+              Paid ({currentPaidCount})
+            </Text>
+          </Pressable>
+        </View>
+
+        {/* Roster Display */}
         {loading ? (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="small" color="#0284C7" />
-            <Text style={styles.loadingText}>Loading property ledger...</Text>
+            <Text style={styles.loadingText}>Loading bills...</Text>
           </View>
-        ) : (
-          <>
-            {/* Overview Cards */}
-            <View style={styles.statsGrid}>
-              <View style={[styles.statCard, { borderLeftColor: '#0284C7' }]}>
-                <Text style={styles.statLabel}>Total Outstanding</Text>
-                <Text style={[styles.statValue, { color: '#0284C7' }]}>
-                  ₹{(totalOutstandingPaise / 100).toLocaleString('en-IN')}
-                </Text>
-                <Text style={styles.statSub}>All active dues</Text>
-              </View>
-
-              <View style={[styles.statCard, { borderLeftColor: '#DC2626' }]}>
-                <Text style={styles.statLabel}>Overdue Amount</Text>
-                <Text style={[styles.statValue, { color: '#DC2626' }]}>
-                  ₹{(totalOverduePaise / 100).toLocaleString('en-IN')}
-                </Text>
-                <Text style={styles.statSub}>Past due date</Text>
-              </View>
+        ) : billingMode === 'RENT' ? (
+          /* RENT BILLS ROSTER */
+          filteredRentList.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyTitle}>No residents in this filter</Text>
+              <Text style={styles.emptySubtitle}>
+                {filterTab === 'REVIEW'
+                  ? 'No rent payment proofs pending review.'
+                  : filterTab === 'UNPAID'
+                  ? 'All residents have paid their rent for this month!'
+                  : 'No resident records found.'}
+              </Text>
             </View>
-
-            {/* Quick Action Buttons */}
-            <View style={styles.actionRow}>
-              <Pressable
-                style={({ pressed }) => [styles.actionButton, pressed && styles.actionButtonPressed]}
-                onPress={() => setShowGenerateModal(true)}>
-                <Text style={styles.actionButtonIcon}>⚡</Text>
-                <View style={styles.actionButtonTextWrap}>
-                  <Text style={styles.actionButtonTitle}>Generate Monthly</Text>
-                  <Text style={styles.actionButtonSub}>Rent & Washing Machine</Text>
-                </View>
-              </Pressable>
-
-              <Pressable
-                style={({ pressed }) => [styles.actionButton, pressed && styles.actionButtonPressed]}
-                onPress={() => router.push('/eb-billing')}>
-                <Text style={styles.actionButtonIcon}>💡</Text>
-                <View style={styles.actionButtonTextWrap}>
-                  <Text style={styles.actionButtonTitle}>EB Room Bill</Text>
-                  <Text style={styles.actionButtonSub}>Equal room split</Text>
-                </View>
-              </Pressable>
-            </View>
-
-            {/* Pending Payment Reports Section */}
-            {pendingReports.length > 0 && (
-              <View style={styles.sectionWrap}>
-                <View style={styles.sectionHeaderRow}>
-                  <Text style={styles.sectionTitle}>
-                    Pending Student Reports ({pendingReports.length})
-                  </Text>
-                  <View style={styles.alertBadge}>
-                    <Text style={styles.alertBadgeText}>Review Required</Text>
-                  </View>
-                </View>
-
-                {pendingReports.map((report) => (
-                  <View key={report.id} style={styles.reportCard}>
-                    <View style={styles.reportHeader}>
-                      <View>
-                        <Text style={styles.reportResidentName}>
-                          {report.resident?.full_name} (Room {report.resident?.room_number})
-                        </Text>
-                        <Text style={styles.reportMeta}>
-                          Claimed {report.claimed_method.toUpperCase()} • Paid on {report.payment_date}
-                        </Text>
-                      </View>
-                      <Text style={styles.reportAmount}>
-                        ₹{(report.amount_paise / 100).toLocaleString('en-IN')}
-                      </Text>
-                    </View>
-
-                    {report.reference_number && (
-                      <Text style={styles.reportRef}>Ref: {report.reference_number}</Text>
-                    )}
-                    {report.notes && (
-                      <Text style={styles.reportNotes}>Note: {report.notes}</Text>
-                    )}
-
-                    <View style={styles.reportActionsRow}>
-                      <Pressable
-                        style={styles.rejectBtn}
-                        onPress={() => handleOpenRejectModal(report)}>
-                        <Text style={styles.rejectBtnText}>Reject</Text>
-                      </Pressable>
-                      <Pressable
-                        style={styles.approveBtn}
-                        onPress={() => handleOpenApproveModal(report)}>
-                        <Text style={styles.approveBtnText}>Review & Approve</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {/* Resident Directory & Ledger */}
-            <View style={styles.sectionWrap}>
-              <View style={styles.sectionHeaderRow}>
-                <Text style={styles.sectionTitle}>Resident Dues Ledger</Text>
-                <Text style={styles.sectionCount}>{residents.length} residents</Text>
-              </View>
-
-              {residents.map((res) => {
-                const isPaid = res.total_outstanding_paise === 0;
-                const isOverdue = res.total_overdue_paise > 0;
+          ) : (
+            <View style={styles.rosterContainer}>
+              {filteredRentList.map((res) => {
+                const isPaid = res.status === 'paid';
+                const isNotGen = res.status === 'not_generated';
+                const hasReport = res.has_pending_report && !isPaid;
 
                 return (
-                  <Pressable
-                    key={res.id}
-                    style={({ pressed }) => [styles.residentCard, pressed && styles.residentCardPressed]}
-                    onPress={() => openResidentDetail(res)}>
-                    <View style={styles.resCardLeft}>
-                      <View style={styles.resNameRow}>
-                        <Text style={styles.resName}>{res.full_name}</Text>
-                        <Text style={styles.roomBadge}>Room {res.room_number}</Text>
+                  <View key={res.resident_id} style={styles.residentCard}>
+                    <View style={styles.cardHeaderRow}>
+                      <View style={styles.roomBadge}>
+                        <Text style={styles.roomBadgeText}>Room {res.room_number}</Text>
                       </View>
-                      <Text style={styles.resSub}>
-                        Washing Machine: {res.opt_in_wm ? 'Enabled (₹500/mo)' : 'Disabled'}
-                      </Text>
+
+                      {isPaid ? (
+                        <View style={[styles.statusBadge, styles.badgePaid]}>
+                          <Text style={styles.badgePaidText}>✓ PAID</Text>
+                        </View>
+                      ) : hasReport ? (
+                        <View style={[styles.statusBadge, styles.badgeReview]}>
+                          <Text style={styles.badgeReviewText}>🕒 PAYMENT SENT</Text>
+                        </View>
+                      ) : isNotGen ? (
+                        <View style={[styles.statusBadge, styles.badgeNotGen]}>
+                          <Text style={styles.badgeNotGenText}>NOT BILLED</Text>
+                        </View>
+                      ) : (
+                        <View style={[styles.statusBadge, styles.badgeUnpaid]}>
+                          <Text style={styles.badgeUnpaidText}>UNPAID</Text>
+                        </View>
+                      )}
                     </View>
 
-                    <View style={styles.resCardRight}>
-                      <Text
-                        style={[
-                          styles.resAmount,
-                          isPaid ? styles.resAmountPaid : isOverdue ? styles.resAmountOverdue : styles.resAmountDue,
-                        ]}>
-                        {isPaid ? 'All Paid' : `₹${(res.total_outstanding_paise / 100).toLocaleString('en-IN')}`}
-                      </Text>
-                      <View
-                        style={[
-                          styles.statusPill,
-                          isPaid ? styles.statusPillPaid : isOverdue ? styles.statusPillOverdue : styles.statusPillDue,
-                        ]}>
+                    <Text style={styles.resName}>{res.full_name}</Text>
+                    {res.phone_number ? (
+                      <Text style={styles.resPhone}>📞 {res.phone_number}</Text>
+                    ) : null}
+
+                    {/* Breakdown */}
+                    <View style={styles.breakdownBox}>
+                      <View style={styles.breakdownRow}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                          <Text style={styles.breakdownLabel}>Room Rent:</Text>
+                          {res.status !== 'paid' && (
+                            <Pressable
+                              hitSlop={8}
+                              style={styles.editRentBadge}
+                              onPress={() => handleOpenEditRent(res)}>
+                              <Text style={styles.editRentBadgeText}>✏️ Edit</Text>
+                            </Pressable>
+                          )}
+                        </View>
+                        <Text style={styles.breakdownVal}>
+                          {formatPaiseToRupees(res.rent_paise)}
+                        </Text>
+                      </View>
+
+                      <View style={styles.breakdownRow}>
+                        <View style={styles.wmToggleRow}>
+                          <Text style={styles.breakdownLabel}>Washing Machine:</Text>
+                          <Switch
+                            value={res.opt_in_wm}
+                            onValueChange={() => handleToggleWashingMachine(res)}
+                            trackColor={{ false: '#CBD5E1', true: '#BAE6FD' }}
+                            thumbColor={res.opt_in_wm ? '#0284C7' : '#F8FAFC'}
+                          />
+                        </View>
                         <Text
                           style={[
-                            styles.statusPillText,
-                            isPaid ? styles.statusPillTextPaid : isOverdue ? styles.statusPillTextOverdue : styles.statusPillTextDue,
+                            styles.breakdownVal,
+                            !res.opt_in_wm && { color: '#94A3B8' },
                           ]}>
-                          {isPaid ? 'Settled' : isOverdue ? 'Overdue' : 'Due'}
+                          {res.opt_in_wm ? '₹500' : '₹0'}
+                        </Text>
+                      </View>
+
+                      <View style={[styles.breakdownRow, styles.totalRow]}>
+                        <Text style={styles.totalLabel}>Total Rent Bill:</Text>
+                        <Text style={styles.totalVal}>
+                          {formatPaiseToRupees(res.total_paise)}
                         </Text>
                       </View>
                     </View>
-                  </Pressable>
+
+                    {/* Footer Actions */}
+                    {isPaid ? (
+                      <View style={styles.paidInfoBox}>
+                        <Text style={styles.paidInfoText}>
+                          Receipt: <Text style={styles.boldText}>{res.receipt_number || 'Confirmed'}</Text>
+                          {res.paid_method ? ` • Paid via ${res.paid_method.toUpperCase()}` : ''}
+                        </Text>
+                      </View>
+                    ) : hasReport ? (
+                      <View style={styles.reportPendingBox}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.reportAlertTitle}>Payment Proof Submitted</Text>
+                          <Text style={styles.reportAlertSub}>
+                            {res.pending_report?.claimed_method === 'upi'
+                              ? `UPI • ${res.pending_report?.reference_number || 'Screenshot'}`
+                              : 'Cash payment reported'}
+                          </Text>
+                        </View>
+                        <Pressable
+                          style={styles.reviewBtn}
+                          onPress={() => {
+                            setSelectedReviewItem({
+                              full_name: res.full_name,
+                              room_number: res.room_number,
+                              charge_id: res.charge_id!,
+                              bill_title: `${monthLabel} Rent Bill`,
+                              report: res.pending_report,
+                            });
+                            setReviewModalVisible(true);
+                          }}>
+                          <Text style={styles.reviewBtnText}>Review Proof ›</Text>
+                        </Pressable>
+                      </View>
+                    ) : (
+                      <View style={styles.actionRow}>
+                        <Pressable
+                          style={styles.directCashBtn}
+                          onPress={() => {
+                            if (!res.charge_id) {
+                              Alert.alert('Notice', 'Please generate monthly rent bills first.');
+                              return;
+                            }
+                            Alert.alert(
+                              'Confirm In-Person Payment',
+                              `Mark ${res.full_name} as PAID for ${formatPaiseToRupees(
+                                res.total_paise
+                              )} (Cash)?`,
+                              [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                  text: 'Confirm Paid',
+                                  onPress: () => handleConfirmPayment(res.charge_id!, null, 'cash'),
+                                },
+                              ]
+                            );
+                          }}>
+                          <Text style={styles.directCashBtnText}>Mark as Paid (Cash)</Text>
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
                 );
               })}
             </View>
-          </>
-        )}
-      </ScrollView>
-
-      {/* MODAL 1: Generate Monthly Charges */}
-      <Modal
-        visible={showGenerateModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setShowGenerateModal(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Generate Monthly Charges</Text>
-            <Text style={styles.modalSub}>
-              Creates rent charges (due on 5th) and washing machine fees (₹500 for opted-in residents) for all active residents. Duplicate charges are automatically prevented.
-            </Text>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Monthly Rent Amount (₹)</Text>
-              <TextInput
-                style={styles.modalInput}
-                keyboardType="numeric"
-                value={customRentRupees}
-                onChangeText={setCustomRentRupees}
-                placeholder="9000"
-              />
+          )
+        ) : (
+          /* EB BILLS ROSTER */
+          filteredEbList.length === 0 ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyTitle}>No EB bills in this filter</Text>
+              <Text style={styles.emptySubtitle}>
+                {filterTab === 'ALL'
+                  ? 'No electricity bills split for this month yet. Tap "Split Room EB" above to allocate meter bills.'
+                  : 'No matching EB records found.'}
+              </Text>
             </View>
+          ) : (
+            <View style={styles.rosterContainer}>
+              {filteredEbList.map((res) => {
+                const isPaid = res.status === 'paid';
+                const hasReport = res.has_pending_report && !isPaid;
 
-            <View style={styles.modalBtnRow}>
-              <Pressable
-                style={styles.modalCancelBtn}
-                onPress={() => setShowGenerateModal(false)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                disabled={generating}
-                style={[styles.modalConfirmBtn, generating && styles.btnDisabled]}
-                onPress={handleGenerateMonthly}>
-                {generating ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <Text style={styles.modalConfirmText}>Generate Charges</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
+                return (
+                  <View key={res.resident_id} style={styles.residentCard}>
+                    <View style={styles.cardHeaderRow}>
+                      <View style={styles.roomBadge}>
+                        <Text style={styles.roomBadgeText}>Room {res.room_number}</Text>
+                      </View>
 
-      {/* MODAL 2: Resident Detailed Ledger */}
-      <Modal
-        visible={!!selectedResident}
-        animationType="slide"
-        onRequestClose={() => setSelectedResident(null)}>
-        <SafeAreaView style={styles.residentDetailModal}>
-          <View style={styles.modalHeader}>
-            <Pressable hitSlop={8} onPress={() => setSelectedResident(null)}>
-              <Text style={styles.modalCloseText}>✕ Close</Text>
-            </Pressable>
-            <Text style={styles.modalHeaderTitle}>{selectedResident?.full_name}</Text>
-            <Text style={styles.modalHeaderSub}>Room {selectedResident?.room_number}</Text>
-          </View>
-
-          <ScrollView contentContainerStyle={styles.detailScrollContent}>
-            {loadingResidentDetail ? (
-              <ActivityIndicator size="small" color="#0284C7" style={{ marginTop: 40 }} />
-            ) : (
-              <>
-                {/* Summary Banner */}
-                <View style={styles.ledgerSummaryCard}>
-                  <View>
-                    <Text style={styles.ledgerSummaryLabel}>Outstanding Dues</Text>
-                    <Text style={styles.ledgerSummaryValue}>
-                      ₹{((selectedResident?.total_outstanding_paise || 0) / 100).toLocaleString('en-IN')}
-                    </Text>
-                  </View>
-                  <View style={styles.ledgerSummaryActions}>
-                    <Pressable
-                      style={styles.recordPayBtn}
-                      onPress={() => {
-                        setPaymentAmountRupees(
-                          selectedResident?.total_outstanding_paise
-                            ? String(selectedResident.total_outstanding_paise / 100)
-                            : ''
-                        );
-                        setShowPaymentModal(true);
-                      }}>
-                      <Text style={styles.recordPayBtnText}>+ Record Payment</Text>
-                    </Pressable>
-                  </View>
-                </View>
-
-                {/* Advance Credit Card */}
-                {residentCreditPaise > 0 && (
-                  <View style={styles.creditCard}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.creditCardLabel}>Available Advance Credit</Text>
-                      <Text style={styles.creditCardValue}>
-                        ₹{(residentCreditPaise / 100).toLocaleString('en-IN')}
-                      </Text>
-                      <Text style={styles.creditCardSub}>
-                        From unallocated amounts on approved payments.
-                      </Text>
+                      {isPaid ? (
+                        <View style={[styles.statusBadge, styles.badgePaid]}>
+                          <Text style={styles.badgePaidText}>✓ PAID</Text>
+                        </View>
+                      ) : hasReport ? (
+                        <View style={[styles.statusBadge, styles.badgeReview]}>
+                          <Text style={styles.badgeReviewText}>🕒 PAYMENT SENT</Text>
+                        </View>
+                      ) : (
+                        <View style={[styles.statusBadge, styles.badgeUnpaid]}>
+                          <Text style={styles.badgeUnpaidText}>UNPAID</Text>
+                        </View>
+                      )}
                     </View>
-                    {selectedResident && selectedResident.total_outstanding_paise > 0 ? (
-                      <Pressable
-                        disabled={applyingCredit}
-                        style={[styles.applyCreditBtn, applyingCredit && styles.btnDisabled]}
-                        onPress={handleApplyCredit}>
-                        <Text style={styles.applyCreditBtnText}>
-                          {applyingCredit ? 'Applying...' : 'Apply Credit'}
+
+                    <Text style={styles.resName}>{res.full_name}</Text>
+
+                    <View style={styles.breakdownBox}>
+                      <View style={[styles.breakdownRow, { paddingVertical: 2 }]}>
+                        <Text style={styles.totalLabel}>EB Meter Share:</Text>
+                        <Text style={[styles.totalVal, { color: '#D97706' }]}>
+                          {formatPaiseToRupees(res.amount_paise)}
                         </Text>
-                      </Pressable>
-                    ) : null}
-                  </View>
-                )}
+                      </View>
+                    </View>
 
-                {/* Washing Machine Opt-in Setting */}
-                <View style={styles.optInCard}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.optInTitle}>Washing Machine (₹500 / mo)</Text>
-                    <Text style={styles.optInSub}>
-                      Enable to automatically bill washing machine fees on monthly generation.
-                    </Text>
-                  </View>
-                  <Switch
-                    value={selectedResident?.opt_in_wm ?? false}
-                    onValueChange={(val) => {
-                      if (selectedResident) handleToggleWm(selectedResident, val);
-                    }}
-                    trackColor={{ false: '#CBD5E1', true: '#93C5FD' }}
-                    thumbColor={selectedResident?.opt_in_wm ? '#0284C7' : '#F8FAFC'}
-                  />
-                </View>
-
-                {/* Actions: Add Opening Balance */}
-                <View style={styles.secondaryActionRow}>
-                  <Pressable
-                    style={styles.openingBalBtn}
-                    onPress={() => setShowOpeningModal(true)}>
-                    <Text style={styles.openingBalBtnText}>+ Set Opening Balance</Text>
-                  </Pressable>
-                </View>
-
-                {/* Charges Section with Filters */}
-                <View style={styles.filterSectionHeader}>
-                  <Text style={styles.subSectionTitle}>Individual Charges & Dues</Text>
-                  <View style={styles.miniFilterRow}>
-                    {(['all', 'outstanding', 'settled'] as const).map((f) => (
-                      <Pressable
-                        key={f}
-                        style={[
-                          styles.miniFilterPill,
-                          chargeFilter === f && styles.miniFilterPillActive,
-                        ]}
-                        onPress={() => setChargeFilter(f)}>
-                        <Text
-                          style={[
-                            styles.miniFilterText,
-                            chargeFilter === f && styles.miniFilterTextActive,
-                          ]}>
-                          {f.toUpperCase()}
+                    {/* Footer Actions */}
+                    {isPaid ? (
+                      <View style={styles.paidInfoBox}>
+                        <Text style={styles.paidInfoText}>
+                          Receipt: <Text style={styles.boldText}>{res.receipt_number || 'Confirmed'}</Text>
+                          {res.paid_method ? ` • Paid via ${res.paid_method.toUpperCase()}` : ''}
                         </Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                </View>
-
-                {/* Category Filter for Resident Charges */}
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.residentCategoryScroll}>
-                  {(
-                    [
-                      { key: 'all', label: 'All Categories' },
-                      { key: 'rent', label: '🏠 Rent' },
-                      { key: 'electricity', label: '⚡ EB' },
-                      { key: 'washing_machine', label: '🧺 Washing' },
-                      { key: 'opening_balance', label: '📋 Opening' },
-                    ] as const
-                  ).map((cat) => (
-                    <Pressable
-                      key={cat.key}
-                      style={[
-                        styles.residentCategoryPill,
-                        residentCategoryFilter === cat.key && styles.residentCategoryPillActive,
-                      ]}
-                      onPress={() => setResidentCategoryFilter(cat.key)}>
-                      <Text
-                        style={[
-                          styles.residentCategoryPillText,
-                          residentCategoryFilter === cat.key &&
-                            styles.residentCategoryPillTextActive,
-                        ]}>
-                        {cat.label}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </ScrollView>
-
-                {(() => {
-                  const todayStr = new Date().toISOString().split('T')[0];
-
-                  const filteredCharges = residentCharges.filter((ch) => {
-                    if (chargeFilter !== 'all' && ch.status !== chargeFilter) return false;
-                    if (
-                      residentCategoryFilter !== 'all' &&
-                      ch.category !== residentCategoryFilter
-                    )
-                      return false;
-                    return true;
-                  });
-
-                  if (filteredCharges.length === 0) {
-                    return (
-                      <Text style={styles.emptyText}>
-                        No charges found for the selected filters.
-                      </Text>
-                    );
-                  }
-
-                  // Group charges by billing period
-                  const periodMap = new Map<string, ChargeItem[]>();
-                  for (const ch of filteredCharges) {
-                    const key = ch.billing_period_start || 'general';
-                    if (!periodMap.has(key)) {
-                      periodMap.set(key, []);
-                    }
-                    periodMap.get(key)!.push(ch);
-                  }
-
-                  const sortedKeys = Array.from(periodMap.keys()).sort((a, b) =>
-                    b.localeCompare(a)
-                  );
-
-                  return sortedKeys.map((pKey) => {
-                    const groupCharges = periodMap.get(pKey)!;
-                    const periodLabel = getPeriodLabel(
-                      groupCharges[0]?.billing_period_start,
-                      groupCharges[0]?.billing_period_end
-                    );
-
-                    return (
-                      <View key={pKey} style={styles.residentPeriodGroup}>
-                        <View style={styles.residentPeriodHeader}>
-                          <Text style={styles.residentPeriodTitle}>{periodLabel}</Text>
-                          <Text style={styles.residentPeriodCount}>
-                            {groupCharges.length} charge{groupCharges.length === 1 ? '' : 's'}
+                      </View>
+                    ) : hasReport ? (
+                      <View style={styles.reportPendingBox}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.reportAlertTitle}>EB Payment Proof Sent</Text>
+                          <Text style={styles.reportAlertSub}>
+                            {res.pending_report?.claimed_method === 'upi'
+                              ? `UPI • ${res.pending_report?.reference_number || 'Screenshot'}`
+                              : 'Cash payment reported'}
                           </Text>
                         </View>
-
-                        {groupCharges.map((ch) => {
-                          const isSettled = ch.status === 'settled';
-                          const isOver = ch.status === 'outstanding' && ch.due_date < todayStr;
-                          const allocs = residentAllocations.filter((a) => a.charge_id === ch.id);
-                          const remainingPaise = isSettled ? 0 : ch.amount_paise;
-
-                          return (
-                            <View key={ch.id} style={styles.residentChargeCardDetailed}>
-                              <View style={styles.residentChargeTopRow}>
-                                <View style={styles.categoryPill}>
-                                  <Text style={styles.categoryPillText}>
-                                    {ch.category === 'rent'
-                                      ? '🏠 RENT'
-                                      : ch.category === 'electricity'
-                                      ? '⚡ EB'
-                                      : ch.category === 'washing_machine'
-                                      ? '🧺 WASHING'
-                                      : '📋 OPENING'}
-                                  </Text>
-                                </View>
-                                <View
-                                  style={[
-                                    styles.chargeStatusBadge,
-                                    isSettled
-                                      ? styles.chargeSettledBadge
-                                      : isOver
-                                      ? styles.chargeOverdueBadge
-                                      : styles.chargeOutstandingBadge,
-                                  ]}>
-                                  <Text
-                                    style={[
-                                      styles.chargeStatusBadgeText,
-                                      isSettled
-                                        ? styles.chargeSettledBadgeText
-                                        : isOver
-                                        ? styles.chargeOverdueBadgeText
-                                        : styles.chargeOutstandingBadgeText,
-                                    ]}>
-                                    {isSettled ? 'SETTLED' : isOver ? 'OVERDUE' : 'OUTSTANDING'}
-                                  </Text>
-                                </View>
-                              </View>
-
-                              <Text style={styles.chargeDesc}>{ch.description}</Text>
-                              <Text style={styles.chargeDate}>
-                                Period: {ch.billing_period_start} to {ch.billing_period_end} • Due:{' '}
-                                {ch.due_date}
-                              </Text>
-
-                              <View style={styles.chargeItemDivider} />
-
-                              <View style={styles.chargeAmountsRow}>
-                                <View>
-                                  <Text style={styles.chargeSmallLabel}>Amount</Text>
-                                  <Text style={styles.chargeAmount}>
-                                    ₹{(ch.amount_paise / 100).toLocaleString('en-IN')}
-                                  </Text>
-                                </View>
-                                <View style={{ alignItems: 'flex-end' }}>
-                                  <Text style={styles.chargeSmallLabel}>Remaining Balance</Text>
-                                  <Text
-                                    style={[
-                                      styles.chargeRemainingText,
-                                      isSettled
-                                        ? styles.remainingSettledText
-                                        : styles.remainingDueText,
-                                    ]}>
-                                    ₹{(remainingPaise / 100).toLocaleString('en-IN')}
-                                  </Text>
-                                </View>
-                              </View>
-
-                              {/* Allocated Payments info */}
-                              {allocs.length > 0 ? (
-                                <View style={styles.residentAllocBox}>
-                                  <Text style={styles.residentAllocTitle}>Allocated Payment:</Text>
-                                  {allocs.map((a) => (
-                                    <Pressable
-                                      key={a.id}
-                                      style={styles.residentAllocRow}
-                                      onPress={() =>
-                                        router.push({
-                                          pathname: '/receipt-detail',
-                                          params: { id: a.payment_id },
-                                        })
-                                      }>
-                                      <Text style={styles.residentAllocReceipt}>
-                                        Receipt {a.receipt_number || 'N/A'} (
-                                        {a.method?.toUpperCase() || 'PAID'})
-                                      </Text>
-                                      <Text style={styles.residentAllocAmt}>
-                                        ₹{(a.settled_amount_paise / 100).toLocaleString('en-IN')} ›
-                                      </Text>
-                                    </Pressable>
-                                  ))}
-                                </View>
-                              ) : isSettled ? (
-                                <View style={styles.residentAllocBox}>
-                                  <Text style={styles.residentAllocSettled}>
-                                    ✓ Settled via approved payment
-                                  </Text>
-                                </View>
-                              ) : null}
-                            </View>
-                          );
-                        })}
-                      </View>
-                    );
-                  });
-                })()}
-
-                {/* Payments Section with Status Filter */}
-                <View style={[styles.filterSectionHeader, { marginTop: 20 }]}>
-                  <Text style={styles.subSectionTitle}>Payment History & Receipts</Text>
-                  <View style={styles.miniFilterRow}>
-                    {(['all', 'approved', 'reversed'] as const).map((f) => (
-                      <Pressable
-                        key={f}
-                        style={[
-                          styles.miniFilterPill,
-                          paymentFilter === f && styles.miniFilterPillActive,
-                        ]}
-                        onPress={() => setPaymentFilter(f)}>
-                        <Text
-                          style={[
-                            styles.miniFilterText,
-                            paymentFilter === f && styles.miniFilterTextActive,
-                          ]}>
-                          {f.toUpperCase()}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                </View>
-
-                {(() => {
-                  const filteredPayments = residentPayments.filter(
-                    (p) => paymentFilter === 'all' || p.status === paymentFilter
-                  );
-
-                  return filteredPayments.length === 0 ? (
-                    <Text style={styles.emptyText}>
-                      No {paymentFilter !== 'all' ? paymentFilter : ''} payments found.
-                    </Text>
-                  ) : (
-                    filteredPayments.map((p) => {
-                      const isReversed = p.status === 'reversed';
-                      return (
                         <Pressable
-                          key={p.id}
-                          style={[
-                            styles.paymentRow,
-                            isReversed && styles.paymentRowReversed,
-                          ]}
-                          onPress={() =>
-                            router.push({
-                              pathname: '/receipt-detail',
-                              params: { id: p.id },
-                            })
-                          }>
-                          <View style={{ flex: 1, paddingRight: 8 }}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                              <Text
-                                style={[
-                                  styles.paymentReceiptNo,
-                                  isReversed && styles.paymentReceiptNoReversed,
-                                ]}>
-                                {p.receipt_number}
-                              </Text>
-                              <View
-                                style={[
-                                  styles.paymentStatusBadge,
-                                  isReversed ? styles.badgeReversed : styles.badgeApprovedMini,
-                                ]}>
-                                <Text
-                                  style={[
-                                    styles.paymentStatusText,
-                                    isReversed ? styles.textReversed : styles.textApprovedMini,
-                                  ]}>
-                                  {p.status.toUpperCase()}
-                                </Text>
-                              </View>
-                            </View>
-
-                            <Text style={styles.paymentMeta}>
-                              {p.payment_date} • {p.method.toUpperCase()}
-                            </Text>
-
-                            {isReversed && p.reversal_reason && (
-                              <View style={styles.ownerReversalBox}>
-                                <Text style={styles.ownerReversalText}>
-                                  Reversed: {p.reversal_reason}
-                                </Text>
-                              </View>
-                            )}
-
-                            {!isReversed && p.unallocated_amount_paise > 0 && (
-                              <Text style={styles.unallocText}>
-                                Unallocated Credit: ₹
-                                {(p.unallocated_amount_paise / 100).toLocaleString('en-IN')}
-                              </Text>
-                            )}
-                          </View>
-
-                          <View style={{ alignItems: 'flex-end' }}>
-                            <Text
-                              style={[
-                                styles.paymentAmount,
-                                isReversed && styles.paymentAmountReversed,
-                              ]}>
-                              ₹{(p.amount_paise / 100).toLocaleString('en-IN')}
-                            </Text>
-                            <Text style={styles.viewReceiptLink}>View Receipt ›</Text>
-                          </View>
+                          style={styles.reviewBtn}
+                          onPress={() => {
+                            setSelectedReviewItem({
+                              full_name: res.full_name,
+                              room_number: res.room_number,
+                              charge_id: res.charge_id!,
+                              bill_title: `${monthLabel} Room ${res.room_number} EB Bill`,
+                              report: res.pending_report,
+                            });
+                            setReviewModalVisible(true);
+                          }}>
+                          <Text style={styles.reviewBtnText}>Review Proof ›</Text>
                         </Pressable>
-                      );
-                    })
-                  );
-                })()}
+                      </View>
+                    ) : (
+                      <View style={styles.actionRow}>
+                        <Pressable
+                          style={styles.directCashBtn}
+                          onPress={() => {
+                            Alert.alert(
+                              'Confirm In-Person EB Payment',
+                              `Mark ${res.full_name} as PAID for ${formatPaiseToRupees(
+                                res.amount_paise
+                              )} (Cash)?`,
+                              [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                  text: 'Confirm Paid',
+                                  onPress: () => handleConfirmPayment(res.charge_id!, null, 'cash'),
+                                },
+                              ]
+                            );
+                          }}>
+                          <Text style={styles.directCashBtnText}>Mark as Paid (Cash)</Text>
+                        </Pressable>
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          )
+        )}
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
+
+      {/* Modal 1: Prompt Rent Bill Amount & Generate */}
+      <Modal
+        visible={generateRentModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setGenerateRentModalVisible(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Generate Rent Bills</Text>
+              <Pressable hitSlop={8} onPress={() => setGenerateRentModalVisible(false)}>
+                <Text style={styles.modalCloseText}>✕</Text>
+              </Pressable>
+            </View>
+
+            <Text style={styles.modalSubHeader}>
+              Set or update monthly room rent for {monthLabel}. Existing unpaid rent bills for {monthLabel} will be updated automatically.
+            </Text>
+
+            <Text style={styles.inputLabel}>Monthly Room Rent Amount (₹)</Text>
+            <TextInput
+              style={styles.amountInputBox}
+              value={rentInputRupees}
+              onChangeText={setRentInputRupees}
+              placeholder="e.g. 8000"
+              placeholderTextColor="#94A3B8"
+              keyboardType="numeric"
+            />
+
+            <View style={styles.modalActionButtons}>
+              <Pressable
+                style={[styles.confirmPaidBtn, generatingRent && styles.disabledBtn]}
+                disabled={generatingRent}
+                onPress={handleConfirmGenerateRent}>
+                {generatingRent ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.confirmPaidBtnText}>
+                    Generate / Update Bills for {monthLabel}
+                  </Text>
+                )}
+              </Pressable>
+
+              <Pressable
+                style={styles.cancelModalBtn}
+                onPress={() => setGenerateRentModalVisible(false)}>
+                <Text style={styles.cancelModalBtnText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Modal 1B: Edit Individual Resident Rent */}
+      <Modal
+        visible={editRentModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setEditRentModalVisible(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Edit Monthly Rent</Text>
+              <Pressable hitSlop={8} onPress={() => setEditRentModalVisible(false)}>
+                <Text style={styles.modalCloseText}>✕</Text>
+              </Pressable>
+            </View>
+
+            {selectedResidentForEdit && (
+              <>
+                <Text style={styles.modalSubHeader}>
+                  Update rent for {selectedResidentForEdit.full_name} (Room {selectedResidentForEdit.room_number}). The unpaid bill for {monthLabel} will be adjusted automatically.
+                </Text>
+
+                <Text style={styles.inputLabel}>Monthly Rent Amount (₹)</Text>
+                <TextInput
+                  style={styles.amountInputBox}
+                  value={editRentInputRupees}
+                  onChangeText={setEditRentInputRupees}
+                  placeholder="e.g. 9000"
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="numeric"
+                />
+
+                <View style={styles.modalActionButtons}>
+                  <Pressable
+                    style={[styles.confirmPaidBtn, updatingRent && styles.disabledBtn]}
+                    disabled={updatingRent}
+                    onPress={handleConfirmEditRent}>
+                    {updatingRent ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text style={styles.confirmPaidBtnText}>Save Rent Changes</Text>
+                    )}
+                  </Pressable>
+
+                  <Pressable
+                    style={styles.cancelModalBtn}
+                    onPress={() => setEditRentModalVisible(false)}>
+                    <Text style={styles.cancelModalBtnText}>Cancel</Text>
+                  </Pressable>
+                </View>
               </>
             )}
-          </ScrollView>
-        </SafeAreaView>
-      </Modal>
-
-      {/* SUB-MODAL: Record Payment */}
-      <Modal
-        visible={showPaymentModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowPaymentModal(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Record Payment</Text>
-            <Text style={styles.modalSub}>
-              Approved payments settle complete outstanding charges in oldest-first order.
-            </Text>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Amount Received (₹)</Text>
-              <TextInput
-                style={styles.modalInput}
-                keyboardType="numeric"
-                value={paymentAmountRupees}
-                onChangeText={setPaymentAmountRupees}
-                placeholder="e.g. 9000"
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Payment Method</Text>
-              <View style={styles.methodToggleRow}>
-                <Pressable
-                  style={[styles.methodBtn, paymentMethod === 'upi' && styles.methodBtnActive]}
-                  onPress={() => setPaymentMethod('upi')}>
-                  <Text style={[styles.methodBtnText, paymentMethod === 'upi' && styles.methodBtnTextActive]}>
-                    UPI / GPay
-                  </Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.methodBtn, paymentMethod === 'cash' && styles.methodBtnActive]}
-                  onPress={() => setPaymentMethod('cash')}>
-                  <Text style={[styles.methodBtnText, paymentMethod === 'cash' && styles.methodBtnTextActive]}>
-                    Cash
-                  </Text>
-                </Pressable>
-              </View>
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Notes / Reference (Optional)</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={paymentNotes}
-                onChangeText={setPaymentNotes}
-                placeholder="e.g. Cash received in person"
-              />
-            </View>
-
-            <View style={styles.modalBtnRow}>
-              <Pressable
-                style={styles.modalCancelBtn}
-                onPress={() => setShowPaymentModal(false)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                disabled={submittingPayment}
-                style={[styles.modalConfirmBtn, submittingPayment && styles.btnDisabled]}
-                onPress={handleRecordPayment}>
-                {submittingPayment ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <Text style={styles.modalConfirmText}>Confirm & Issue Receipt</Text>
-                )}
-              </Pressable>
-            </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
-      {/* SUB-MODAL: Opening Balance */}
+      {/* Modal 2: Split Room EB Bill */}
       <Modal
-        visible={showOpeningModal}
+        visible={splitEbModalVisible}
         transparent
-        animationType="fade"
-        onRequestClose={() => setShowOpeningModal(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Set Opening Balance</Text>
-            <Text style={styles.modalSub}>
-              Enter historical unpaid balances from prior systems.
-            </Text>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Category</Text>
-              <View style={styles.categoryPickerRow}>
-                {(['rent', 'electricity', 'washing_machine'] as const).map((cat) => (
-                  <Pressable
-                    key={cat}
-                    style={[styles.catBtn, openingCategory === cat && styles.catBtnActive]}
-                    onPress={() => setOpeningCategory(cat)}>
-                    <Text style={[styles.catBtnText, openingCategory === cat && styles.catBtnTextActive]}>
-                      {cat === 'washing_machine' ? 'WM' : cat.toUpperCase()}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Amount (₹)</Text>
-              <TextInput
-                style={styles.modalInput}
-                keyboardType="numeric"
-                value={openingAmountRupees}
-                onChangeText={setOpeningAmountRupees}
-                placeholder="e.g. 4500"
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Historical Reference</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={openingReference}
-                onChangeText={setOpeningReference}
-                placeholder="e.g. October legacy register"
-              />
-            </View>
-
-            <View style={styles.modalBtnRow}>
-              <Pressable
-                style={styles.modalCancelBtn}
-                onPress={() => setShowOpeningModal(false)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                disabled={submittingOpening}
-                style={[styles.modalConfirmBtn, submittingOpening && styles.btnDisabled]}
-                onPress={handleRecordOpeningBalance}>
-                {submittingOpening ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <Text style={styles.modalConfirmText}>Save Balance</Text>
-                )}
+        animationType="slide"
+        onRequestClose={() => setSplitEbModalVisible(false)}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Split Room Electricity Bill</Text>
+              <Pressable hitSlop={8} onPress={() => setSplitEbModalVisible(false)}>
+                <Text style={styles.modalCloseText}>✕</Text>
               </Pressable>
             </View>
-          </View>
-        </View>
-      </Modal>
 
-      {/* 5. Reject Student Report Modal (Cross-Platform Android & iOS) */}
-      <Modal
-        visible={!!rejectingReport}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          if (!submittingReject) setRejectingReport(null);
-        }}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Reject Payment Report</Text>
-            <Text style={styles.modalSub}>
-              {rejectingReport?.resident?.full_name} claimed ₹
-              {((rejectingReport?.amount_paise || 0) / 100).toLocaleString('en-IN')} via{' '}
-              {rejectingReport?.claimed_method?.toUpperCase()}
-            </Text>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Preset Reasons</Text>
-              <View style={styles.presetChipsRow}>
-                {[
-                  'UTR / Ref not found in statement',
-                  'Incorrect amount reported',
-                  'Payment not received',
-                  'Duplicate report submission',
-                ].map((chip) => (
+            <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+              <Text style={styles.inputLabel}>Select Room Number</Text>
+              <View style={styles.roomChipsWrap}>
+                {availableRooms.map((rm) => (
                   <Pressable
-                    key={chip}
+                    key={rm}
                     style={[
-                      styles.reasonChip,
-                      rejectionReason === chip && styles.reasonChipActive,
+                      styles.roomChip,
+                      selectedRoomForEb === rm && styles.roomChipSelected,
                     ]}
-                    onPress={() => setRejectionReason(chip)}>
+                    onPress={() => setSelectedRoomForEb(rm)}>
                     <Text
                       style={[
-                        styles.reasonChipText,
-                        rejectionReason === chip && styles.reasonChipTextActive,
+                        styles.roomChipText,
+                        selectedRoomForEb === rm && styles.roomChipTextSelected,
                       ]}>
-                      {chip}
+                      Room {rm}
                     </Text>
                   </Pressable>
                 ))}
               </View>
-            </View>
 
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Reason for Rejection *</Text>
+              <Text style={styles.inputLabel}>Total Meter Bill Amount (₹)</Text>
               <TextInput
-                style={[styles.modalInput, { height: 75, textAlignVertical: 'top' }]}
-                multiline
-                placeholder="Explain why this payment report was rejected..."
+                style={styles.amountInputBox}
+                value={ebTotalRupeesInput}
+                onChangeText={setEbTotalRupeesInput}
+                placeholder="e.g. 1200"
                 placeholderTextColor="#94A3B8"
-                value={rejectionReason}
-                onChangeText={setRejectionReason}
+                keyboardType="numeric"
               />
+
+              {/* Live Preview of Occupants and Equal Share */}
+              {selectedRoomForEb ? (
+                <View style={styles.ebSplitPreviewBox}>
+                  <Text style={styles.ebPreviewTitle}>
+                    Occupants in Room {selectedRoomForEb}:
+                  </Text>
+                  {allResidents.filter((r) => r.room_number === selectedRoomForEb).length > 0 ? (
+                    allResidents
+                      .filter((r) => r.room_number === selectedRoomForEb)
+                      .map((r, idx, arr) => {
+                        const totalRs = parseFloat(ebTotalRupeesInput.trim()) || 0;
+                        const perPerson = totalRs > 0 ? (totalRs / arr.length).toFixed(0) : '0';
+                        return (
+                          <View key={r.id} style={styles.ebPreviewRow}>
+                            <Text style={styles.ebPreviewName}>• {r.full_name}</Text>
+                            <Text style={styles.ebPreviewShare}>₹{perPerson}</Text>
+                          </View>
+                        );
+                      })
+                  ) : (
+                    <Text style={styles.noOccupantsText}>
+                      No active residents currently assigned to Room {selectedRoomForEb}.
+                    </Text>
+                  )}
+                </View>
+              ) : null}
+            </ScrollView>
+
+            <View style={styles.modalActionButtons}>
+              <Pressable
+                style={[
+                  styles.confirmPaidBtn,
+                  { backgroundColor: '#D97706' },
+                  generatingEb && styles.disabledBtn,
+                ]}
+                disabled={generatingEb}
+                onPress={handleConfirmSplitEb}>
+                {generatingEb ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.confirmPaidBtnText}>Split & Send EB Bills</Text>
+                )}
+              </Pressable>
+
+              <Pressable
+                style={styles.cancelModalBtn}
+                onPress={() => setSplitEbModalVisible(false)}>
+                <Text style={styles.cancelModalBtnText}>Cancel</Text>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Modal 3: Review Payment Proof */}
+      <Modal
+        visible={reviewModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setReviewModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Review Payment Proof</Text>
+              <Pressable hitSlop={8} onPress={() => setReviewModalVisible(false)}>
+                <Text style={styles.modalCloseText}>✕</Text>
+              </Pressable>
             </View>
 
-            <View style={styles.modalBtnRow}>
+            {selectedReviewItem?.report && (
+              <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
+                <View style={styles.modalResidentInfo}>
+                  <Text style={styles.modalResName}>
+                    {selectedReviewItem.full_name} (Room {selectedReviewItem.room_number})
+                  </Text>
+                  <Text style={styles.modalBillPeriod}>
+                    {selectedReviewItem.bill_title}
+                  </Text>
+                </View>
+
+                <View style={styles.modalDetailRow}>
+                  <Text style={styles.modalLabel}>Claimed Amount:</Text>
+                  <Text style={styles.modalAmountHighlight}>
+                    {formatPaiseToRupees(selectedReviewItem.report.amount_paise)}
+                  </Text>
+                </View>
+
+                <View style={styles.modalDetailRow}>
+                  <Text style={styles.modalLabel}>Payment Method:</Text>
+                  <Text style={styles.modalValText}>
+                    {selectedReviewItem.report.claimed_method === 'upi' ? '📱 UPI / Online' : '💵 Cash'}
+                  </Text>
+                </View>
+
+                {selectedReviewItem.report.reference_number ? (
+                  <View style={styles.modalDetailRow}>
+                    <Text style={styles.modalLabel}>Transaction / Ref ID:</Text>
+                    <Text style={styles.modalValText}>
+                      {selectedReviewItem.report.reference_number}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {selectedReviewItem.report.notes ? (
+                  <View style={styles.modalNotesBox}>
+                    <Text style={styles.modalLabel}>Student Note:</Text>
+                    <Text style={styles.modalNoteText}>
+                      {selectedReviewItem.report.notes}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {selectedReviewItem.report.screenshot_url ? (
+                  <View style={styles.screenshotSection}>
+                    <Text style={styles.modalLabel}>Attached Screenshot Proof:</Text>
+                    <Pressable
+                      style={styles.screenshotWrap}
+                      onPress={() => setFullImageUrl(selectedReviewItem.report.screenshot_url)}>
+                      <Image
+                        source={{ uri: selectedReviewItem.report.screenshot_url }}
+                        style={styles.screenshotThumb}
+                        resizeMode="cover"
+                      />
+                      <Text style={styles.tapToViewText}>🔍 Tap to view full size</Text>
+                    </Pressable>
+                  </View>
+                ) : null}
+              </ScrollView>
+            )}
+
+            <View style={styles.modalActionButtons}>
               <Pressable
-                disabled={submittingReject}
-                style={styles.modalCancelBtn}
-                onPress={() => setRejectingReport(null)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                disabled={submittingReject || !rejectionReason.trim()}
                 style={[
-                  styles.modalDangerBtn,
-                  (submittingReject || !rejectionReason.trim()) && styles.btnDisabled,
+                  styles.confirmPaidBtn,
+                  confirmingPayment && styles.disabledBtn,
                 ]}
-                onPress={handleConfirmReject}>
-                {submittingReject ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
+                disabled={confirmingPayment}
+                onPress={() => {
+                  if (selectedReviewItem?.charge_id && selectedReviewItem.report?.id) {
+                    handleConfirmPayment(
+                      selectedReviewItem.charge_id,
+                      selectedReviewItem.report.id,
+                      selectedReviewItem.report.claimed_method
+                    );
+                  }
+                }}>
+                {confirmingPayment ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.modalDangerText}>Confirm Rejection</Text>
+                  <Text style={styles.confirmPaidBtnText}>✓ Confirm & Mark as Paid</Text>
                 )}
+              </Pressable>
+
+              <Pressable
+                style={styles.cancelModalBtn}
+                onPress={() => setReviewModalVisible(false)}>
+                <Text style={styles.cancelModalBtnText}>Close</Text>
               </Pressable>
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* 6. Review & Approve Student Report Modal (With Owner Correction Support) */}
+      {/* Full Screen Image Modal */}
       <Modal
-        visible={!!reviewingReport}
+        visible={Boolean(fullImageUrl)}
         transparent
         animationType="fade"
-        onRequestClose={() => {
-          if (!submittingApproval) setReviewingReport(null);
-        }}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Review & Approve Payment</Text>
-            <Text style={styles.modalSub}>
-              {reviewingReport?.resident?.full_name} (Room {reviewingReport?.resident?.room_number})
-            </Text>
-
-            <View style={styles.originalClaimBox}>
-              <Text style={styles.originalClaimLabel}>Student Claimed Details:</Text>
-              <Text style={styles.originalClaimText}>
-                ₹{((reviewingReport?.amount_paise || 0) / 100).toLocaleString('en-IN')} via{' '}
-                {reviewingReport?.claimed_method?.toUpperCase()} on {reviewingReport?.payment_date}
-              </Text>
-              {reviewingReport?.reference_number ? (
-                <Text style={styles.originalClaimMeta}>
-                  UTR / Ref: {reviewingReport.reference_number}
-                </Text>
-              ) : null}
-              {reviewingReport?.notes ? (
-                <Text style={styles.originalClaimMeta}>Note: {reviewingReport.notes}</Text>
-              ) : null}
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Approved Amount (₹) *</Text>
-              <TextInput
-                style={styles.modalInput}
-                keyboardType="numeric"
-                value={approvedAmountRupees}
-                onChangeText={setApprovedAmountRupees}
-                placeholder="e.g. 9000"
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Payment Method</Text>
-              <View style={styles.methodToggleRow}>
-                {(['upi', 'cash'] as const).map((m) => (
-                  <Pressable
-                    key={m}
-                    style={[styles.methodBtn, approvedMethod === m && styles.methodBtnActive]}
-                    onPress={() => setApprovedMethod(m)}>
-                    <Text
-                      style={[
-                        styles.methodBtnText,
-                        approvedMethod === m && styles.methodBtnTextActive,
-                      ]}>
-                      {m.toUpperCase()}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Payment Date (YYYY-MM-DD)</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={approvedDate}
-                onChangeText={setApprovedDate}
-                placeholder="YYYY-MM-DD"
-              />
-            </View>
-
-            <View style={styles.inputGroup}>
-              <Text style={styles.inputLabel}>Verification Note / Correction Reason</Text>
-              <TextInput
-                style={styles.modalInput}
-                value={approvalNotes}
-                onChangeText={setApprovalNotes}
-                placeholder="Optional notes or adjustment reason..."
-              />
-            </View>
-
-            {reviewingReport &&
-            (parseFloat(approvedAmountRupees) * 100 !== reviewingReport.amount_paise ||
-              approvedMethod !== reviewingReport.claimed_method ||
-              approvedDate !== reviewingReport.payment_date) ? (
-              <View style={styles.correctionNotice}>
-                <Text style={styles.correctionNoticeText}>
-                  ℹ️ Changes to student-reported values will be automatically recorded in the correction audit trail.
-                </Text>
-              </View>
-            ) : null}
-
-            <View style={styles.modalBtnRow}>
-              <Pressable
-                disabled={submittingApproval}
-                style={styles.modalCancelBtn}
-                onPress={() => setReviewingReport(null)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                disabled={submittingApproval || !approvedAmountRupees}
-                style={[
-                  styles.modalConfirmBtn,
-                  (submittingApproval || !approvedAmountRupees) && styles.btnDisabled,
-                ]}
-                onPress={handleConfirmApprove}>
-                {submittingApproval ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <Text style={styles.modalConfirmText}>Approve & Settle</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
+        onRequestClose={() => setFullImageUrl(null)}>
+        <View style={styles.fullImageOverlay}>
+          <Pressable style={styles.fullImageCloseBtn} onPress={() => setFullImageUrl(null)}>
+            <Text style={styles.fullImageCloseText}>✕ Close</Text>
+          </Pressable>
+          {fullImageUrl && (
+            <Image
+              source={{ uri: fullImageUrl }}
+              style={styles.fullImage}
+              resizeMode="contain"
+            />
+          )}
         </View>
       </Modal>
     </SafeAreaView>
@@ -1697,49 +1473,248 @@ const styles = StyleSheet.create({
     backgroundColor: '#F8FAFC',
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 12,
+    padding: 16,
     paddingBottom: 40,
+    width: '100%',
+    maxWidth: 1080,
+    alignSelf: 'center',
   },
   topBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    gap: 12,
+    marginBottom: 14,
   },
-  backButton: {
-    paddingVertical: 8,
+  backBtn: {
+    paddingVertical: 7,
     paddingHorizontal: 12,
     backgroundColor: '#FFFFFF',
     borderRadius: 8,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    marginRight: 12,
   },
-  backButtonPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  backButtonText: {
+  backBtnText: {
     fontSize: 14,
     fontWeight: '700',
     color: '#0F172A',
   },
-  headerTitleWrap: {
-    flex: 1,
-  },
   screenTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     color: '#0F172A',
-    letterSpacing: -0.3,
   },
   screenSubtitle: {
     fontSize: 12,
     color: '#64748B',
+    marginTop: 1,
+  },
+  modeToggleBar: {
+    flexDirection: 'row',
+    backgroundColor: '#E2E8F0',
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 14,
+  },
+  modeBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 8,
+  },
+  modeBtnActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  modeBtnText: {
+    fontSize: 13,
     fontWeight: '600',
-    textTransform: 'uppercase',
+    color: '#64748B',
+  },
+  modeBtnTextActive: {
+    color: '#0284C7',
+    fontWeight: '800',
+  },
+  monthSelectorBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 14,
+  },
+  monthNavBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+  },
+  monthNavArrow: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  monthLabelWrap: {
+    alignItems: 'center',
+  },
+  monthLabelText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  summaryRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+  },
+  summaryCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderLeftWidth: 4,
+  },
+  cardBorderTotal: {
+    borderLeftColor: '#0284C7',
+  },
+  cardBorderReview: {
+    borderLeftColor: '#D97706',
+  },
+  cardBorderUnpaid: {
+    borderLeftColor: '#DC2626',
+  },
+  summaryNum: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  summaryLbl: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
+    marginTop: 2,
+  },
+  summarySubNote: {
+    fontSize: 9,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  generatorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1,
+    borderColor: '#BFDBFE',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+    gap: 10,
+  },
+  generatorTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#1E40AF',
+  },
+  generatorSub: {
+    fontSize: 11,
+    color: '#3B82F6',
+    marginTop: 2,
+  },
+  generatorActionBtn: {
+    backgroundColor: '#0284C7',
+    borderRadius: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+  },
+  generatorActionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  allDoneBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 14,
+    gap: 10,
+  },
+  allDoneText: {
+    fontSize: 13,
+    color: '#15803D',
+    fontWeight: '700',
+  },
+  allDoneSub: {
+    fontSize: 11,
+    color: '#16A34A',
+    marginTop: 2,
+  },
+  updateRentActionBtn: {
+    backgroundColor: '#0284C7',
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  updateRentActionBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  editRentBadge: {
+    backgroundColor: '#E0F2FE',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+    marginLeft: 6,
+  },
+  editRentBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  filterTabsRow: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 14,
+  },
+  filterTab: {
+    flex: 1,
+    paddingVertical: 7,
+    alignItems: 'center',
+    borderRadius: 7,
+  },
+  filterTabActive: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  filterTabText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  filterTabTextActive: {
+    color: '#0284C7',
+    fontWeight: '800',
   },
   loadingBox: {
-    padding: 30,
+    padding: 40,
     alignItems: 'center',
     gap: 10,
   },
@@ -1747,277 +1722,242 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#64748B',
   },
-  statsGrid: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 16,
-  },
-  statCard: {
-    flex: 1,
+  emptyCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 12,
+    padding: 24,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+  },
+  emptyTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  emptySubtitle: {
+    fontSize: 12,
+    color: '#64748B',
+    textAlign: 'center',
+    marginTop: 4,
+  },
+  rosterContainer: {
+    gap: 12,
+  },
+  residentCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
     padding: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    borderLeftWidth: 4,
   },
-  statLabel: {
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  roomBadge: {
+    backgroundColor: '#F1F5F9',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  roomBadgeText: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#64748B',
-    textTransform: 'uppercase',
+    color: '#334155',
   },
-  statValue: {
-    fontSize: 20,
-    fontWeight: '800',
-    marginTop: 4,
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
-  statSub: {
+  badgePaid: {
+    backgroundColor: '#DCFCE7',
+  },
+  badgePaidText: {
+    color: '#15803D',
     fontSize: 11,
-    color: '#94A3B8',
-    marginTop: 2,
+    fontWeight: '800',
   },
-  actionRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 20,
+  badgeReview: {
+    backgroundColor: '#FEF3C7',
   },
-  actionButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    gap: 10,
+  badgeReviewText: {
+    color: '#B45309',
+    fontSize: 11,
+    fontWeight: '800',
   },
-  actionButtonPressed: {
+  badgeUnpaid: {
+    backgroundColor: '#FEE2E2',
+  },
+  badgeUnpaidText: {
+    color: '#DC2626',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  badgeNotGen: {
     backgroundColor: '#F1F5F9',
   },
-  actionButtonIcon: {
-    fontSize: 22,
+  badgeNotGenText: {
+    color: '#64748B',
+    fontSize: 11,
+    fontWeight: '700',
   },
-  actionButtonTextWrap: {
-    flex: 1,
+  resName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0F172A',
   },
-  actionButtonTitle: {
+  resPhone: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  breakdownBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+    gap: 6,
+  },
+  breakdownRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  wmToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  breakdownLabel: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+  breakdownVal: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  totalRow: {
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+  },
+  totalLabel: {
     fontSize: 13,
     fontWeight: '700',
     color: '#0F172A',
   },
-  actionButtonSub: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  sectionWrap: {
-    marginBottom: 20,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  sectionTitle: {
+  totalVal: {
     fontSize: 15,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  sectionCount: {
-    fontSize: 12,
-    color: '#64748B',
-  },
-  alertBadge: {
-    backgroundColor: '#FEE2E2',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  alertBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#DC2626',
-  },
-  reportCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    marginBottom: 10,
-  },
-  reportHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-  },
-  reportResidentName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  reportMeta: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  reportAmount: {
-    fontSize: 16,
     fontWeight: '800',
     color: '#0284C7',
   },
-  reportRef: {
+  paidInfoBox: {
+    marginTop: 10,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  paidInfoText: {
     fontSize: 12,
-    color: '#475569',
-    marginTop: 6,
-    fontWeight: '600',
-  },
-  reportNotes: {
-    fontSize: 12,
-    color: '#64748B',
-    fontStyle: 'italic',
-    marginTop: 2,
-  },
-  reportActionsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginTop: 12,
-  },
-  rejectBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    backgroundColor: '#FEE2E2',
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  rejectBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#DC2626',
-  },
-  approveBtn: {
-    flex: 2,
-    paddingVertical: 8,
-    backgroundColor: '#0284C7',
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  approveBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  residentCard: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 8,
-  },
-  residentCardPressed: {
-    backgroundColor: '#F8FAFC',
-  },
-  resCardLeft: {
-    flex: 1,
-  },
-  resNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  resName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  roomBadge: {
-    fontSize: 11,
-    color: '#64748B',
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 4,
-  },
-  resSub: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 4,
-  },
-  resCardRight: {
-    alignItems: 'flex-end',
-  },
-  resAmount: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  resAmountPaid: {
     color: '#16A34A',
   },
-  resAmountOverdue: {
-    color: '#DC2626',
-  },
-  resAmountDue: {
-    color: '#0284C7',
-  },
-  statusPill: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginTop: 4,
-  },
-  statusPillPaid: {
-    backgroundColor: '#DCFCE7',
-  },
-  statusPillOverdue: {
-    backgroundColor: '#FEE2E2',
-  },
-  statusPillDue: {
-    backgroundColor: '#E0F2FE',
-  },
-  statusPillText: {
-    fontSize: 10,
+  boldText: {
     fontWeight: '700',
   },
-  statusPillTextPaid: {
-    color: '#15803D',
+  reportPendingBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFBEB',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    gap: 8,
   },
-  statusPillTextOverdue: {
-    color: '#DC2626',
+  reportAlertTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B45309',
   },
-  statusPillTextDue: {
-    color: '#0369A1',
+  reportAlertSub: {
+    fontSize: 11,
+    color: '#78350F',
+    marginTop: 2,
+  },
+  reviewBtn: {
+    backgroundColor: '#D97706',
+    borderRadius: 6,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
+  },
+  reviewBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  actionRow: {
+    marginTop: 10,
+  },
+  directCashBtn: {
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+    paddingVertical: 9,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  directCashBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#334155',
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    padding: 20,
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    justifyContent: Platform.OS === 'web' ? 'center' : 'flex-end',
+    alignItems: 'center',
+    padding: Platform.OS === 'web' ? 20 : 0,
   },
-  modalContent: {
+  modalCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    borderRadius: Platform.OS === 'web' ? 20 : 0,
     padding: 20,
+    paddingBottom: 36,
+    width: '100%',
+    maxWidth: 540,
+    alignSelf: 'center',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: '800',
     color: '#0F172A',
   },
-  modalSub: {
+  modalCloseText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#64748B',
+    padding: 4,
+  },
+  modalSubHeader: {
     fontSize: 12,
     color: '#64748B',
     lineHeight: 18,
-    marginTop: 6,
-    marginBottom: 16,
-  },
-  inputGroup: {
     marginBottom: 14,
   },
   inputLabel: {
@@ -2025,645 +1965,207 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#334155',
     marginBottom: 6,
+    marginTop: 8,
   },
-  modalInput: {
+  amountInputBox: {
     backgroundColor: '#F8FAFC',
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: '#0F172A',
-  },
-  modalBtnRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 10,
-  },
-  modalCancelBtn: {
-    flex: 1,
+    borderColor: '#0284C7',
+    borderRadius: 10,
+    paddingHorizontal: 14,
     paddingVertical: 12,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalCancelText: {
-    fontSize: 14,
+    fontSize: 18,
     fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 10,
+  },
+  roomChipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  roomChip: {
+    paddingVertical: 7,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  roomChipSelected: {
+    backgroundColor: '#E0F2FE',
+    borderColor: '#0284C7',
+  },
+  roomChipText: {
+    fontSize: 12,
+    fontWeight: '600',
     color: '#475569',
   },
-  modalConfirmBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    backgroundColor: '#0284C7',
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalConfirmText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  btnDisabled: {
-    opacity: 0.6,
-  },
-  residentDetailModal: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-  },
-  modalHeader: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
-  },
-  modalCloseText: {
-    fontSize: 14,
-    fontWeight: '700',
+  roomChipTextSelected: {
     color: '#0284C7',
-    marginBottom: 8,
-  },
-  modalHeaderTitle: {
-    fontSize: 20,
     fontWeight: '800',
+  },
+  ebSplitPreviewBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginVertical: 10,
+    gap: 6,
+  },
+  ebPreviewTitle: {
+    fontSize: 12,
+    fontWeight: '700',
     color: '#0F172A',
+    marginBottom: 4,
   },
-  modalHeaderSub: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  detailScrollContent: {
-    padding: 16,
-    paddingBottom: 40,
-  },
-  ledgerSummaryCard: {
+  ebPreviewRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 12,
+    paddingVertical: 2,
   },
-  ledgerSummaryLabel: {
+  ebPreviewName: {
     fontSize: 12,
-    color: '#64748B',
-    fontWeight: '600',
+    color: '#334155',
   },
-  ledgerSummaryValue: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#DC2626',
-    marginTop: 2,
-  },
-  ledgerSummaryActions: {
-    alignItems: 'flex-end',
-  },
-  recordPayBtn: {
-    backgroundColor: '#0284C7',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  recordPayBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  optInCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 12,
-  },
-  optInTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  optInSub: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  secondaryActionRow: {
-    marginBottom: 16,
-  },
-  openingBalBtn: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-  },
-  openingBalBtnText: {
+  ebPreviewShare: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#475569',
+    color: '#D97706',
   },
-  subSectionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 8,
-  },
-  emptyText: {
+  noOccupantsText: {
     fontSize: 12,
     color: '#94A3B8',
     fontStyle: 'italic',
-    paddingVertical: 10,
   },
-  residentCategoryScroll: {
-    paddingBottom: 8,
-    gap: 8,
-  },
-  residentCategoryPill: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  residentCategoryPillActive: {
-    backgroundColor: '#0284C7',
-    borderColor: '#0284C7',
-  },
-  residentCategoryPillText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#475569',
-  },
-  residentCategoryPillTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  residentPeriodGroup: {
+  modalResidentInfo: {
+    backgroundColor: '#F8FAFC',
+    padding: 12,
+    borderRadius: 8,
     marginBottom: 12,
   },
-  residentPeriodHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    marginBottom: 6,
-  },
-  residentPeriodTitle: {
-    fontSize: 12,
+  modalResName: {
+    fontSize: 15,
     fontWeight: '700',
-    color: '#1E293B',
+    color: '#0F172A',
   },
-  residentPeriodCount: {
-    fontSize: 10,
-    color: '#64748B',
-    fontWeight: '500',
+  modalBillPeriod: {
+    fontSize: 12,
+    color: '#0284C7',
+    fontWeight: '600',
+    marginTop: 2,
   },
-  residentChargeCardDetailed: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 8,
-  },
-  residentChargeTopRow: {
+  modalDetailRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 6,
+    paddingVertical: 6,
   },
-  categoryPill: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+  modalLabel: {
+    fontSize: 13,
+    color: '#64748B',
   },
-  categoryPillText: {
-    fontSize: 9,
+  modalValText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  modalAmountHighlight: {
+    fontSize: 16,
     fontWeight: '800',
-    color: '#475569',
+    color: '#16A34A',
   },
-  chargeStatusBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  chargeSettledBadge: {
-    backgroundColor: '#DCFCE7',
-  },
-  chargeOverdueBadge: {
-    backgroundColor: '#FEE2E2',
-  },
-  chargeOutstandingBadge: {
-    backgroundColor: '#E0F2FE',
-  },
-  chargeStatusBadgeText: {
-    fontSize: 9,
-    fontWeight: '800',
-  },
-  chargeSettledBadgeText: {
-    color: '#15803D',
-  },
-  chargeOverdueBadgeText: {
-    color: '#DC2626',
-  },
-  chargeOutstandingBadgeText: {
-    color: '#0369A1',
-  },
-  chargeItemDivider: {
-    height: 1,
-    backgroundColor: '#F1F5F9',
+  modalNotesBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    padding: 10,
     marginVertical: 8,
   },
-  chargeAmountsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  chargeSmallLabel: {
-    fontSize: 10,
-    color: '#64748B',
-    fontWeight: '500',
-  },
-  chargeRemainingText: {
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  remainingSettledText: {
-    color: '#16A34A',
-  },
-  remainingDueText: {
-    color: '#DC2626',
-  },
-  residentAllocBox: {
-    backgroundColor: '#F0FDF4',
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    padding: 8,
-    marginTop: 8,
-  },
-  residentAllocTitle: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#166534',
-    marginBottom: 2,
-  },
-  residentAllocRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 2,
-  },
-  residentAllocReceipt: {
-    fontSize: 11,
-    color: '#15803D',
-    fontWeight: '600',
-  },
-  residentAllocAmt: {
-    fontSize: 11,
-    color: '#166534',
-    fontWeight: '700',
-  },
-  residentAllocSettled: {
-    fontSize: 11,
-    color: '#166534',
-    fontWeight: '600',
-  },
-  chargeRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 6,
-  },
-  chargeDesc: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  chargeDate: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  chargeAmount: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  chargeStatus: {
-    fontSize: 10,
-    fontWeight: '700',
-    marginTop: 2,
-  },
-  chargeSettled: {
-    color: '#16A34A',
-  },
-  chargeCancelled: {
-    color: '#94A3B8',
-  },
-  chargeOutstanding: {
-    color: '#DC2626',
-  },
-  paymentRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 6,
-  },
-  paymentReceiptNo: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
-  paymentMeta: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  unallocText: {
-    fontSize: 11,
-    color: '#D97706',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  paymentAmount: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#16A34A',
-  },
-  viewReceiptLink: {
-    fontSize: 11,
-    color: '#0284C7',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  paymentRowReversed: {
-    backgroundColor: '#FAFAFA',
-    borderColor: '#E2E8F0',
-    opacity: 0.85,
-  },
-  paymentReceiptNoReversed: {
-    color: '#64748B',
-    textDecorationLine: 'line-through',
-  },
-  ownerReversalBox: {
-    backgroundColor: '#FEF2F2',
-    borderRadius: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    marginTop: 4,
-    alignSelf: 'flex-start',
-  },
-  ownerReversalText: {
-    fontSize: 11,
-    color: '#DC2626',
-    fontWeight: '500',
-  },
-  paymentAmountReversed: {
-    color: '#94A3B8',
-    textDecorationLine: 'line-through',
-  },
-  methodToggleRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  methodBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 6,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  methodBtnActive: {
-    backgroundColor: '#E0F2FE',
-    borderColor: '#0284C7',
-  },
-  methodBtnText: {
+  modalNoteText: {
     fontSize: 12,
-    color: '#64748B',
-    fontWeight: '600',
-  },
-  methodBtnTextActive: {
-    color: '#0284C7',
-    fontWeight: '700',
-  },
-  categoryPickerRow: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  catBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 6,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  catBtnActive: {
-    backgroundColor: '#E0F2FE',
-    borderColor: '#0284C7',
-  },
-  catBtnText: {
-    fontSize: 11,
-    color: '#64748B',
-    fontWeight: '600',
-  },
-  catBtnTextActive: {
-    color: '#0284C7',
-    fontWeight: '700',
-  },
-  creditCard: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#FEF3C7',
-    borderRadius: 10,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#FCD34D',
-    marginBottom: 12,
-  },
-  creditCardLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#92400E',
-  },
-  creditCardValue: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#B45309',
-    marginTop: 2,
-  },
-  creditCardSub: {
-    fontSize: 10,
-    color: '#78350F',
-    marginTop: 2,
-  },
-  applyCreditBtn: {
-    backgroundColor: '#D97706',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-  },
-  applyCreditBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  filterSectionHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  miniFilterRow: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  miniFilterPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: '#F1F5F9',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  miniFilterPillActive: {
-    backgroundColor: '#E0F2FE',
-    borderColor: '#0284C7',
-  },
-  miniFilterText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#64748B',
-  },
-  miniFilterTextActive: {
-    color: '#0284C7',
-  },
-  paymentStatusBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    color: '#334155',
     marginTop: 3,
   },
-  badgeReversed: {
-    backgroundColor: '#FEE2E2',
+  screenshotSection: {
+    marginTop: 10,
   },
-  badgeApprovedMini: {
-    backgroundColor: '#DCFCE7',
-  },
-  paymentStatusText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  textReversed: {
-    color: '#DC2626',
-  },
-  textApprovedMini: {
-    color: '#16A34A',
-  },
-  presetChipsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginBottom: 8,
-  },
-  reasonChip: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: '#F1F5F9',
+  screenshotWrap: {
+    marginTop: 6,
+    borderRadius: 8,
+    overflow: 'hidden',
     borderWidth: 1,
     borderColor: '#E2E8F0',
+    alignItems: 'center',
+    backgroundColor: '#F1F5F9',
   },
-  reasonChipActive: {
-    backgroundColor: '#FEE2E2',
-    borderColor: '#EF4444',
+  screenshotThumb: {
+    width: '100%',
+    height: 140,
   },
-  reasonChipText: {
+  tapToViewText: {
     fontSize: 11,
-    color: '#475569',
+    color: '#0284C7',
     fontWeight: '600',
+    paddingVertical: 6,
   },
-  reasonChipTextActive: {
-    color: '#DC2626',
-    fontWeight: '700',
+  modalActionButtons: {
+    marginTop: 16,
+    gap: 8,
   },
-  modalDangerBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    backgroundColor: '#DC2626',
+  confirmPaidBtn: {
+    backgroundColor: '#16A34A',
     borderRadius: 8,
+    paddingVertical: 13,
     alignItems: 'center',
   },
-  modalDangerText: {
+  confirmPaidBtnText: {
+    color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
-    color: '#FFFFFF',
   },
-  originalClaimBox: {
-    backgroundColor: '#F8FAFC',
+  cancelModalBtn: {
+    backgroundColor: '#F1F5F9',
     borderRadius: 8,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 14,
+    paddingVertical: 11,
+    alignItems: 'center',
   },
-  originalClaimLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#64748B',
-    marginBottom: 2,
-  },
-  originalClaimText: {
+  cancelModalBtnText: {
+    color: '#475569',
     fontSize: 13,
+    fontWeight: '600',
+  },
+  fullImageOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullImageCloseBtn: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    zIndex: 10,
+  },
+  fullImageCloseText: {
+    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '700',
-    color: '#0F172A',
   },
-  originalClaimMeta: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 2,
+  fullImage: {
+    width: '90%',
+    height: '80%',
   },
-  correctionNotice: {
-    backgroundColor: '#EFF6FF',
-    padding: 10,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    marginTop: 6,
+  pressed: {
+    opacity: 0.8,
   },
-  correctionNoticeText: {
-    fontSize: 11,
-    color: '#1D4ED8',
-    lineHeight: 16,
+  disabledBtn: {
+    opacity: 0.6,
   },
 });
-

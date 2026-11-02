@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -22,6 +22,15 @@ interface PropertyInfo {
   name: string;
 }
 
+function generateRandomPassword(length = 8): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$';
+  let res = '';
+  for (let i = 0; i < length; i++) {
+    res += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return res;
+}
+
 export default function AddResidentScreen() {
   const { user, profile } = useAuth();
 
@@ -32,6 +41,9 @@ export default function AddResidentScreen() {
   const [fullName, setFullName] = useState('');
   const [roomNumber, setRoomNumber] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [email, setEmail] = useState('');
+  const [temporaryPassword, setTemporaryPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   // Status & Feedback
   const [saving, setSaving] = useState(false);
@@ -84,13 +96,21 @@ export default function AddResidentScreen() {
     setFullName('');
     setRoomNumber('');
     setPhoneNumber('');
+    setEmail('');
+    setTemporaryPassword('');
     setErrorMessage(null);
   };
 
-  // 2. Validate and insert new resident
+  const handleGeneratePassword = () => {
+    const pw = generateRandomPassword(8);
+    setTemporaryPassword(pw);
+    setShowPassword(true);
+  };
+
+  // 2. Validate and submit unified resident + auth creation via protected Edge Function
   const handleSaveResident = async () => {
-    if (!user?.id) {
-      Alert.alert('Authentication Required', 'You must be signed in as an owner to add residents.');
+    if (!user?.id || profile?.role !== 'owner') {
+      Alert.alert('Authorization Required', 'You must be signed in as a PG owner to add residents.');
       return;
     }
 
@@ -102,15 +122,38 @@ export default function AddResidentScreen() {
     const trimmedName = fullName.trim();
     const trimmedRoom = roomNumber.trim();
     const trimmedPhone = phoneNumber.trim();
+    const trimmedEmail = email.trim().toLowerCase();
+    const trimmedPassword = temporaryPassword.trim();
 
     // Client-side validations
     if (!trimmedName) {
-      setErrorMessage('Please enter the resident\'s full name.');
+      setErrorMessage("Please enter the resident's full name.");
       return;
     }
 
     if (!trimmedRoom) {
       setErrorMessage('Please enter a room number.');
+      return;
+    }
+
+    if (!trimmedEmail) {
+      setErrorMessage("Please enter the resident's login email.");
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      setErrorMessage('Please enter a valid email address.');
+      return;
+    }
+
+    if (!trimmedPassword) {
+      setErrorMessage('Please provide a temporary password or generate one.');
+      return;
+    }
+
+    if (trimmedPassword.length < 6) {
+      setErrorMessage('Temporary password must be at least 6 characters.');
       return;
     }
 
@@ -124,47 +167,124 @@ export default function AddResidentScreen() {
     setSuccessMessage(null);
 
     try {
-      const payload = {
-        property_id: property.id,
-        full_name: trimmedName,
-        room_number: trimmedRoom,
-        phone_number: trimmedPhone || null,
-        is_active: true,
-      };
-
-      console.log('[AddResident] Inserting resident payload:', payload);
-
-      const { data, error } = await supabase
-        .from('residents')
-        .insert(payload)
-        .select('id, property_id, full_name, room_number, phone_number, is_active')
-        .single();
-
-      if (error) {
-        console.error('[AddResident] Insert error:', error);
-        const errDetail = error.details ? ` (${error.details})` : error.hint ? ` (${error.hint})` : '';
-        const fullMessage = `Save Failed [Code: ${error.code || 'UNKNOWN'}]: ${error.message}${errDetail}`;
-        Alert.alert('Save Failed', fullMessage);
-        setErrorMessage(fullMessage);
-        return;
+      // 1. Obtain and verify the current authenticated owner session at submission time
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) {
+        throw new Error(`Authentication check failed: ${sessionError.message}`);
       }
 
-      if (!data || !data.id) {
-        console.error('[AddResident] Insert returned no row data:', data);
-        const noRowMsg = 'Save Failed: The database did not return the saved resident record.';
-        Alert.alert('Save Failed', noRowMsg);
-        setErrorMessage(noRowMsg);
-        return;
+      let activeSession = sessionData?.session ?? null;
+
+      // Refresh session if missing access_token or expiring within 60 seconds
+      const isExpiringSoon =
+        !activeSession?.expires_at || activeSession.expires_at * 1000 < Date.now() + 60_000;
+
+      if (!activeSession || isExpiringSoon) {
+        const { data: refreshedData, error: refreshError } = await supabase.auth.refreshSession();
+        if (refreshError || !refreshedData?.session) {
+          throw new Error('Your login session has expired. Please sign out and sign in again.');
+        }
+        activeSession = refreshedData.session;
       }
 
-      // Confirmed persistence
-      console.log('[AddResident] Resident created successfully:', data);
-      const confirmationMsg = `Added ${data.full_name} to Room ${data.room_number} successfully!`;
-      setSuccessMessage(confirmationMsg);
+      if (!activeSession?.user?.id || !activeSession.access_token) {
+        throw new Error('No active authenticated owner session found. Please sign in again.');
+      }
+
+      if (activeSession.user.id !== user.id) {
+        throw new Error('Session user mismatch detected. Please sign in again as the PG owner.');
+      }
+
+      // 2. Invoke the protected create-resident Edge Function (single authoritative path)
+      const {
+        data: edgeData,
+        error: edgeError,
+        response: edgeResponse,
+      } = await supabase.functions.invoke('create-resident', {
+        headers: {
+          Authorization: `Bearer ${activeSession.access_token}`,
+        },
+        body: {
+          property_id: property.id,
+          full_name: trimmedName,
+          room_number: trimmedRoom,
+          phone_number: trimmedPhone || undefined,
+          email: trimmedEmail,
+          temporary_password: trimmedPassword,
+        },
+      });
+
+      if (edgeError) {
+        const httpStatus: number | undefined =
+          edgeResponse?.status ?? (edgeError as any)?.context?.status;
+        let serverCode: string | undefined;
+        let serverMessage: string | undefined;
+
+        const errorContext = (edgeError as any)?.context;
+        if (errorContext && typeof errorContext.json === 'function') {
+          try {
+            const parsed = await errorContext.json();
+            serverCode = parsed?.code;
+            serverMessage = parsed?.error || parsed?.message;
+          } catch {
+            // Response body was not JSON
+          }
+        }
+
+        let diagnosticMessage =
+          serverMessage || edgeError.message || 'Resident creation service returned an error.';
+
+        if (httpStatus === 401 || serverCode === 'AUTH_MISSING' || serverCode === 'AUTH_INVALID') {
+          diagnosticMessage =
+            serverMessage ||
+            'Authentication failed (401): Your owner session was rejected. Please sign in again and retry.';
+        } else if (httpStatus === 403 || serverCode === 'FORBIDDEN') {
+          diagnosticMessage =
+            serverMessage ||
+            'Authorization denied (403): You do not have permission to manage residents for this PG property.';
+        } else if (
+          httpStatus === 409 ||
+          serverCode === 'DUPLICATE_EMAIL' ||
+          serverCode === 'DUPLICATE_RESIDENT'
+        ) {
+          diagnosticMessage =
+            serverMessage ||
+            `Conflict (409): A resident or login account with email "${trimmedEmail}" already exists.`;
+        } else if (httpStatus === 400 || serverCode === 'VALIDATION_ERROR') {
+          diagnosticMessage = serverMessage || 'Invalid resident details provided (400).';
+        } else if (httpStatus === 404) {
+          diagnosticMessage =
+            'Service unavailable (404): The "create-resident" Supabase Edge Function is not deployed yet.';
+        } else if (httpStatus && httpStatus >= 500) {
+          diagnosticMessage =
+            serverMessage ||
+            `Server error (${httpStatus}): The resident creation service encountered a configuration or internal error.`;
+        }
+
+        console.warn('[AddResident] Edge Function error:', {
+          status: httpStatus,
+          code: serverCode,
+          message: diagnosticMessage,
+        });
+
+        throw new Error(diagnosticMessage);
+      }
+
+      if (!edgeData || !edgeData.success) {
+        throw new Error(edgeData?.error || 'Failed to create resident account.');
+      }
+
+      const createdResidentName = edgeData.full_name || trimmedName;
+      const createdRoom = edgeData.room_number || trimmedRoom;
+      const createdEmail = edgeData.email || trimmedEmail;
+
+      // Success feedback
+      const successText = `${createdResidentName} was registered with login ${createdEmail}.`;
+      setSuccessMessage(successText);
 
       Alert.alert(
-        'Resident Added',
-        `${data.full_name} has been registered to Room ${data.room_number}.`,
+        'Resident & Auth Created!',
+        `Account provisioned successfully for ${createdResidentName} (Room ${createdRoom}).\n\nLogin Email: ${createdEmail}\nTemporary Password: ${trimmedPassword}\n\nPlease share these credentials with the resident.`,
         [
           {
             text: 'Add Another',
@@ -172,11 +292,11 @@ export default function AddResidentScreen() {
             onPress: () => resetForm(),
           },
           {
-            text: 'View in Gate Attendance',
+            text: 'Go to Dashboard',
             style: 'default',
             onPress: () => {
               resetForm();
-              router.replace('/student-in-out');
+              router.replace('/(tabs)');
             },
           },
         ]
@@ -185,9 +305,10 @@ export default function AddResidentScreen() {
       resetForm();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('[AddResident] Unexpected error:', err);
-      Alert.alert('Error', `Could not add resident: ${msg}`);
-      setErrorMessage(`Error: ${msg}`);
+      console.warn('[AddResident] Creation failed:', msg);
+      // Preserve form inputs so the owner can correct any issue and retry
+      setErrorMessage(msg);
+      Alert.alert('Resident Creation Failed', msg);
     } finally {
       setSaving(false);
     }
@@ -200,153 +321,164 @@ export default function AddResidentScreen() {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView
           contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled">
-
-          {/* Top Bar with Back Button */}
-          <View style={styles.topBar}>
+          
+          {/* Header */}
+          <View style={styles.header}>
             <Pressable
               accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && styles.backButtonPressed,
-              ]}
+              accessibilityLabel="Go back"
+              style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
               onPress={() => router.back()}>
-              <Text style={styles.backButtonText}>‹ Back</Text>
+              <Text style={styles.backButtonText}>← Back</Text>
             </Pressable>
-            <View style={styles.titleWrapper}>
-              <Text style={styles.screenTitle}>Add Resident</Text>
-              <Text style={styles.screenSubtitle}>Register a new student</Text>
-            </View>
+            <Text style={styles.title}>Add New Resident</Text>
+            <Text style={styles.subtitle}>
+              {property?.name
+                ? `Register resident to ${property.name}`
+                : 'Register student & create login credentials'}
+            </Text>
           </View>
 
-          {/* Property Context Badge */}
-          {loadingProperty ? (
-            <View style={styles.propertyLoadingBox}>
-              <ActivityIndicator size="small" color="#0284C7" />
-              <Text style={styles.propertyLoadingText}>Verifying property...</Text>
-            </View>
-          ) : property ? (
-            <View style={styles.propertyBadge}>
-              <Text style={styles.propertyBadgeIcon}>🏢</Text>
-              <View style={styles.propertyBadgeDetails}>
-                <Text style={styles.propertyBadgeLabel}>Allocating to Property</Text>
-                <Text style={styles.propertyBadgeName}>{property.name}</Text>
-              </View>
-            </View>
-          ) : null}
-
-          {/* Success Banner */}
-          {successMessage && (
-            <View style={styles.successBanner}>
-              <Text style={styles.successIcon}>✓</Text>
-              <Text style={styles.successText}>{successMessage}</Text>
-              <Pressable hitSlop={8} onPress={() => setSuccessMessage(null)}>
-                <Text style={styles.bannerDismiss}>✕</Text>
-              </Pressable>
+          {/* Feedback Banners */}
+          {errorMessage && (
+            <View style={styles.errorBanner}>
+              <Text style={styles.errorBannerIcon}>⚠️</Text>
+              <Text style={styles.errorBannerText}>{errorMessage}</Text>
             </View>
           )}
 
-          {/* Error Banner */}
-          {errorMessage && (
-            <View style={styles.errorBanner}>
-              <Text style={styles.errorIcon}>⚠️</Text>
-              <Text style={styles.errorText}>{errorMessage}</Text>
-              <Pressable hitSlop={8} onPress={() => setErrorMessage(null)}>
-                <Text style={styles.bannerDismiss}>✕</Text>
-              </Pressable>
+          {successMessage && (
+            <View style={styles.successBanner}>
+              <Text style={styles.successBannerIcon}>✓</Text>
+              <Text style={styles.successBannerText}>{successMessage}</Text>
             </View>
           )}
 
           {/* Form Card */}
-          <View style={styles.card}>
-            {/* Full Name */}
-            <View style={styles.inputGroup}>
+          <View style={styles.formCard}>
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>1. Resident & Room Information</Text>
+            </View>
+
+            <View style={styles.fieldGroup}>
               <Text style={styles.label}>
-                Full Name <Text style={styles.requiredAsterisk}>*</Text>
+                Full Name <Text style={styles.required}>*</Text>
               </Text>
               <TextInput
                 style={styles.input}
+                value={fullName}
+                onChangeText={setFullName}
                 placeholder="e.g. Rahul Sharma"
                 placeholderTextColor="#94A3B8"
-                value={fullName}
-                onChangeText={(val) => {
-                  setFullName(val);
-                  if (errorMessage) setErrorMessage(null);
-                }}
                 autoCapitalize="words"
-                autoCorrect={false}
-                editable={!saving && !loadingProperty}
+                editable={!saving}
               />
             </View>
 
-            {/* Room Number */}
-            <View style={styles.inputGroup}>
+            <View style={styles.fieldRow}>
+              <View style={[styles.fieldGroup, { flex: 1, marginRight: 8 }]}>
+                <Text style={styles.label}>
+                  Room Number <Text style={styles.required}>*</Text>
+                </Text>
+                <TextInput
+                  style={styles.input}
+                  value={roomNumber}
+                  onChangeText={setRoomNumber}
+                  placeholder="e.g. 101"
+                  placeholderTextColor="#94A3B8"
+                  autoCapitalize="characters"
+                  editable={!saving}
+                />
+              </View>
+
+              <View style={[styles.fieldGroup, { flex: 1.4, marginLeft: 8 }]}>
+                <Text style={styles.label}>Phone Number</Text>
+                <TextInput
+                  style={styles.input}
+                  value={phoneNumber}
+                  onChangeText={setPhoneNumber}
+                  placeholder="e.g. 9876543210"
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="phone-pad"
+                  maxLength={15}
+                  editable={!saving}
+                />
+              </View>
+            </View>
+
+            <View style={styles.divider} />
+
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionTitle}>2. Supabase Login Account</Text>
+            </View>
+            <Text style={styles.sectionHint}>
+              The student will use this email and password to log in to the student portal.
+            </Text>
+
+            <View style={styles.fieldGroup}>
               <Text style={styles.label}>
-                Room Number <Text style={styles.requiredAsterisk}>*</Text>
+                Resident Login Email <Text style={styles.required}>*</Text>
               </Text>
               <TextInput
                 style={styles.input}
-                placeholder="e.g. 101, A-204"
+                value={email}
+                onChangeText={setEmail}
+                placeholder="e.g. rahul.sharma@example.com"
                 placeholderTextColor="#94A3B8"
-                value={roomNumber}
-                onChangeText={(val) => {
-                  setRoomNumber(val);
-                  if (errorMessage) setErrorMessage(null);
-                }}
-                autoCapitalize="characters"
+                keyboardType="email-address"
+                autoCapitalize="none"
                 autoCorrect={false}
-                editable={!saving && !loadingProperty}
+                editable={!saving}
               />
             </View>
 
-            {/* Phone Number */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>
-                Phone Number <Text style={styles.optionalText}>(Optional)</Text>
-              </Text>
-              <TextInput
-                style={styles.input}
-                placeholder="e.g. 9876543210"
-                placeholderTextColor="#94A3B8"
-                value={phoneNumber}
-                onChangeText={(val) => {
-                  setPhoneNumber(val);
-                  if (errorMessage) setErrorMessage(null);
-                }}
-                keyboardType="phone-pad"
-                maxLength={15}
-                editable={!saving && !loadingProperty}
-              />
+            <View style={styles.fieldGroup}>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>
+                  Temporary Password <Text style={styles.required}>*</Text>
+                </Text>
+                <Pressable onPress={handleGeneratePassword} hitSlop={6}>
+                  <Text style={styles.generateBtnText}>⚡ Generate</Text>
+                </Pressable>
+              </View>
+              <View style={styles.passwordInputWrap}>
+                <TextInput
+                  style={[styles.input, { flex: 1, borderWidth: 0, paddingHorizontal: 0 }]}
+                  value={temporaryPassword}
+                  onChangeText={setTemporaryPassword}
+                  placeholder="Min 6 characters"
+                  placeholderTextColor="#94A3B8"
+                  secureTextEntry={!showPassword}
+                  autoCapitalize="none"
+                  editable={!saving}
+                />
+                <Pressable
+                  onPress={() => setShowPassword(!showPassword)}
+                  style={styles.eyeBtn}>
+                  <Text style={styles.eyeBtnText}>{showPassword ? 'Hide' : 'Show'}</Text>
+                </Pressable>
+              </View>
             </View>
 
-            {/* Submit Button */}
+            {/* Submit Action */}
             <Pressable
-              accessibilityRole="button"
-              disabled={saving || loadingProperty || !property}
               style={({ pressed }) => [
-                styles.submitBtn,
-                (saving || loadingProperty || !property) && styles.submitBtnDisabled,
-                pressed && styles.submitBtnPressed,
+                styles.submitButton,
+                pressed && styles.buttonPressed,
+                (saving || loadingProperty) && styles.buttonDisabled,
               ]}
+              disabled={saving || loadingProperty}
               onPress={handleSaveResident}>
               {saving ? (
-                <View style={styles.savingRow}>
+                <View style={styles.buttonLoadingRow}>
                   <ActivityIndicator size="small" color="#FFFFFF" />
-                  <Text style={styles.submitBtnText}>Saving Resident...</Text>
+                  <Text style={styles.submitButtonText}>Creating Account & Profile...</Text>
                 </View>
               ) : (
-                <Text style={styles.submitBtnText}>+ Save Resident</Text>
+                <Text style={styles.submitButtonText}>Create Resident & Login Account</Text>
               )}
             </Pressable>
-          </View>
-
-          {/* Information Card */}
-          <View style={styles.infoCard}>
-            <Text style={styles.infoTitle}>💡 Important Note</Text>
-            <Text style={styles.infoText}>
-              Once registered, the resident will immediately appear in your Gate Attendance directory with an initial status of <Text style={{ fontWeight: '700' }}>UNKNOWN</Text> until their first IN or OUT movement is recorded.
-            </Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -357,155 +489,89 @@ export default function AddResidentScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC', // Slate 50
+    backgroundColor: '#F8FAFC',
   },
   keyboardContainer: {
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
+    padding: 16,
     paddingBottom: 40,
   },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  header: {
     marginBottom: 16,
   },
   backButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginRight: 12,
-    minHeight: 40,
-    justifyContent: 'center',
-  },
-  backButtonPressed: {
-    backgroundColor: '#F1F5F9',
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 6,
+    marginBottom: 10,
   },
   backButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#334155',
   },
-  titleWrapper: {
-    flex: 1,
-  },
-  screenTitle: {
+  title: {
     fontSize: 22,
     fontWeight: '800',
     color: '#0F172A',
-    letterSpacing: -0.3,
   },
-  screenSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
-    marginTop: 1,
-  },
-  propertyLoadingBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 12,
-    backgroundColor: '#EFF6FF',
-    borderRadius: 10,
-    marginBottom: 16,
-    gap: 8,
-  },
-  propertyLoadingText: {
+  subtitle: {
     fontSize: 13,
-    color: '#0284C7',
-    fontWeight: '500',
-  },
-  propertyBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#EFF6FF',
-    borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-    gap: 10,
-  },
-  propertyBadgeIcon: {
-    fontSize: 20,
-  },
-  propertyBadgeDetails: {
-    flex: 1,
-  },
-  propertyBadgeLabel: {
-    fontSize: 11,
     color: '#64748B',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.3,
-  },
-  propertyBadgeName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0369A1',
-    marginTop: 1,
-  },
-  successBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 16,
-  },
-  successIcon: {
-    fontSize: 14,
-    color: '#059669',
-    fontWeight: '800',
-    marginRight: 8,
-  },
-  successText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#065F46',
-    fontWeight: '600',
+    marginTop: 2,
   },
   errorBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FEF2F2',
     borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 10,
+    borderColor: '#FCA5A5',
     padding: 12,
-    marginBottom: 16,
+    borderRadius: 8,
+    marginBottom: 14,
+    gap: 8,
   },
-  errorIcon: {
+  errorBannerIcon: {
     fontSize: 16,
-    marginRight: 8,
   },
-  errorText: {
+  errorBannerText: {
     flex: 1,
     fontSize: 13,
-    color: '#DC2626',
-    fontWeight: '500',
+    color: '#B91C1C',
+    fontWeight: '600',
   },
-  bannerDismiss: {
-    fontSize: 14,
-    color: '#64748B',
-    fontWeight: '700',
-    paddingHorizontal: 4,
+  successBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#6EE7B7',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 14,
+    gap: 8,
   },
-  card: {
+  successBannerIcon: {
+    fontSize: 16,
+    color: '#059669',
+    fontWeight: '800',
+  },
+  successBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#047857',
+    fontWeight: '600',
+  },
+  formCard: {
     backgroundColor: '#FFFFFF',
     borderRadius: 14,
     padding: 18,
     borderWidth: 1,
     borderColor: '#E2E8F0',
-    marginBottom: 16,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -518,76 +584,103 @@ const styles = StyleSheet.create({
       },
     }),
   },
-  inputGroup: {
-    marginBottom: 16,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#334155',
+  sectionHeaderRow: {
     marginBottom: 6,
   },
-  requiredAsterisk: {
-    color: '#EF4444',
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
   },
-  optionalText: {
+  sectionHint: {
+    fontSize: 11,
+    color: '#64748B',
+    marginBottom: 12,
+  },
+  fieldGroup: {
+    marginBottom: 14,
+  },
+  fieldRow: {
+    flexDirection: 'row',
+  },
+  label: {
     fontSize: 12,
-    fontWeight: '400',
-    color: '#94A3B8',
+    fontWeight: '600',
+    color: '#475569',
+    marginBottom: 6,
+  },
+  labelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  generateBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  required: {
+    color: '#DC2626',
   },
   input: {
     backgroundColor: '#F8FAFC',
     borderWidth: 1,
     borderColor: '#CBD5E1',
     borderRadius: 8,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 10,
-    fontSize: 15,
+    fontSize: 14,
     color: '#0F172A',
-    minHeight: 46,
   },
-  submitBtn: {
-    backgroundColor: '#0284C7', // Sky 600
-    borderRadius: 10,
+  passwordInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+  },
+  eyeBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 6,
+  },
+  eyeBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0284C7',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#F1F5F9',
+    marginVertical: 14,
+  },
+  submitButton: {
+    backgroundColor: '#0284C7',
+    borderRadius: 8,
     paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 8,
-    minHeight: 48,
   },
-  submitBtnDisabled: {
-    backgroundColor: '#94A3B8',
-  },
-  submitBtnPressed: {
-    backgroundColor: '#0369A1',
-  },
-  submitBtnText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
-  },
-  savingRow: {
+  buttonLoadingRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
   },
-  infoCard: {
-    backgroundColor: '#F1F5F9',
-    borderRadius: 10,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  infoTitle: {
-    fontSize: 13,
+  submitButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
     fontWeight: '700',
-    color: '#475569',
-    marginBottom: 4,
   },
-  infoText: {
-    fontSize: 12,
-    color: '#64748B',
-    lineHeight: 17,
+  buttonPressed: {
+    opacity: 0.8,
+  },
+  buttonDisabled: {
+    opacity: 0.6,
+  },
+  pressed: {
+    opacity: 0.7,
   },
 });
-

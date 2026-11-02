@@ -1,10 +1,8 @@
-import AppTabs from '@/components/app-tabs';
+import { Stack } from 'expo-router';
 
-// Layout for the "(tabs)" route group.
-// The parentheses mean the folder name is NOT part of the URL,
-// so (tabs)/index.tsx is still the "/" route and (tabs)/explore.tsx is "/explore".
-// AppTabs renders the existing bottom tab bar (NativeTabs on Android/iOS).
+// Layout for the "(tabs)" route group without bottom tab bar.
+// Owner dashboard renders full-screen with top-header settings navigation,
+// identical to the student portal architecture.
 export default function TabsLayout() {
-  return <AppTabs />;
+  return <Stack screenOptions={{ headerShown: false }} />;
 }
-
