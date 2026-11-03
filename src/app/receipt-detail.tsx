@@ -16,6 +16,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
+import { OwnerHeader } from '@/components/ui/owner';
 
 interface PaymentDetail {
   id: string;
@@ -166,20 +167,12 @@ export default function ReceiptDetailScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <OwnerHeader
+        title="Official Receipt"
+        subtitle={payment?.receipt_number || 'Loading...'}
+        showBack
+      />
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        {/* Top Bar */}
-        <View style={styles.topBar}>
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-            onPress={() => router.back()}>
-            <Text style={styles.backButtonText}>‹ Back</Text>
-          </Pressable>
-          <View style={styles.headerTitleWrap}>
-            <Text style={styles.screenTitle}>Official Receipt</Text>
-            <Text style={styles.screenSubtitle}>{payment?.receipt_number || 'Loading...'}</Text>
-          </View>
-        </View>
 
         {loading ? (
           <View style={styles.loadingBox}>

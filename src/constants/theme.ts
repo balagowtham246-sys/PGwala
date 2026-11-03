@@ -63,3 +63,79 @@ export const Spacing = {
 
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 800;
+
+/**
+ * PGwala 2.0 Modern Owner Design Tokens
+ * Follows Airbnb Host / Stripe Dashboard / Material 3 guidelines
+ */
+export const OwnerTheme = {
+  colors: {
+    primary: '#087FAF',
+    primaryDark: '#075B80',
+    primaryLight: '#E6F4FA',
+    success: '#168653',
+    successLight: '#DCFCE7',
+    warning: '#D97706',
+    warningLight: '#FEF3C7',
+    danger: '#DC3545',
+    dangerLight: '#FEE2E2',
+    background: '#F5F7FA',
+    card: '#FFFFFF',
+    textPrimary: '#172033',
+    textSecondary: '#697586',
+    textMuted: '#94A3B8',
+    border: '#E1E6EC',
+    borderLight: '#EDF1F5',
+  },
+  typography: {
+    screenHeading: {
+      fontSize: 26,
+      fontWeight: '700' as const,
+      color: '#172033',
+      letterSpacing: -0.5,
+    },
+    sectionHeading: {
+      fontSize: 18,
+      fontWeight: '600' as const,
+      color: '#172033',
+      letterSpacing: -0.2,
+    },
+    cardHeading: {
+      fontSize: 16,
+      fontWeight: '600' as const,
+      color: '#172033',
+    },
+    body: {
+      fontSize: 14,
+      fontWeight: '400' as const,
+      color: '#172033',
+    },
+    supporting: {
+      fontSize: 12,
+      fontWeight: '400' as const,
+      color: '#697586',
+    },
+  },
+  radius: {
+    sm: 8,
+    md: 12,
+    card: 16,
+    lg: 20,
+    full: 9999,
+  },
+  shadow: Platform.select({
+    ios: {
+      shadowColor: '#0F172A',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.04,
+      shadowRadius: 8,
+    },
+    android: {
+      elevation: 2,
+    },
+    default: {
+      boxShadow: '0 2px 8px rgba(15, 23, 42, 0.04)',
+    },
+  }),
+} as const;
+

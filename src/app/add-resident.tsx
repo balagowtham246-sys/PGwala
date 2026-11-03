@@ -1,6 +1,5 @@
 import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
@@ -13,9 +12,24 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
+import {
+  Eye,
+  EyeOff,
+  CheckCircle2,
+  RefreshCw,
+} from 'lucide-react-native';
 
+import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
+import {
+  OwnerHeader,
+  PrimaryButton,
+  SecondaryButton,
+  StatusBadge,
+  ErrorState,
+} from '@/components/ui/owner';
 
 interface PropertyInfo {
   id: string;
@@ -23,7 +37,8 @@ interface PropertyInfo {
 }
 
 function generateRandomPassword(length = 8): string {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$';
+  const chars =
+    'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$';
   let res = '';
   for (let i = 0; i < length; i++) {
     res += chars.charAt(Math.floor(Math.random() * chars.length));
@@ -33,9 +48,13 @@ function generateRandomPassword(length = 8): string {
 
 export default function AddResidentScreen() {
   const { user, profile } = useAuth();
+  const { selectedProperty } = useProperty();
 
   const [loadingProperty, setLoadingProperty] = useState(true);
   const [property, setProperty] = useState<PropertyInfo | null>(null);
+
+  // Form Step: 1 = Resident Details, 2 = Account Setup, 3 = Success Screen
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
 
   // Form Fields
   const [fullName, setFullName] = useState('');
@@ -45,16 +64,28 @@ export default function AddResidentScreen() {
   const [temporaryPassword, setTemporaryPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
 
+  // Created Resident summary for Step 3
+  const [createdSummary, setCreatedSummary] = useState<{
+    id: string;
+    fullName: string;
+    roomNumber: string;
+    email: string;
+  } | null>(null);
+
   // Status & Feedback
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // 1. Fetch authenticated owner's active property
   const loadOwnerProperty = useCallback(async () => {
     try {
       setErrorMessage(null);
       setLoadingProperty(true);
+
+      if (selectedProperty) {
+        setProperty({ id: selectedProperty.id, name: selectedProperty.name });
+        return;
+      }
 
       let query = supabase
         .from('properties')
@@ -73,7 +104,9 @@ export default function AddResidentScreen() {
 
       if (!data || data.length === 0) {
         setProperty(null);
-        setErrorMessage('No active PG property found for your account. Please set up a property first.');
+        setErrorMessage(
+          'No active PG property found for your account. Please set up a property first.'
+        );
       } else {
         setProperty(data[0]);
       }
@@ -84,7 +117,7 @@ export default function AddResidentScreen() {
     } finally {
       setLoadingProperty(false);
     }
-  }, [user?.id]);
+  }, [user?.id, selectedProperty]);
 
   useFocusEffect(
     useCallback(() => {
@@ -98,7 +131,10 @@ export default function AddResidentScreen() {
     setPhoneNumber('');
     setEmail('');
     setTemporaryPassword('');
+    setShowPassword(false);
+    setCreatedSummary(null);
     setErrorMessage(null);
+    setCurrentStep(1);
   };
 
   const handleGeneratePassword = () => {
@@ -107,15 +143,44 @@ export default function AddResidentScreen() {
     setShowPassword(true);
   };
 
-  // 2. Validate and submit unified resident + auth creation via protected Edge Function
+  // Validate Step 1 before moving to Step 2
+  const handleProceedToStep2 = () => {
+    const trimmedName = fullName.trim();
+    const trimmedRoom = roomNumber.trim();
+    const trimmedPhone = phoneNumber.trim();
+
+    if (!trimmedName) {
+      setErrorMessage("Please enter the resident's full name.");
+      return;
+    }
+    if (!trimmedRoom) {
+      setErrorMessage('Please enter a room number.');
+      return;
+    }
+    if (trimmedPhone && trimmedPhone.length < 10) {
+      setErrorMessage('Phone number should be at least 10 digits.');
+      return;
+    }
+
+    setErrorMessage(null);
+    setCurrentStep(2);
+  };
+
+  // Validate and submit unified resident + auth creation via Edge Function
   const handleSaveResident = async () => {
     if (!user?.id || profile?.role !== 'owner') {
-      Alert.alert('Authorization Required', 'You must be signed in as a PG owner to add residents.');
+      Alert.alert(
+        'Authorization Required',
+        'You must be signed in as a PG owner to add residents.'
+      );
       return;
     }
 
     if (!property?.id) {
-      Alert.alert('Property Required', 'Cannot add resident without an active PG property.');
+      Alert.alert(
+        'Property Required',
+        'Cannot add resident without an active PG property.'
+      );
       return;
     }
 
@@ -124,17 +189,6 @@ export default function AddResidentScreen() {
     const trimmedPhone = phoneNumber.trim();
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedPassword = temporaryPassword.trim();
-
-    // Client-side validations
-    if (!trimmedName) {
-      setErrorMessage("Please enter the resident's full name.");
-      return;
-    }
-
-    if (!trimmedRoom) {
-      setErrorMessage('Please enter a room number.');
-      return;
-    }
 
     if (!trimmedEmail) {
       setErrorMessage("Please enter the resident's login email.");
@@ -148,7 +202,7 @@ export default function AddResidentScreen() {
     }
 
     if (!trimmedPassword) {
-      setErrorMessage('Please provide a temporary password or generate one.');
+      setErrorMessage('Please provide a temporary password or tap generate.');
       return;
     }
 
@@ -157,45 +211,41 @@ export default function AddResidentScreen() {
       return;
     }
 
-    if (trimmedPhone && trimmedPhone.length < 10) {
-      setErrorMessage('Phone number should be at least 10 digits.');
-      return;
-    }
-
     setSaving(true);
     setErrorMessage(null);
-    setSuccessMessage(null);
 
     try {
-      // 1. Obtain and verify the current authenticated owner session at submission time
-      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      const { data: sessionData, error: sessionError } =
+        await supabase.auth.getSession();
       if (sessionError) {
-        throw new Error(`Authentication check failed: ${sessionError.message}`);
+        throw new Error(
+          `Authentication check failed: ${sessionError.message}`
+        );
       }
 
       let activeSession = sessionData?.session ?? null;
-
-      // Refresh session if missing access_token or expiring within 60 seconds
       const isExpiringSoon =
-        !activeSession?.expires_at || activeSession.expires_at * 1000 < Date.now() + 60_000;
+        !activeSession?.expires_at ||
+        activeSession.expires_at * 1000 < Date.now() + 60_000;
 
       if (!activeSession || isExpiringSoon) {
-        const { data: refreshedData, error: refreshError } = await supabase.auth.refreshSession();
+        const { data: refreshedData, error: refreshError } =
+          await supabase.auth.refreshSession();
         if (refreshError || !refreshedData?.session) {
-          throw new Error('Your login session has expired. Please sign out and sign in again.');
+          throw new Error(
+            'Your login session has expired. Please sign out and sign in again.'
+          );
         }
         activeSession = refreshedData.session;
       }
 
       if (!activeSession?.user?.id || !activeSession.access_token) {
-        throw new Error('No active authenticated owner session found. Please sign in again.');
+        throw new Error(
+          'No active authenticated owner session found. Please sign in again.'
+        );
       }
 
-      if (activeSession.user.id !== user.id) {
-        throw new Error('Session user mismatch detected. Please sign in again as the PG owner.');
-      }
-
-      // 2. Invoke the protected create-resident Edge Function (single authoritative path)
+      // Invoke the protected create-resident Edge Function
       const {
         data: edgeData,
         error: edgeError,
@@ -217,98 +267,40 @@ export default function AddResidentScreen() {
       if (edgeError) {
         const httpStatus: number | undefined =
           edgeResponse?.status ?? (edgeError as any)?.context?.status;
-        let serverCode: string | undefined;
         let serverMessage: string | undefined;
 
-        const errorContext = (edgeError as any)?.context;
-        if (errorContext && typeof errorContext.json === 'function') {
-          try {
-            const parsed = await errorContext.json();
-            serverCode = parsed?.code;
-            serverMessage = parsed?.error || parsed?.message;
-          } catch {
-            // Response body was not JSON
-          }
-        }
-
-        let diagnosticMessage =
-          serverMessage || edgeError.message || 'Resident creation service returned an error.';
-
-        if (httpStatus === 401 || serverCode === 'AUTH_MISSING' || serverCode === 'AUTH_INVALID') {
-          diagnosticMessage =
-            serverMessage ||
-            'Authentication failed (401): Your owner session was rejected. Please sign in again and retry.';
-        } else if (httpStatus === 403 || serverCode === 'FORBIDDEN') {
-          diagnosticMessage =
-            serverMessage ||
-            'Authorization denied (403): You do not have permission to manage residents for this PG property.';
-        } else if (
-          httpStatus === 409 ||
-          serverCode === 'DUPLICATE_EMAIL' ||
-          serverCode === 'DUPLICATE_RESIDENT'
-        ) {
-          diagnosticMessage =
-            serverMessage ||
-            `Conflict (409): A resident or login account with email "${trimmedEmail}" already exists.`;
-        } else if (httpStatus === 400 || serverCode === 'VALIDATION_ERROR') {
-          diagnosticMessage = serverMessage || 'Invalid resident details provided (400).';
+        if (httpStatus === 409) {
+          serverMessage = `A resident or account with email "${trimmedEmail}" already exists.`;
+        } else if (httpStatus === 400) {
+          serverMessage = 'Invalid resident details provided (400).';
         } else if (httpStatus === 404) {
-          diagnosticMessage =
-            'Service unavailable (404): The "create-resident" Supabase Edge Function is not deployed yet.';
-        } else if (httpStatus && httpStatus >= 500) {
-          diagnosticMessage =
-            serverMessage ||
-            `Server error (${httpStatus}): The resident creation service encountered a configuration or internal error.`;
+          serverMessage =
+            'The resident setup service is currently unavailable. Please contact support.';
+        } else {
+          serverMessage = edgeError.message;
         }
 
-        console.warn('[AddResident] Edge Function error:', {
-          status: httpStatus,
-          code: serverCode,
-          message: diagnosticMessage,
-        });
-
-        throw new Error(diagnosticMessage);
+        throw new Error(serverMessage || 'Failed to create resident.');
       }
 
       if (!edgeData || !edgeData.success) {
-        throw new Error(edgeData?.error || 'Failed to create resident account.');
+        throw new Error(
+          edgeData?.error || 'Failed to create resident account.'
+        );
       }
 
-      const createdResidentName = edgeData.full_name || trimmedName;
-      const createdRoom = edgeData.room_number || trimmedRoom;
-      const createdEmail = edgeData.email || trimmedEmail;
+      // Save created summary for confirmation screen
+      setCreatedSummary({
+        id: edgeData.resident_id || edgeData.id || '',
+        fullName: edgeData.full_name || trimmedName,
+        roomNumber: edgeData.room_number || trimmedRoom,
+        email: edgeData.email || trimmedEmail,
+      });
 
-      // Success feedback
-      const successText = `${createdResidentName} was registered with login ${createdEmail}.`;
-      setSuccessMessage(successText);
-
-      Alert.alert(
-        'Resident & Auth Created!',
-        `Account provisioned successfully for ${createdResidentName} (Room ${createdRoom}).\n\nLogin Email: ${createdEmail}\nTemporary Password: ${trimmedPassword}\n\nPlease share these credentials with the resident.`,
-        [
-          {
-            text: 'Add Another',
-            style: 'default',
-            onPress: () => resetForm(),
-          },
-          {
-            text: 'Go to Dashboard',
-            style: 'default',
-            onPress: () => {
-              resetForm();
-              router.replace('/(tabs)');
-            },
-          },
-        ]
-      );
-
-      resetForm();
+      setCurrentStep(3);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.warn('[AddResident] Creation failed:', msg);
-      // Preserve form inputs so the owner can correct any issue and retry
       setErrorMessage(msg);
-      Alert.alert('Resident Creation Failed', msg);
     } finally {
       setSaving(false);
     }
@@ -316,170 +308,282 @@ export default function AddResidentScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <OwnerHeader
+        title="Add Resident"
+        subtitle={property?.name || 'Property'}
+        showBack
+        onBack={() => {
+          if (currentStep === 2) {
+            setCurrentStep(1);
+          } else {
+            router.back();
+          }
+        }}
+      />
+
       <KeyboardAvoidingView
-        style={styles.keyboardContainer}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled">
-          
-          {/* Header */}
-          <View style={styles.header}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-              style={({ pressed }) => [styles.backButton, pressed && styles.pressed]}
-              onPress={() => router.back()}>
-              <Text style={styles.backButtonText}>← Back</Text>
-            </Pressable>
-            <Text style={styles.title}>Add New Resident</Text>
-            <Text style={styles.subtitle}>
-              {property?.name
-                ? `Register resident to ${property.name}`
-                : 'Register student & create login credentials'}
-            </Text>
-          </View>
-
-          {/* Feedback Banners */}
           {errorMessage && (
-            <View style={styles.errorBanner}>
-              <Text style={styles.errorBannerIcon}>⚠️</Text>
-              <Text style={styles.errorBannerText}>{errorMessage}</Text>
-            </View>
+            <ErrorState
+              message={errorMessage}
+              onRetry={() => setErrorMessage(null)}
+            />
           )}
 
-          {successMessage && (
-            <View style={styles.successBanner}>
-              <Text style={styles.successBannerIcon}>✓</Text>
-              <Text style={styles.successBannerText}>{successMessage}</Text>
-            </View>
-          )}
-
-          {/* Form Card */}
-          <View style={styles.formCard}>
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionTitle}>1. Resident & Room Information</Text>
-            </View>
-
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                Full Name <Text style={styles.required}>*</Text>
+          {/* Step 3: Success Screen */}
+          {currentStep === 3 && createdSummary ? (
+            <View style={styles.successCard}>
+              <View style={styles.successIconWrap}>
+                <CheckCircle2 size={44} color={OwnerTheme.colors.success} />
+              </View>
+              <Text style={styles.successHeading}>Resident Added</Text>
+              <Text style={styles.successSubheading}>
+                The resident profile and login credentials have been created
+                successfully.
               </Text>
-              <TextInput
-                style={styles.input}
-                value={fullName}
-                onChangeText={setFullName}
-                placeholder="e.g. Rahul Sharma"
-                placeholderTextColor="#94A3B8"
-                autoCapitalize="words"
-                editable={!saving}
-              />
-            </View>
 
-            <View style={styles.fieldRow}>
-              <View style={[styles.fieldGroup, { flex: 1, marginRight: 8 }]}>
-                <Text style={styles.label}>
-                  Room Number <Text style={styles.required}>*</Text>
-                </Text>
-                <TextInput
-                  style={styles.input}
-                  value={roomNumber}
-                  onChangeText={setRoomNumber}
-                  placeholder="e.g. 101"
-                  placeholderTextColor="#94A3B8"
-                  autoCapitalize="characters"
-                  editable={!saving}
+              <View style={styles.summaryDetailsBox}>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Name</Text>
+                  <Text style={styles.summaryValue}>
+                    {createdSummary.fullName}
+                  </Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Room</Text>
+                  <Text style={styles.summaryValue}>
+                    Room {createdSummary.roomNumber}
+                  </Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Login Email</Text>
+                  <Text style={styles.summaryValue}>
+                    {createdSummary.email}
+                  </Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Account Status</Text>
+                  <StatusBadge label="ACTIVE" variant="success" size="sm" />
+                </View>
+              </View>
+
+              <View style={styles.successActions}>
+                <PrimaryButton
+                  label="View Resident"
+                  onPress={() => {
+                    if (createdSummary.id) {
+                      router.replace({
+                        pathname: '/edit-resident',
+                        params: { id: createdSummary.id },
+                      });
+                    } else {
+                      router.replace('/(tabs)');
+                    }
+                  }}
+                  style={{ marginBottom: 10 }}
+                />
+                <SecondaryButton
+                  label="Add Another Resident"
+                  onPress={resetForm}
                 />
               </View>
-
-              <View style={[styles.fieldGroup, { flex: 1.4, marginLeft: 8 }]}>
-                <Text style={styles.label}>Phone Number</Text>
-                <TextInput
-                  style={styles.input}
-                  value={phoneNumber}
-                  onChangeText={setPhoneNumber}
-                  placeholder="e.g. 9876543210"
-                  placeholderTextColor="#94A3B8"
-                  keyboardType="phone-pad"
-                  maxLength={15}
-                  editable={!saving}
-                />
+            </View>
+          ) : (
+            <>
+              {/* Step Progress Indicator */}
+              <View style={styles.progressRow}>
+                <View
+                  style={[
+                    styles.progressStep,
+                    styles.progressStepActive,
+                  ]}>
+                  <Text style={styles.progressStepTextActive}>1</Text>
+                  <Text style={styles.progressStepLabelActive}>
+                    Resident Info
+                  </Text>
+                </View>
+                <View style={styles.progressDivider} />
+                <View
+                  style={[
+                    styles.progressStep,
+                    currentStep === 2 && styles.progressStepActive,
+                  ]}>
+                  <Text
+                    style={[
+                      styles.progressStepText,
+                      currentStep === 2 && styles.progressStepTextActive,
+                    ]}>
+                    2
+                  </Text>
+                  <Text
+                    style={[
+                      styles.progressStepLabel,
+                      currentStep === 2 && styles.progressStepLabelActive,
+                    ]}>
+                    Account Setup
+                  </Text>
+                </View>
               </View>
-            </View>
 
-            <View style={styles.divider} />
+              {/* Step 1: Resident Details */}
+              {currentStep === 1 ? (
+                <View style={styles.formCard}>
+                  <Text style={styles.formSectionTitle}>
+                    Personal & Room Details
+                  </Text>
 
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionTitle}>2. Supabase Login Account</Text>
-            </View>
-            <Text style={styles.sectionHint}>
-              The student will use this email and password to log in to the student portal.
-            </Text>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Full Name *</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="e.g. Arun Kumar"
+                      placeholderTextColor={OwnerTheme.colors.textMuted}
+                      value={fullName}
+                      onChangeText={(val) => {
+                        setFullName(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      autoCapitalize="words"
+                    />
+                  </View>
 
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                Resident Login Email <Text style={styles.required}>*</Text>
-              </Text>
-              <TextInput
-                style={styles.input}
-                value={email}
-                onChangeText={setEmail}
-                placeholder="e.g. rahul.sharma@example.com"
-                placeholderTextColor="#94A3B8"
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!saving}
-              />
-            </View>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Room Number *</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="e.g. 101 or A"
+                      placeholderTextColor={OwnerTheme.colors.textMuted}
+                      value={roomNumber}
+                      onChangeText={(val) => {
+                        setRoomNumber(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      autoCapitalize="characters"
+                    />
+                  </View>
 
-            <View style={styles.fieldGroup}>
-              <View style={styles.labelRow}>
-                <Text style={styles.label}>
-                  Temporary Password <Text style={styles.required}>*</Text>
-                </Text>
-                <Pressable onPress={handleGeneratePassword} hitSlop={6}>
-                  <Text style={styles.generateBtnText}>⚡ Generate</Text>
-                </Pressable>
-              </View>
-              <View style={styles.passwordInputWrap}>
-                <TextInput
-                  style={[styles.input, { flex: 1, borderWidth: 0, paddingHorizontal: 0 }]}
-                  value={temporaryPassword}
-                  onChangeText={setTemporaryPassword}
-                  placeholder="Min 6 characters"
-                  placeholderTextColor="#94A3B8"
-                  secureTextEntry={!showPassword}
-                  autoCapitalize="none"
-                  editable={!saving}
-                />
-                <Pressable
-                  onPress={() => setShowPassword(!showPassword)}
-                  style={styles.eyeBtn}>
-                  <Text style={styles.eyeBtnText}>{showPassword ? 'Hide' : 'Show'}</Text>
-                </Pressable>
-              </View>
-            </View>
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Phone Number (Optional)</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="e.g. 9876543210"
+                      placeholderTextColor={OwnerTheme.colors.textMuted}
+                      value={phoneNumber}
+                      onChangeText={(val) => {
+                        setPhoneNumber(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      keyboardType="phone-pad"
+                    />
+                  </View>
 
-            {/* Submit Action */}
-            <Pressable
-              style={({ pressed }) => [
-                styles.submitButton,
-                pressed && styles.buttonPressed,
-                (saving || loadingProperty) && styles.buttonDisabled,
-              ]}
-              disabled={saving || loadingProperty}
-              onPress={handleSaveResident}>
-              {saving ? (
-                <View style={styles.buttonLoadingRow}>
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                  <Text style={styles.submitButtonText}>Creating Account & Profile...</Text>
+                  <PrimaryButton
+                    label="Next: Account Setup"
+                    onPress={handleProceedToStep2}
+                    style={{ marginTop: 12 }}
+                  />
                 </View>
               ) : (
-                <Text style={styles.submitButtonText}>Create Resident & Login Account</Text>
+                /* Step 2: Account Setup */
+                <View style={styles.formCard}>
+                  <Text style={styles.formSectionTitle}>
+                    Student Portal Login
+                  </Text>
+                  <Text style={styles.formSectionSubtitle}>
+                    Provide the email and temporary password for the resident to
+                    log into their PG app.
+                  </Text>
+
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Resident Login Email *</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      placeholder="resident@example.com"
+                      placeholderTextColor={OwnerTheme.colors.textMuted}
+                      value={email}
+                      onChangeText={(val) => {
+                        setEmail(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                  </View>
+
+                  <View style={styles.inputGroup}>
+                    <View style={styles.labelRow}>
+                      <Text style={styles.label}>Temporary Password *</Text>
+                      <Pressable
+                        hitSlop={8}
+                        onPress={handleGeneratePassword}
+                        style={styles.generateBtn}>
+                        <RefreshCw
+                          size={12}
+                          color={OwnerTheme.colors.primary}
+                        />
+                        <Text style={styles.generateBtnText}>
+                          Auto-Generate
+                        </Text>
+                      </Pressable>
+                    </View>
+                    <View style={styles.passwordInputWrap}>
+                      <TextInput
+                        style={[styles.textInput, { flex: 1, borderWidth: 0 }]}
+                        placeholder="At least 6 characters"
+                        placeholderTextColor={OwnerTheme.colors.textMuted}
+                        value={temporaryPassword}
+                        onChangeText={(val) => {
+                          setTemporaryPassword(val);
+                          if (errorMessage) setErrorMessage(null);
+                        }}
+                        secureTextEntry={!showPassword}
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                      />
+                      <Pressable
+                        hitSlop={8}
+                        style={styles.eyeBtn}
+                        onPress={() => setShowPassword(!showPassword)}>
+                        {showPassword ? (
+                          <EyeOff
+                            size={18}
+                            color={OwnerTheme.colors.textSecondary}
+                          />
+                        ) : (
+                          <Eye
+                            size={18}
+                            color={OwnerTheme.colors.textSecondary}
+                          />
+                        )}
+                      </Pressable>
+                    </View>
+                  </View>
+
+                  <View style={styles.step2Actions}>
+                    <SecondaryButton
+                      label="Back"
+                      onPress={() => setCurrentStep(1)}
+                      style={{ flex: 1, marginRight: 8 }}
+                    />
+                    <PrimaryButton
+                      label="Create Resident"
+                      onPress={handleSaveResident}
+                      loading={saving}
+                      style={{ flex: 2 }}
+                    />
+                  </View>
+                </View>
               )}
-            </Pressable>
-          </View>
+            </>
+          )}
+
+          <View style={{ height: 40 }} />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -489,125 +593,86 @@ export default function AddResidentScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
-  },
-  keyboardContainer: {
-    flex: 1,
+    backgroundColor: OwnerTheme.colors.background,
   },
   scrollContent: {
-    padding: 16,
-    paddingBottom: 40,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    maxWidth: 600,
+    width: '100%',
+    alignSelf: 'center',
   },
-  header: {
-    marginBottom: 16,
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
   },
-  backButton: {
-    alignSelf: 'flex-start',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
+  progressStep: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  progressStepActive: {},
+  progressStepText: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     backgroundColor: '#E2E8F0',
-    borderRadius: 6,
-    marginBottom: 10,
+    color: OwnerTheme.colors.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: 24,
   },
-  backButtonText: {
+  progressStepTextActive: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: OwnerTheme.colors.primary,
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  progressStepLabel: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#334155',
+    color: OwnerTheme.colors.textSecondary,
+    fontWeight: '500',
   },
-  title: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  subtitle: {
+  progressStepLabelActive: {
     fontSize: 13,
-    color: '#64748B',
-    marginTop: 2,
+    color: OwnerTheme.colors.primary,
+    fontWeight: '700',
   },
-  errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 14,
-    gap: 8,
-  },
-  errorBannerIcon: {
-    fontSize: 16,
-  },
-  errorBannerText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#B91C1C',
-    fontWeight: '600',
-  },
-  successBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#6EE7B7',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 14,
-    gap: 8,
-  },
-  successBannerIcon: {
-    fontSize: 16,
-    color: '#059669',
-    fontWeight: '800',
-  },
-  successBannerText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#047857',
-    fontWeight: '600',
+  progressDivider: {
+    width: 32,
+    height: 2,
+    backgroundColor: OwnerTheme.colors.border,
+    marginHorizontal: 12,
   },
   formCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 18,
+    borderRadius: OwnerTheme.radius.card,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.05,
-        shadowRadius: 3,
-      },
-      android: {
-        elevation: 1,
-      },
-    }),
+    borderColor: OwnerTheme.colors.border,
+    padding: 20,
   },
-  sectionHeaderRow: {
-    marginBottom: 6,
-  },
-  sectionTitle: {
-    fontSize: 14,
+  formSectionTitle: {
+    fontSize: 17,
     fontWeight: '700',
-    color: '#0F172A',
+    color: OwnerTheme.colors.textPrimary,
+    marginBottom: 4,
   },
-  sectionHint: {
-    fontSize: 11,
-    color: '#64748B',
-    marginBottom: 12,
+  formSectionSubtitle: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+    marginBottom: 16,
+    lineHeight: 18,
   },
-  fieldGroup: {
-    marginBottom: 14,
-  },
-  fieldRow: {
-    flexDirection: 'row',
-  },
-  label: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#475569',
-    marginBottom: 6,
+  inputGroup: {
+    marginBottom: 16,
   },
   labelRow: {
     flexDirection: 'row',
@@ -615,72 +680,97 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 6,
   },
-  generateBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#0284C7',
+  label: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+    marginBottom: 6,
   },
-  required: {
-    color: '#DC2626',
-  },
-  input: {
-    backgroundColor: '#F8FAFC',
+  textInput: {
+    height: 50,
+    borderRadius: OwnerTheme.radius.md,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: '#0F172A',
+    borderColor: OwnerTheme.colors.border,
+    paddingHorizontal: 14,
+    fontSize: 15,
+    color: OwnerTheme.colors.textPrimary,
+    backgroundColor: '#FFFFFF',
   },
   passwordInputWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
+    borderRadius: OwnerTheme.radius.md,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#FFFFFF',
+    paddingRight: 12,
   },
   eyeBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 6,
+    padding: 6,
   },
-  eyeBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#0284C7',
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#F1F5F9',
-    marginVertical: 14,
-  },
-  submitButton: {
-    backgroundColor: '#0284C7',
-    borderRadius: 8,
-    paddingVertical: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 8,
-  },
-  buttonLoadingRow: {
+  generateBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 4,
+    paddingVertical: 2,
   },
-  submitButtonText: {
-    color: '#FFFFFF',
-    fontSize: 14,
+  generateBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
+  },
+  step2Actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  successCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 24,
+    alignItems: 'center',
+  },
+  successIconWrap: {
+    marginBottom: 12,
+  },
+  successHeading: {
+    fontSize: 20,
     fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+    marginBottom: 6,
   },
-  buttonPressed: {
-    opacity: 0.8,
+  successSubheading: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: 20,
+    lineHeight: 18,
   },
-  buttonDisabled: {
-    opacity: 0.6,
+  summaryDetailsBox: {
+    width: '100%',
+    backgroundColor: '#F8FAFC',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 14,
+    gap: 10,
+    marginBottom: 20,
   },
-  pressed: {
-    opacity: 0.7,
+  summaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  summaryLabel: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  summaryValue: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  successActions: {
+    width: '100%',
   },
 });

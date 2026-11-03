@@ -17,9 +17,30 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import {
+  ChevronLeft,
+  ChevronRight,
+  Zap,
+  Check,
+  Receipt,
+  Eye,
+  X,
+  CreditCard,
+  Edit3,
+} from 'lucide-react-native';
 
+import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { supabase } from '@/lib/supabase';
+import { useProperty } from '@/context/property-context';
+import { supabase, getSignedPaymentProofUrl } from '@/lib/supabase';
+import {
+  OwnerHeader,
+  StatisticCard,
+  StatusBadge,
+  SegmentedFilter,
+  EmptyState,
+  ErrorState,
+} from '@/components/ui/owner';
 
 interface ResidentRentBillItem {
   resident_id: string;
@@ -84,11 +105,12 @@ function formatPaiseToRupees(paise: number): string {
 
 export default function SimplifiedBillingManagementScreen() {
   const { user } = useAuth();
+  const { selectedProperty, selectedPropertyId } = useProperty();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [propertyId, setPropertyId] = useState<string | null>(null);
-  const [propertyName, setPropertyName] = useState('My PG');
+  const [propertyName, setPropertyName] = useState('Shalom Residency');
 
   // Top Section Mode: 'RENT' | 'EB'
   const [billingMode, setBillingMode] = useState<'RENT' | 'EB'>('RENT');
@@ -107,7 +129,8 @@ export default function SimplifiedBillingManagementScreen() {
 
   // Edit Individual Resident Rent State
   const [editRentModalVisible, setEditRentModalVisible] = useState(false);
-  const [selectedResidentForEdit, setSelectedResidentForEdit] = useState<ResidentRentBillItem | null>(null);
+  const [selectedResidentForEdit, setSelectedResidentForEdit] =
+    useState<ResidentRentBillItem | null>(null);
   const [editRentInputRupees, setEditRentInputRupees] = useState('8000');
   const [updatingRent, setUpdatingRent] = useState(false);
 
@@ -133,6 +156,34 @@ export default function SimplifiedBillingManagementScreen() {
   } | null>(null);
   const [reviewModalVisible, setReviewModalVisible] = useState(false);
   const [confirmingPayment, setConfirmingPayment] = useState(false);
+  const [reviewSignedUrl, setReviewSignedUrl] = useState<string | null>(null);
+  const [loadingReviewUrl, setLoadingReviewUrl] = useState(false);
+
+  // Helper to open review modal and securely resolve signed screenshot URL
+  const openReviewModal = async (item: {
+    full_name: string;
+    room_number: string;
+    charge_id: string;
+    bill_title: string;
+    report: any;
+  }) => {
+    setSelectedReviewItem(item);
+    setReviewSignedUrl(null);
+    setReviewModalVisible(true);
+
+    if (item.report?.screenshot_url) {
+      setLoadingReviewUrl(true);
+      try {
+        const signed = await getSignedPaymentProofUrl(item.report.screenshot_url);
+        setReviewSignedUrl(signed);
+      } catch (e) {
+        console.warn('[BillingManagement] Failed to sign proof url:', e);
+        setReviewSignedUrl(item.report.screenshot_url);
+      } finally {
+        setLoadingReviewUrl(false);
+      }
+    }
+  };
 
   // Full Screen Image Viewer Modal
   const [fullImageUrl, setFullImageUrl] = useState<string | null>(null);
@@ -147,7 +198,11 @@ export default function SimplifiedBillingManagementScreen() {
     selectedDate.getMonth() + 1
   ).padStart(2, '0')}-01`;
 
-  const nextMonthDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth() + 1, 0);
+  const nextMonthDate = new Date(
+    selectedDate.getFullYear(),
+    selectedDate.getMonth() + 1,
+    0
+  );
   const monthIsoEnd = `${nextMonthDate.getFullYear()}-${String(
     nextMonthDate.getMonth() + 1
   ).padStart(2, '0')}-${String(nextMonthDate.getDate()).padStart(2, '0')}`;
@@ -170,31 +225,38 @@ export default function SimplifiedBillingManagementScreen() {
     if (!user?.id) return;
 
     try {
-      // 1. Fetch active property owned by caller
-      const { data: properties, error: propErr } = await supabase
-        .from('properties')
-        .select('id, name')
-        .eq('owner_id', user.id)
-        .eq('is_active', true)
-        .limit(1);
+      // 1. Resolve active property ID and name
+      let activePropId = selectedPropertyId;
+      let activePropName = selectedProperty?.name;
 
-      if (propErr) throw propErr;
-      if (!properties || properties.length === 0) {
-        setRentBills([]);
-        setEbBills([]);
-        setLoading(false);
-        return;
+      if (!activePropId) {
+        const { data: properties, error: propErr } = await supabase
+          .from('properties')
+          .select('id, name')
+          .eq('owner_id', user.id)
+          .eq('is_active', true)
+          .limit(1);
+
+        if (propErr) throw propErr;
+        if (!properties || properties.length === 0) {
+          setRentBills([]);
+          setEbBills([]);
+          setLoading(false);
+          return;
+        }
+
+        activePropId = properties[0].id;
+        activePropName = properties[0].name;
       }
 
-      const activeProp = properties[0];
-      setPropertyId(activeProp.id);
-      setPropertyName(activeProp.name);
+      setPropertyId(activePropId);
+      setPropertyName(activePropName || 'Shalom Residency');
 
       // 2. Fetch active residents of this property
       const { data: resData, error: resErr } = await supabase
         .from('residents')
         .select('id, full_name, room_number, phone_number, monthly_rent_paise, is_active')
-        .eq('property_id', activeProp.id)
+        .eq('property_id', activePropId)
         .eq('is_active', true)
         .order('room_number', { ascending: true });
 
@@ -230,22 +292,22 @@ export default function SimplifiedBillingManagementScreen() {
         }
       }
 
-      // 4. Fetch all charges for this property and month (both rent & electricity)
+      // 4. Fetch all charges for this property and month
       const { data: chargeData, error: chgErr } = await supabase
         .from('charges')
-        .select('id, resident_id, category, amount_paise, rent_amount_paise, wm_amount_paise, status')
-        .eq('property_id', activeProp.id)
+        .select(
+          'id, resident_id, category, amount_paise, rent_amount_paise, wm_amount_paise, status'
+        )
+        .eq('property_id', activePropId)
         .eq('billing_period_start', monthIsoStart);
 
       if (chgErr) throw chgErr;
 
       const rentChargeMap = new Map<string, any>();
       const ebChargeMap = new Map<string, any>();
-      const allChargeIds: string[] = [];
 
       if (chargeData) {
         for (const c of chargeData) {
-          allChargeIds.push(c.id);
           if (c.category === 'rent') {
             rentChargeMap.set(c.resident_id, c);
           } else if (c.category === 'electricity') {
@@ -257,8 +319,10 @@ export default function SimplifiedBillingManagementScreen() {
       // 5. Fetch pending student payment reports
       const { data: reportData } = await supabase
         .from('student_payment_reports')
-        .select('id, resident_id, charge_id, amount_paise, claimed_method, payment_date, reference_number, screenshot_url, notes, status')
-        .eq('property_id', activeProp.id)
+        .select(
+          'id, resident_id, charge_id, amount_paise, claimed_method, payment_date, reference_number, screenshot_url, notes, status'
+        )
+        .eq('property_id', activePropId)
         .eq('status', 'pending')
         .order('created_at', { ascending: false });
 
@@ -276,7 +340,10 @@ export default function SimplifiedBillingManagementScreen() {
         .filter((c) => c.status === 'settled')
         .map((c) => c.id);
 
-      const paymentMap = new Map<string, { receipt: string; date: string; method: string }>();
+      const paymentMap = new Map<
+        string,
+        { receipt: string; date: string; method: string }
+      >();
       if (settledChargeIds.length > 0) {
         const { data: allocData } = await supabase
           .from('payment_allocations')
@@ -401,12 +468,15 @@ export default function SimplifiedBillingManagementScreen() {
       setEbBills(ebItems);
     } catch (err: any) {
       console.error('[BillingManagement] Load error:', err);
-      Alert.alert('Load Error', err.message || 'Could not load billing information.');
+      Alert.alert(
+        'Load Error',
+        err.message || 'Could not load billing information.'
+      );
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id, monthIsoStart]);
+  }, [user?.id, monthIsoStart, selectedPropertyId, selectedProperty?.name]);
 
   useEffect(() => {
     loadBillingData();
@@ -438,19 +508,28 @@ export default function SimplifiedBillingManagementScreen() {
       });
 
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Failed to generate bills.');
+      if (!data?.success)
+        throw new Error(data?.error || 'Failed to generate bills.');
 
       setGenerateRentModalVisible(false);
       const created = data.created_count || 0;
       const updated = data.updated_count || 0;
       const parts = [];
-      if (created > 0) parts.push(`${created} new bill${created > 1 ? 's' : ''} created`);
-      if (updated > 0) parts.push(`${updated} bill${updated > 1 ? 's' : ''} updated to ₹${parsedRupees.toLocaleString('en-IN')}`);
+      if (created > 0)
+        parts.push(`${created} new bill${created > 1 ? 's' : ''} created`);
+      if (updated > 0)
+        parts.push(
+          `${updated} bill${
+            updated > 1 ? 's' : ''
+          } updated to ₹${parsedRupees.toLocaleString('en-IN')}`
+        );
 
       Alert.alert(
-        'Rent Bills Updated! 📄',
+        'Rent Bills Updated',
         `${parts.join(', ') || 'Bills ready'} for ${monthLabel}.${
-          data.skipped_count > 0 ? ` (${data.skipped_count} paid bills preserved)` : ''
+          data.skipped_count > 0
+            ? ` (${data.skipped_count} paid bills preserved)`
+            : ''
         }`
       );
       await loadBillingData();
@@ -490,13 +569,16 @@ export default function SimplifiedBillingManagementScreen() {
       });
 
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Failed to update rent.');
+      if (!data?.success)
+        throw new Error(data?.error || 'Failed to update rent.');
 
       setEditRentModalVisible(false);
       setSelectedResidentForEdit(null);
       Alert.alert(
-        'Rent Updated! ✅',
-        `Monthly rent for ${selectedResidentForEdit.full_name} set to ₹${parsedRupees.toLocaleString('en-IN')}.`
+        'Rent Updated',
+        `Monthly rent for ${
+          selectedResidentForEdit.full_name
+        } set to ₹${parsedRupees.toLocaleString('en-IN')}.`
       );
       await loadBillingData();
     } catch (err: any) {
@@ -512,13 +594,21 @@ export default function SimplifiedBillingManagementScreen() {
 
     const parsedRupees = parseFloat(ebTotalRupeesInput.trim());
     if (isNaN(parsedRupees) || parsedRupees <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid meter bill amount in Rupees.');
+      Alert.alert(
+        'Invalid Amount',
+        'Please enter a valid meter bill amount in Rupees.'
+      );
       return;
     }
 
-    const roomResidents = allResidents.filter((r) => r.room_number === selectedRoomForEb);
+    const roomResidents = allResidents.filter(
+      (r) => r.room_number === selectedRoomForEb
+    );
     if (roomResidents.length === 0) {
-      Alert.alert('No Residents', `No active residents found in Room ${selectedRoomForEb}.`);
+      Alert.alert(
+        'No Residents',
+        `No active residents found in Room ${selectedRoomForEb}.`
+      );
       return;
     }
 
@@ -539,13 +629,16 @@ export default function SimplifiedBillingManagementScreen() {
       });
 
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Failed to allocate EB bill.');
+      if (!data?.success)
+        throw new Error(data?.error || 'Failed to allocate EB bill.');
 
       setSplitEbModalVisible(false);
       setEbTotalRupeesInput('');
       Alert.alert(
-        'EB Bill Split! ⚡',
-        `Split ₹${parsedRupees.toLocaleString('en-IN')} equally across ${roomResidents.length} resident${
+        'EB Bill Split',
+        `Split ₹${parsedRupees.toLocaleString('en-IN')} equally across ${
+          roomResidents.length
+        } resident${
           roomResidents.length > 1 ? 's' : ''
         } in Room ${selectedRoomForEb}.`
       );
@@ -557,7 +650,7 @@ export default function SimplifiedBillingManagementScreen() {
     }
   };
 
-  // Toggle Washing Machine opt-in (updates resident_opt_ins AND any unpaid current charge)
+  // Toggle Washing Machine opt-in
   const handleToggleWashingMachine = async (resident: ResidentRentBillItem) => {
     if (!propertyId) return;
     const nextVal = !resident.opt_in_wm;
@@ -570,14 +663,18 @@ export default function SimplifiedBillingManagementScreen() {
       });
 
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Failed to toggle washing machine.');
+      if (!data?.success)
+        throw new Error(data?.error || 'Failed to toggle washing machine.');
       await loadBillingData();
     } catch (err: any) {
-      Alert.alert('Update Error', err.message || 'Could not update washing machine setting.');
+      Alert.alert(
+        'Update Error',
+        err.message || 'Could not update washing machine setting.'
+      );
     }
   };
 
-  // Confirm student payment or mark as paid in person
+  // Confirm payment
   const handleConfirmPayment = async (
     chargeId: string,
     reportId?: string | null,
@@ -593,15 +690,16 @@ export default function SimplifiedBillingManagementScreen() {
         p_method: method,
         p_notes: reportId
           ? 'Payment confirmed via student app proof'
-          : 'Payment received directly in person',
+          : 'Payment received directly in person (Cash)',
       });
 
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Failed to confirm payment.');
+      if (!data?.success)
+        throw new Error(data?.error || 'Failed to confirm payment.');
 
       setReviewModalVisible(false);
       setSelectedReviewItem(null);
-      Alert.alert('Payment Confirmed! ✅', `Receipt Number: ${data.receipt_number}`);
+      Alert.alert('Payment Confirmed', `Receipt Number: ${data.receipt_number}`);
       await loadBillingData();
     } catch (err: any) {
       Alert.alert('Confirmation Failed', err.message || 'Could not confirm payment.');
@@ -613,19 +711,29 @@ export default function SimplifiedBillingManagementScreen() {
   // RENT Metrics & Filtering
   const rentTotalCount = rentBills.length;
   const rentPaidCount = rentBills.filter((r) => r.status === 'paid').length;
-  const rentReviewCount = rentBills.filter((r) => r.has_pending_report && r.status !== 'paid').length;
+  const rentReviewCount = rentBills.filter(
+    (r) => r.has_pending_report && r.status !== 'paid'
+  ).length;
   const rentUnpaidCount = rentBills.filter((r) => r.status === 'unpaid').length;
-  const rentUngeneratedCount = rentBills.filter((r) => r.status === 'not_generated').length;
+  const rentUngeneratedCount = rentBills.filter(
+    (r) => r.status === 'not_generated'
+  ).length;
 
-  const rentTotalBilledPaise = rentBills.reduce((acc, r) => acc + (r.charge_id ? r.total_paise : 0), 0);
+  const rentTotalBilledPaise = rentBills.reduce(
+    (acc, r) => acc + (r.charge_id ? r.total_paise : 0),
+    0
+  );
   const rentTotalCollectedPaise = rentBills.reduce(
     (acc, r) => acc + (r.status === 'paid' ? r.total_paise : 0),
     0
   );
+  const rentUnpaidPaise = Math.max(0, rentTotalBilledPaise - rentTotalCollectedPaise);
 
   const filteredRentList = rentBills.filter((r) => {
-    if (filterTab === 'REVIEW') return r.has_pending_report && r.status !== 'paid';
-    if (filterTab === 'UNPAID') return r.status === 'unpaid' || r.status === 'not_generated';
+    if (filterTab === 'REVIEW')
+      return r.has_pending_report && r.status !== 'paid';
+    if (filterTab === 'UNPAID')
+      return r.status === 'unpaid' || r.status === 'not_generated';
     if (filterTab === 'PAID') return r.status === 'paid';
     return true;
   });
@@ -634,32 +742,88 @@ export default function SimplifiedBillingManagementScreen() {
   const ebBilledResidents = ebBills.filter((r) => r.charge_id !== null);
   const ebTotalCount = ebBilledResidents.length;
   const ebPaidCount = ebBilledResidents.filter((r) => r.status === 'paid').length;
-  const ebReviewCount = ebBilledResidents.filter((r) => r.has_pending_report && r.status !== 'paid').length;
-  const ebUnpaidCount = ebBilledResidents.filter((r) => r.status === 'unpaid').length;
+  const ebReviewCount = ebBilledResidents.filter(
+    (r) => r.has_pending_report && r.status !== 'paid'
+  ).length;
+  const ebUnpaidCount = ebBilledResidents.filter(
+    (r) => r.status === 'unpaid'
+  ).length;
 
-  const ebTotalBilledPaise = ebBilledResidents.reduce((acc, r) => acc + r.amount_paise, 0);
+  const ebTotalBilledPaise = ebBilledResidents.reduce(
+    (acc, r) => acc + r.amount_paise,
+    0
+  );
   const ebTotalCollectedPaise = ebBilledResidents.reduce(
     (acc, r) => acc + (r.status === 'paid' ? r.amount_paise : 0),
     0
   );
+  const ebUnpaidPaise = Math.max(0, ebTotalBilledPaise - ebTotalCollectedPaise);
 
   const filteredEbList = ebBilledResidents.filter((r) => {
-    if (filterTab === 'REVIEW') return r.has_pending_report && r.status !== 'paid';
+    if (filterTab === 'REVIEW')
+      return r.has_pending_report && r.status !== 'paid';
     if (filterTab === 'UNPAID') return r.status === 'unpaid';
     if (filterTab === 'PAID') return r.status === 'paid';
     return true;
   });
 
   // Active counts for current mode
-  const currentTotalBilled = billingMode === 'RENT' ? rentTotalBilledPaise : ebTotalBilledPaise;
-  const currentTotalCollected = billingMode === 'RENT' ? rentTotalCollectedPaise : ebTotalCollectedPaise;
-  const currentReviewCount = billingMode === 'RENT' ? rentReviewCount : ebReviewCount;
-  const currentUnpaidCount = billingMode === 'RENT' ? rentUnpaidCount : ebUnpaidCount;
+  const currentTotalBilled =
+    billingMode === 'RENT' ? rentTotalBilledPaise : ebTotalBilledPaise;
+  const currentTotalCollected =
+    billingMode === 'RENT' ? rentTotalCollectedPaise : ebTotalCollectedPaise;
+  const currentUnpaidAmount =
+    billingMode === 'RENT' ? rentUnpaidPaise : ebUnpaidPaise;
+  const currentReviewCount =
+    billingMode === 'RENT' ? rentReviewCount : ebReviewCount;
+  const currentUnpaidCount =
+    billingMode === 'RENT'
+      ? rentUnpaidCount + rentUngeneratedCount
+      : ebUnpaidCount;
   const currentPaidCount = billingMode === 'RENT' ? rentPaidCount : ebPaidCount;
-  const currentTotalCount = billingMode === 'RENT' ? rentTotalCount : ebTotalCount;
+  const currentTotalCount =
+    billingMode === 'RENT' ? rentTotalCount : ebTotalCount;
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      {/* Standardized Header */}
+      <OwnerHeader
+        title="Billing"
+        subtitle={propertyName}
+        showBack
+        rightAction={
+          billingMode === 'RENT' ? (
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                pressed && styles.cardPressed,
+              ]}
+              onPress={() => setGenerateRentModalVisible(true)}>
+              <Edit3 size={15} color={OwnerTheme.colors.primary} />
+              <Text style={styles.headerActionBtnText}>Update Rent</Text>
+            </Pressable>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                pressed && styles.cardPressed,
+              ]}
+              onPress={() => setSplitEbModalVisible(true)}>
+              <Zap size={15} color={OwnerTheme.colors.warning} />
+              <Text
+                style={[
+                  styles.headerActionBtnText,
+                  { color: OwnerTheme.colors.warning },
+                ]}>
+                Split EB
+              </Text>
+            </Pressable>
+          )
+        }
+      />
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -667,273 +831,259 @@ export default function SimplifiedBillingManagementScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            colors={['#0284C7']}
+            colors={[OwnerTheme.colors.primary]}
           />
         }>
+        {/* Compact Segmented Control: Rent vs Electricity */}
+        <SegmentedFilter
+          options={[
+            { key: 'RENT', label: 'Rent' },
+            { key: 'EB', label: 'Electricity' },
+          ]}
+          activeKey={billingMode}
+          onSelect={(key) => setBillingMode(key)}
+          style={{ marginBottom: 12 }}
+        />
 
-        {/* Top Header */}
-        <View style={styles.topBar}>
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
-            onPress={() => router.back()}>
-            <Text style={styles.backBtnText}>‹ Back</Text>
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.screenTitle}>Monthly Billing</Text>
-            <Text style={styles.screenSubtitle}>{propertyName}</Text>
-          </View>
-        </View>
-
-        {/* Top Mode Toggle: Rent vs EB */}
-        <View style={styles.modeToggleBar}>
-          <Pressable
-            style={[styles.modeBtn, billingMode === 'RENT' && styles.modeBtnActive]}
-            onPress={() => setBillingMode('RENT')}>
-            <Text style={[styles.modeBtnText, billingMode === 'RENT' && styles.modeBtnTextActive]}>
-              🏠 Room Rent Bills
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={[styles.modeBtn, billingMode === 'EB' && styles.modeBtnActive]}
-            onPress={() => setBillingMode('EB')}>
-            <Text style={[styles.modeBtnText, billingMode === 'EB' && styles.modeBtnTextActive]}>
-              ⚡ Electricity (EB)
-            </Text>
-          </Pressable>
-        </View>
-
-        {/* Month Selector Bar */}
+        {/* Compact Month Selector Bar */}
         <View style={styles.monthSelectorBar}>
           <Pressable
             accessibilityRole="button"
-            style={({ pressed }) => [styles.monthNavBtn, pressed && styles.pressed]}
+            accessibilityLabel="Previous month"
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.monthNavBtn,
+              pressed && styles.monthNavBtnPressed,
+            ]}
             onPress={handlePrevMonth}>
-            <Text style={styles.monthNavArrow}>‹</Text>
+            <ChevronLeft size={20} color={OwnerTheme.colors.textPrimary} />
           </Pressable>
           <View style={styles.monthLabelWrap}>
-            <Text style={styles.monthLabelText}>📅 {monthLabel}</Text>
+            <Text style={styles.monthLabelText}>{monthLabel}</Text>
           </View>
           <Pressable
             accessibilityRole="button"
-            style={({ pressed }) => [styles.monthNavBtn, pressed && styles.pressed]}
+            accessibilityLabel="Next month"
+            hitSlop={8}
+            style={({ pressed }) => [
+              styles.monthNavBtn,
+              pressed && styles.monthNavBtnPressed,
+            ]}
             onPress={handleNextMonth}>
-            <Text style={styles.monthNavArrow}>›</Text>
+            <ChevronRight size={20} color={OwnerTheme.colors.textPrimary} />
           </Pressable>
         </View>
 
-        {/* Summary Metric Cards */}
-        <View style={styles.summaryRow}>
-          <View style={[styles.summaryCard, styles.cardBorderTotal]}>
-            <Text style={styles.summaryNum} numberOfLines={1} adjustsFontSizeToFit>
-              {formatPaiseToRupees(currentTotalBilled)}
-            </Text>
-            <Text style={styles.summaryLbl} numberOfLines={1}>Total Billed</Text>
-            <Text style={styles.summarySubNote} numberOfLines={1}>
-              Paid: {formatPaiseToRupees(currentTotalCollected)}
-            </Text>
-          </View>
-
-          <View style={[styles.summaryCard, styles.cardBorderReview]}>
-            <Text style={[styles.summaryNum, { color: '#D97706' }]} numberOfLines={1}>
-              {currentReviewCount}
-            </Text>
-            <Text style={styles.summaryLbl} numberOfLines={1}>Needs Review</Text>
-            <Text style={styles.summarySubNote} numberOfLines={1}>Proofs waiting</Text>
-          </View>
-
-          <View style={[styles.summaryCard, styles.cardBorderUnpaid]}>
-            <Text style={[styles.summaryNum, { color: '#DC2626' }]} numberOfLines={1}>
-              {currentUnpaidCount}
-            </Text>
-            <Text style={styles.summaryLbl} numberOfLines={1}>Unpaid</Text>
-            <Text style={styles.summarySubNote} numberOfLines={1}>{currentPaidCount} Paid</Text>
-          </View>
+        {/* Billing Summary: 3 Compact Cards */}
+        <View style={styles.summaryGrid}>
+          <StatisticCard
+            label="Total Billed"
+            value={formatPaiseToRupees(currentTotalBilled)}
+            accentColor={OwnerTheme.colors.primary}
+            sublabel={`${currentTotalCount} resident${
+              currentTotalCount === 1 ? '' : 's'
+            }`}
+          />
+          <StatisticCard
+            label="Paid"
+            value={formatPaiseToRupees(currentTotalCollected)}
+            accentColor={OwnerTheme.colors.success}
+            sublabel={`${currentPaidCount} collected`}
+          />
+          <StatisticCard
+            label="Unpaid"
+            value={formatPaiseToRupees(currentUnpaidAmount)}
+            accentColor={
+              currentUnpaidAmount > 0
+                ? OwnerTheme.colors.danger
+                : OwnerTheme.colors.textSecondary
+            }
+            sublabel={`${currentUnpaidCount} pending`}
+          />
         </View>
 
-        {/* Action Generator Box */}
+        {/* Needs Review indicator if applicable */}
+        {currentReviewCount > 0 && (
+          <Pressable
+            style={styles.reviewBanner}
+            onPress={() => setFilterTab('REVIEW')}>
+            <View style={styles.reviewBannerIcon}>
+              <CreditCard size={16} color={OwnerTheme.colors.warning} />
+            </View>
+            <Text style={styles.reviewBannerText}>
+              {currentReviewCount} payment proof
+              {currentReviewCount > 1 ? 's' : ''} awaiting review
+            </Text>
+            <Text style={styles.reviewBannerAction}>View ›</Text>
+          </Pressable>
+        )}
+
+        {/* Small Inline Generator / Success Indicator */}
         {billingMode === 'RENT' ? (
           rentUngeneratedCount > 0 ? (
-            <View style={styles.generatorBanner}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.generatorTitle}>Generate {monthLabel} Rent Bills</Text>
-                <Text style={styles.generatorSub}>
-                  {rentUngeneratedCount} resident{rentUngeneratedCount > 1 ? 's' : ''} not yet billed for rent.
-                </Text>
-              </View>
+            <View style={styles.inlineWarningBanner}>
+              <Text style={styles.inlineWarningText}>
+                {rentUngeneratedCount} resident
+                {rentUngeneratedCount > 1 ? 's' : ''} not yet billed for{' '}
+                {monthLabel}.
+              </Text>
               <Pressable
-                style={styles.generatorActionBtn}
+                accessibilityRole="button"
                 onPress={() => setGenerateRentModalVisible(true)}>
-                <Text style={styles.generatorActionBtnText}>⚡ Generate</Text>
+                <Text style={styles.inlineActionLink}>Generate Bills ›</Text>
               </Pressable>
             </View>
           ) : (
-            <View style={styles.allDoneBox}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.allDoneText}>
-                  ✓ All {rentTotalCount} residents have rent bills for {monthLabel}.
-                </Text>
-                <Text style={styles.allDoneSub}>
-                  Tap update to adjust rent amounts or re-apply settings.
-                </Text>
-              </View>
-              <Pressable
-                style={styles.updateRentActionBtn}
-                onPress={() => setGenerateRentModalVisible(true)}>
-                <Text style={styles.updateRentActionBtnText}>⚡ Update Rent</Text>
-              </Pressable>
+            <View style={styles.inlineSuccessBanner}>
+              <Check size={14} color={OwnerTheme.colors.success} />
+              <Text style={styles.inlineSuccessText}>
+                Bills generated for all active residents.
+              </Text>
             </View>
           )
         ) : (
-          <View style={styles.generatorBanner}>
+          <View style={styles.ebSplitterBanner}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.generatorTitle}>Room Electricity (EB) Splitter</Text>
-              <Text style={styles.generatorSub}>
-                Enter total room meter bill and split equally among occupants.
+              <Text style={styles.ebSplitterTitle}>Room EB Splitter</Text>
+              <Text style={styles.ebSplitterSub}>
+                Split room electricity bill equally among occupants.
               </Text>
             </View>
             <Pressable
-              style={[styles.generatorActionBtn, { backgroundColor: '#D97706' }]}
+              accessibilityRole="button"
+              style={styles.ebSplitterBtn}
               onPress={() => setSplitEbModalVisible(true)}>
-              <Text style={styles.generatorActionBtnText}>⚡ Split Room EB</Text>
+              <Text style={styles.ebSplitterBtnText}>Split Room EB</Text>
             </Pressable>
           </View>
         )}
 
-        {/* Filter Tabs */}
-        <View style={styles.filterTabsRow}>
-          <Pressable
-            style={[styles.filterTab, filterTab === 'ALL' && styles.filterTabActive]}
-            onPress={() => setFilterTab('ALL')}>
-            <Text style={[styles.filterTabText, filterTab === 'ALL' && styles.filterTabTextActive]}>
-              All ({currentTotalCount})
-            </Text>
-          </Pressable>
+        {/* Compact Billing Filter Tabs */}
+        <SegmentedFilter
+          options={[
+            { key: 'ALL', label: 'All', count: currentTotalCount },
+            { key: 'REVIEW', label: 'Review', count: currentReviewCount },
+            { key: 'UNPAID', label: 'Unpaid', count: currentUnpaidCount },
+            { key: 'PAID', label: 'Paid', count: currentPaidCount },
+          ]}
+          activeKey={filterTab}
+          onSelect={(key) => setFilterTab(key)}
+          style={{ marginVertical: 12 }}
+        />
 
-          <Pressable
-            style={[styles.filterTab, filterTab === 'REVIEW' && styles.filterTabActive]}
-            onPress={() => setFilterTab('REVIEW')}>
-            <Text style={[styles.filterTabText, filterTab === 'REVIEW' && styles.filterTabTextActive]}>
-              Review ({currentReviewCount})
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={[styles.filterTab, filterTab === 'UNPAID' && styles.filterTabActive]}
-            onPress={() => setFilterTab('UNPAID')}>
-            <Text style={[styles.filterTabText, filterTab === 'UNPAID' && styles.filterTabTextActive]}>
-              Unpaid ({billingMode === 'RENT' ? rentUnpaidCount + rentUngeneratedCount : ebUnpaidCount})
-            </Text>
-          </Pressable>
-
-          <Pressable
-            style={[styles.filterTab, filterTab === 'PAID' && styles.filterTabActive]}
-            onPress={() => setFilterTab('PAID')}>
-            <Text style={[styles.filterTabText, filterTab === 'PAID' && styles.filterTabTextActive]}>
-              Paid ({currentPaidCount})
-            </Text>
-          </Pressable>
-        </View>
-
-        {/* Roster Display */}
+        {/* Bills Roster Display */}
         {loading ? (
           <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
+            <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
             <Text style={styles.loadingText}>Loading bills...</Text>
           </View>
         ) : billingMode === 'RENT' ? (
-          /* RENT BILLS ROSTER */
           filteredRentList.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyTitle}>No residents in this filter</Text>
-              <Text style={styles.emptySubtitle}>
-                {filterTab === 'REVIEW'
+            <EmptyState
+              title="No bills in this filter"
+              description={
+                filterTab === 'REVIEW'
                   ? 'No rent payment proofs pending review.'
                   : filterTab === 'UNPAID'
                   ? 'All residents have paid their rent for this month!'
-                  : 'No resident records found.'}
-              </Text>
-            </View>
+                  : 'No resident rent records found for this period.'
+              }
+            />
           ) : (
-            <View style={styles.rosterContainer}>
+            <View style={styles.cardsList}>
               {filteredRentList.map((res) => {
                 const isPaid = res.status === 'paid';
                 const isNotGen = res.status === 'not_generated';
                 const hasReport = res.has_pending_report && !isPaid;
 
                 return (
-                  <View key={res.resident_id} style={styles.residentCard}>
-                    <View style={styles.cardHeaderRow}>
-                      <View style={styles.roomBadge}>
-                        <Text style={styles.roomBadgeText}>Room {res.room_number}</Text>
+                  <View key={res.resident_id} style={styles.billCard}>
+                    {/* Card Header: Resident Name, Room, Status Badge */}
+                    <View style={styles.cardHeader}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.resName}>{res.full_name}</Text>
+                        <Text style={styles.resRoom}>
+                          Room {res.room_number}
+                          {res.phone_number ? ` • ${res.phone_number}` : ''}
+                        </Text>
                       </View>
-
-                      {isPaid ? (
-                        <View style={[styles.statusBadge, styles.badgePaid]}>
-                          <Text style={styles.badgePaidText}>✓ PAID</Text>
-                        </View>
-                      ) : hasReport ? (
-                        <View style={[styles.statusBadge, styles.badgeReview]}>
-                          <Text style={styles.badgeReviewText}>🕒 PAYMENT SENT</Text>
-                        </View>
-                      ) : isNotGen ? (
-                        <View style={[styles.statusBadge, styles.badgeNotGen]}>
-                          <Text style={styles.badgeNotGenText}>NOT BILLED</Text>
-                        </View>
-                      ) : (
-                        <View style={[styles.statusBadge, styles.badgeUnpaid]}>
-                          <Text style={styles.badgeUnpaidText}>UNPAID</Text>
-                        </View>
-                      )}
+                      <StatusBadge
+                        label={
+                          isPaid
+                            ? 'PAID'
+                            : hasReport
+                            ? 'REVIEW'
+                            : isNotGen
+                            ? 'NOT BILLED'
+                            : 'UNPAID'
+                        }
+                        variant={
+                          isPaid
+                            ? 'success'
+                            : hasReport
+                            ? 'warning'
+                            : isNotGen
+                            ? 'neutral'
+                            : 'danger'
+                        }
+                        size="sm"
+                      />
                     </View>
-
-                    <Text style={styles.resName}>{res.full_name}</Text>
-                    {res.phone_number ? (
-                      <Text style={styles.resPhone}>📞 {res.phone_number}</Text>
-                    ) : null}
 
                     {/* Breakdown */}
                     <View style={styles.breakdownBox}>
                       <View style={styles.breakdownRow}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                          <Text style={styles.breakdownLabel}>Room Rent:</Text>
-                          {res.status !== 'paid' && (
+                        <View style={styles.breakdownLabelGroup}>
+                          <Text style={styles.breakdownLabel}>Room Rent</Text>
+                          {!isPaid && (
                             <Pressable
-                              hitSlop={8}
-                              style={styles.editRentBadge}
+                              hitSlop={6}
                               onPress={() => handleOpenEditRent(res)}>
-                              <Text style={styles.editRentBadgeText}>✏️ Edit</Text>
+                              <Text style={styles.editLink}>Edit</Text>
                             </Pressable>
                           )}
                         </View>
-                        <Text style={styles.breakdownVal}>
+                        <Text style={styles.breakdownValue}>
                           {formatPaiseToRupees(res.rent_paise)}
                         </Text>
                       </View>
 
                       <View style={styles.breakdownRow}>
-                        <View style={styles.wmToggleRow}>
-                          <Text style={styles.breakdownLabel}>Washing Machine:</Text>
+                        <View style={styles.wmRow}>
+                          <Text style={styles.breakdownLabel}>
+                            Washing Machine
+                          </Text>
                           <Switch
                             value={res.opt_in_wm}
-                            onValueChange={() => handleToggleWashingMachine(res)}
-                            trackColor={{ false: '#CBD5E1', true: '#BAE6FD' }}
-                            thumbColor={res.opt_in_wm ? '#0284C7' : '#F8FAFC'}
+                            onValueChange={() =>
+                              handleToggleWashingMachine(res)
+                            }
+                            trackColor={{
+                              false: '#E2E8F0',
+                              true: OwnerTheme.colors.primaryLight,
+                            }}
+                            thumbColor={
+                              res.opt_in_wm
+                                ? OwnerTheme.colors.primary
+                                : '#FFFFFF'
+                            }
+                            style={{
+                              transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }],
+                            }}
                           />
                         </View>
                         <Text
                           style={[
-                            styles.breakdownVal,
-                            !res.opt_in_wm && { color: '#94A3B8' },
+                            styles.breakdownValue,
+                            !res.opt_in_wm && { color: OwnerTheme.colors.textMuted },
                           ]}>
                           {res.opt_in_wm ? '₹500' : '₹0'}
                         </Text>
                       </View>
 
-                      <View style={[styles.breakdownRow, styles.totalRow]}>
-                        <Text style={styles.totalLabel}>Total Rent Bill:</Text>
-                        <Text style={styles.totalVal}>
+                      <View style={styles.totalRow}>
+                        <Text style={styles.totalLabel}>Total</Text>
+                        <Text style={styles.totalValue}>
                           {formatPaiseToRupees(res.total_paise)}
                         </Text>
                       </View>
@@ -942,60 +1092,71 @@ export default function SimplifiedBillingManagementScreen() {
                     {/* Footer Actions */}
                     {isPaid ? (
                       <View style={styles.paidInfoBox}>
+                        <Receipt size={14} color={OwnerTheme.colors.success} />
                         <Text style={styles.paidInfoText}>
-                          Receipt: <Text style={styles.boldText}>{res.receipt_number || 'Confirmed'}</Text>
-                          {res.paid_method ? ` • Paid via ${res.paid_method.toUpperCase()}` : ''}
+                          Receipt #{res.receipt_number || 'Confirmed'}
+                          {res.paid_method
+                            ? ` • ${res.paid_method.toUpperCase()}`
+                            : ''}
+                          {res.paid_date ? ` • ${res.paid_date}` : ''}
                         </Text>
                       </View>
                     ) : hasReport ? (
-                      <View style={styles.reportPendingBox}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.reportAlertTitle}>Payment Proof Submitted</Text>
-                          <Text style={styles.reportAlertSub}>
-                            {res.pending_report?.claimed_method === 'upi'
-                              ? `UPI • ${res.pending_report?.reference_number || 'Screenshot'}`
-                              : 'Cash payment reported'}
-                          </Text>
-                        </View>
+                      <View style={styles.actionRow}>
                         <Pressable
-                          style={styles.reviewBtn}
+                          style={styles.reviewActionBtn}
                           onPress={() => {
-                            setSelectedReviewItem({
+                            openReviewModal({
                               full_name: res.full_name,
                               room_number: res.room_number,
                               charge_id: res.charge_id!,
                               bill_title: `${monthLabel} Rent Bill`,
                               report: res.pending_report,
                             });
-                            setReviewModalVisible(true);
                           }}>
-                          <Text style={styles.reviewBtnText}>Review Proof ›</Text>
+                          <Eye size={14} color={OwnerTheme.colors.primary} />
+                          <Text style={styles.reviewActionBtnText}>
+                            Review Payment Proof ›
+                          </Text>
                         </Pressable>
                       </View>
                     ) : (
                       <View style={styles.actionRow}>
                         <Pressable
-                          style={styles.directCashBtn}
+                          style={styles.cashActionBtn}
                           onPress={() => {
                             if (!res.charge_id) {
-                              Alert.alert('Notice', 'Please generate monthly rent bills first.');
+                              Alert.alert(
+                                'Notice',
+                                'Please generate monthly rent bills first.'
+                              );
                               return;
                             }
                             Alert.alert(
-                              'Confirm In-Person Payment',
-                              `Mark ${res.full_name} as PAID for ${formatPaiseToRupees(
+                              'Confirm In-Person Cash Payment',
+                              `Confirm cash payment of ${formatPaiseToRupees(
                                 res.total_paise
-                              )} (Cash)?`,
+                              )} received from ${res.full_name} for Room ${
+                                res.room_number
+                              }?`,
                               [
                                 { text: 'Cancel', style: 'cancel' },
                                 {
-                                  text: 'Confirm Paid',
-                                  onPress: () => handleConfirmPayment(res.charge_id!, null, 'cash'),
+                                  text: 'Confirm Cash Payment',
+                                  style: 'default',
+                                  onPress: () =>
+                                    handleConfirmPayment(
+                                      res.charge_id!,
+                                      null,
+                                      'cash'
+                                    ),
                                 },
                               ]
                             );
                           }}>
-                          <Text style={styles.directCashBtnText}>Mark as Paid (Cash)</Text>
+                          <Text style={styles.cashActionBtnText}>
+                            Mark as Paid (Cash)
+                          </Text>
                         </Pressable>
                       </View>
                     )}
@@ -1005,50 +1166,49 @@ export default function SimplifiedBillingManagementScreen() {
             </View>
           )
         ) : (
-          /* EB BILLS ROSTER */
           filteredEbList.length === 0 ? (
-            <View style={styles.emptyCard}>
-              <Text style={styles.emptyTitle}>No EB bills in this filter</Text>
-              <Text style={styles.emptySubtitle}>
-                {filterTab === 'ALL'
+            <EmptyState
+              title="No electricity bills"
+              description={
+                filterTab === 'ALL'
                   ? 'No electricity bills split for this month yet. Tap "Split Room EB" above to allocate meter bills.'
-                  : 'No matching EB records found.'}
-              </Text>
-            </View>
+                  : 'No matching electricity bill records found.'
+              }
+            />
           ) : (
-            <View style={styles.rosterContainer}>
+            <View style={styles.cardsList}>
               {filteredEbList.map((res) => {
                 const isPaid = res.status === 'paid';
                 const hasReport = res.has_pending_report && !isPaid;
 
                 return (
-                  <View key={res.resident_id} style={styles.residentCard}>
-                    <View style={styles.cardHeaderRow}>
-                      <View style={styles.roomBadge}>
-                        <Text style={styles.roomBadgeText}>Room {res.room_number}</Text>
+                  <View key={res.resident_id} style={styles.billCard}>
+                    <View style={styles.cardHeader}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.resName}>{res.full_name}</Text>
+                        <Text style={styles.resRoom}>
+                          Room {res.room_number}
+                        </Text>
                       </View>
-
-                      {isPaid ? (
-                        <View style={[styles.statusBadge, styles.badgePaid]}>
-                          <Text style={styles.badgePaidText}>✓ PAID</Text>
-                        </View>
-                      ) : hasReport ? (
-                        <View style={[styles.statusBadge, styles.badgeReview]}>
-                          <Text style={styles.badgeReviewText}>🕒 PAYMENT SENT</Text>
-                        </View>
-                      ) : (
-                        <View style={[styles.statusBadge, styles.badgeUnpaid]}>
-                          <Text style={styles.badgeUnpaidText}>UNPAID</Text>
-                        </View>
-                      )}
+                      <StatusBadge
+                        label={
+                          isPaid ? 'PAID' : hasReport ? 'REVIEW' : 'UNPAID'
+                        }
+                        variant={
+                          isPaid ? 'success' : hasReport ? 'warning' : 'danger'
+                        }
+                        size="sm"
+                      />
                     </View>
 
-                    <Text style={styles.resName}>{res.full_name}</Text>
-
                     <View style={styles.breakdownBox}>
-                      <View style={[styles.breakdownRow, { paddingVertical: 2 }]}>
-                        <Text style={styles.totalLabel}>EB Meter Share:</Text>
-                        <Text style={[styles.totalVal, { color: '#D97706' }]}>
+                      <View style={styles.totalRow}>
+                        <Text style={styles.totalLabel}>EB Meter Share</Text>
+                        <Text
+                          style={[
+                            styles.totalValue,
+                            { color: OwnerTheme.colors.warning },
+                          ]}>
                           {formatPaiseToRupees(res.amount_paise)}
                         </Text>
                       </View>
@@ -1057,56 +1217,60 @@ export default function SimplifiedBillingManagementScreen() {
                     {/* Footer Actions */}
                     {isPaid ? (
                       <View style={styles.paidInfoBox}>
+                        <Receipt size={14} color={OwnerTheme.colors.success} />
                         <Text style={styles.paidInfoText}>
-                          Receipt: <Text style={styles.boldText}>{res.receipt_number || 'Confirmed'}</Text>
-                          {res.paid_method ? ` • Paid via ${res.paid_method.toUpperCase()}` : ''}
+                          Receipt #{res.receipt_number || 'Confirmed'}
+                          {res.paid_method
+                            ? ` • ${res.paid_method.toUpperCase()}`
+                            : ''}
                         </Text>
                       </View>
                     ) : hasReport ? (
-                      <View style={styles.reportPendingBox}>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.reportAlertTitle}>EB Payment Proof Sent</Text>
-                          <Text style={styles.reportAlertSub}>
-                            {res.pending_report?.claimed_method === 'upi'
-                              ? `UPI • ${res.pending_report?.reference_number || 'Screenshot'}`
-                              : 'Cash payment reported'}
-                          </Text>
-                        </View>
+                      <View style={styles.actionRow}>
                         <Pressable
-                          style={styles.reviewBtn}
+                          style={styles.reviewActionBtn}
                           onPress={() => {
-                            setSelectedReviewItem({
+                            openReviewModal({
                               full_name: res.full_name,
                               room_number: res.room_number,
                               charge_id: res.charge_id!,
                               bill_title: `${monthLabel} Room ${res.room_number} EB Bill`,
                               report: res.pending_report,
                             });
-                            setReviewModalVisible(true);
                           }}>
-                          <Text style={styles.reviewBtnText}>Review Proof ›</Text>
+                          <Eye size={14} color={OwnerTheme.colors.primary} />
+                          <Text style={styles.reviewActionBtnText}>
+                            Review EB Proof ›
+                          </Text>
                         </Pressable>
                       </View>
                     ) : (
                       <View style={styles.actionRow}>
                         <Pressable
-                          style={styles.directCashBtn}
+                          style={styles.cashActionBtn}
                           onPress={() => {
                             Alert.alert(
-                              'Confirm In-Person EB Payment',
-                              `Mark ${res.full_name} as PAID for ${formatPaiseToRupees(
+                              'Confirm In-Person Cash Payment',
+                              `Confirm cash payment of ${formatPaiseToRupees(
                                 res.amount_paise
-                              )} (Cash)?`,
+                              )} received from ${res.full_name} for electricity?`,
                               [
                                 { text: 'Cancel', style: 'cancel' },
                                 {
-                                  text: 'Confirm Paid',
-                                  onPress: () => handleConfirmPayment(res.charge_id!, null, 'cash'),
+                                  text: 'Confirm Cash Payment',
+                                  onPress: () =>
+                                    handleConfirmPayment(
+                                      res.charge_id!,
+                                      null,
+                                      'cash'
+                                    ),
                                 },
                               ]
                             );
                           }}>
-                          <Text style={styles.directCashBtnText}>Mark as Paid (Cash)</Text>
+                          <Text style={styles.cashActionBtnText}>
+                            Mark as Paid (Cash)
+                          </Text>
                         </Pressable>
                       </View>
                     )}
@@ -1120,55 +1284,61 @@ export default function SimplifiedBillingManagementScreen() {
         <View style={{ height: 40 }} />
       </ScrollView>
 
-      {/* Modal 1: Prompt Rent Bill Amount & Generate */}
+      {/* Modal 1: Generate / Update Rent Amount */}
       <Modal
         visible={generateRentModalVisible}
         transparent
-        animationType="slide"
+        animationType="fade"
         onRequestClose={() => setGenerateRentModalVisible(false)}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Generate Rent Bills</Text>
-              <Pressable hitSlop={8} onPress={() => setGenerateRentModalVisible(false)}>
-                <Text style={styles.modalCloseText}>✕</Text>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalHeading}>Update Monthly Rent</Text>
+              <Pressable
+                hitSlop={8}
+                onPress={() => setGenerateRentModalVisible(false)}>
+                <X size={20} color={OwnerTheme.colors.textSecondary} />
               </Pressable>
             </View>
 
-            <Text style={styles.modalSubHeader}>
-              Set or update monthly room rent for {monthLabel}. Existing unpaid rent bills for {monthLabel} will be updated automatically.
+            <Text style={styles.modalExplanation}>
+              Set default room rent for {monthLabel}. Existing unpaid rent bills
+              for {monthLabel} will be updated automatically. Paid bills are
+              preserved.
             </Text>
 
-            <Text style={styles.inputLabel}>Monthly Room Rent Amount (₹)</Text>
+            <Text style={styles.inputFieldLabel}>
+              Monthly Room Rent Amount (₹)
+            </Text>
             <TextInput
-              style={styles.amountInputBox}
+              style={styles.inputBox}
               value={rentInputRupees}
               onChangeText={setRentInputRupees}
               placeholder="e.g. 8000"
-              placeholderTextColor="#94A3B8"
+              placeholderTextColor={OwnerTheme.colors.textMuted}
               keyboardType="numeric"
             />
 
-            <View style={styles.modalActionButtons}>
+            <View style={styles.modalActions}>
               <Pressable
-                style={[styles.confirmPaidBtn, generatingRent && styles.disabledBtn]}
+                style={styles.modalCancelBtn}
+                onPress={() => setGenerateRentModalVisible(false)}>
+                <Text style={styles.modalCancelBtnText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.modalConfirmBtn,
+                  generatingRent && styles.btnDisabled,
+                ]}
                 disabled={generatingRent}
                 onPress={handleConfirmGenerateRent}>
                 {generatingRent ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.confirmPaidBtnText}>
-                    Generate / Update Bills for {monthLabel}
-                  </Text>
+                  <Text style={styles.modalConfirmBtnText}>Apply & Save</Text>
                 )}
-              </Pressable>
-
-              <Pressable
-                style={styles.cancelModalBtn}
-                onPress={() => setGenerateRentModalVisible(false)}>
-                <Text style={styles.cancelModalBtnText}>Cancel</Text>
               </Pressable>
             </View>
           </View>
@@ -1179,51 +1349,59 @@ export default function SimplifiedBillingManagementScreen() {
       <Modal
         visible={editRentModalVisible}
         transparent
-        animationType="slide"
+        animationType="fade"
         onRequestClose={() => setEditRentModalVisible(false)}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Edit Monthly Rent</Text>
-              <Pressable hitSlop={8} onPress={() => setEditRentModalVisible(false)}>
-                <Text style={styles.modalCloseText}>✕</Text>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalHeading}>Edit Resident Rent</Text>
+              <Pressable
+                hitSlop={8}
+                onPress={() => setEditRentModalVisible(false)}>
+                <X size={20} color={OwnerTheme.colors.textSecondary} />
               </Pressable>
             </View>
 
             {selectedResidentForEdit && (
               <>
-                <Text style={styles.modalSubHeader}>
-                  Update rent for {selectedResidentForEdit.full_name} (Room {selectedResidentForEdit.room_number}). The unpaid bill for {monthLabel} will be adjusted automatically.
+                <Text style={styles.modalExplanation}>
+                  Adjust rent for {selectedResidentForEdit.full_name} (Room{' '}
+                  {selectedResidentForEdit.room_number}). Unpaid bill for{' '}
+                  {monthLabel} will update automatically.
                 </Text>
 
-                <Text style={styles.inputLabel}>Monthly Rent Amount (₹)</Text>
+                <Text style={styles.inputFieldLabel}>
+                  Monthly Rent Amount (₹)
+                </Text>
                 <TextInput
-                  style={styles.amountInputBox}
+                  style={styles.inputBox}
                   value={editRentInputRupees}
                   onChangeText={setEditRentInputRupees}
                   placeholder="e.g. 9000"
-                  placeholderTextColor="#94A3B8"
+                  placeholderTextColor={OwnerTheme.colors.textMuted}
                   keyboardType="numeric"
                 />
 
-                <View style={styles.modalActionButtons}>
+                <View style={styles.modalActions}>
                   <Pressable
-                    style={[styles.confirmPaidBtn, updatingRent && styles.disabledBtn]}
+                    style={styles.modalCancelBtn}
+                    onPress={() => setEditRentModalVisible(false)}>
+                    <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[
+                      styles.modalConfirmBtn,
+                      updatingRent && styles.btnDisabled,
+                    ]}
                     disabled={updatingRent}
                     onPress={handleConfirmEditRent}>
                     {updatingRent ? (
                       <ActivityIndicator size="small" color="#FFFFFF" />
                     ) : (
-                      <Text style={styles.confirmPaidBtnText}>Save Rent Changes</Text>
+                      <Text style={styles.modalConfirmBtnText}>Save</Text>
                     )}
-                  </Pressable>
-
-                  <Pressable
-                    style={styles.cancelModalBtn}
-                    onPress={() => setEditRentModalVisible(false)}>
-                    <Text style={styles.cancelModalBtnText}>Cancel</Text>
                   </Pressable>
                 </View>
               </>
@@ -1236,21 +1414,25 @@ export default function SimplifiedBillingManagementScreen() {
       <Modal
         visible={splitEbModalVisible}
         transparent
-        animationType="slide"
+        animationType="fade"
         onRequestClose={() => setSplitEbModalVisible(false)}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Split Room Electricity Bill</Text>
-              <Pressable hitSlop={8} onPress={() => setSplitEbModalVisible(false)}>
-                <Text style={styles.modalCloseText}>✕</Text>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalHeading}>Split Electricity Bill</Text>
+              <Pressable
+                hitSlop={8}
+                onPress={() => setSplitEbModalVisible(false)}>
+                <X size={20} color={OwnerTheme.colors.textSecondary} />
               </Pressable>
             </View>
 
-            <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
-              <Text style={styles.inputLabel}>Select Room Number</Text>
+            <ScrollView
+              style={{ maxHeight: 380 }}
+              showsVerticalScrollIndicator={false}>
+              <Text style={styles.inputFieldLabel}>Select Room Number</Text>
               <View style={styles.roomChipsWrap}>
                 {availableRooms.map((rm) => (
                   <Pressable
@@ -1271,64 +1453,72 @@ export default function SimplifiedBillingManagementScreen() {
                 ))}
               </View>
 
-              <Text style={styles.inputLabel}>Total Meter Bill Amount (₹)</Text>
+              <Text style={styles.inputFieldLabel}>
+                Total Meter Bill Amount (₹)
+              </Text>
               <TextInput
-                style={styles.amountInputBox}
+                style={styles.inputBox}
                 value={ebTotalRupeesInput}
                 onChangeText={setEbTotalRupeesInput}
                 placeholder="e.g. 1200"
-                placeholderTextColor="#94A3B8"
+                placeholderTextColor={OwnerTheme.colors.textMuted}
                 keyboardType="numeric"
               />
 
-              {/* Live Preview of Occupants and Equal Share */}
               {selectedRoomForEb ? (
                 <View style={styles.ebSplitPreviewBox}>
                   <Text style={styles.ebPreviewTitle}>
                     Occupants in Room {selectedRoomForEb}:
                   </Text>
-                  {allResidents.filter((r) => r.room_number === selectedRoomForEb).length > 0 ? (
+                  {allResidents.filter((r) => r.room_number === selectedRoomForEb)
+                    .length > 0 ? (
                     allResidents
                       .filter((r) => r.room_number === selectedRoomForEb)
                       .map((r, idx, arr) => {
-                        const totalRs = parseFloat(ebTotalRupeesInput.trim()) || 0;
-                        const perPerson = totalRs > 0 ? (totalRs / arr.length).toFixed(0) : '0';
+                        const totalRs =
+                          parseFloat(ebTotalRupeesInput.trim()) || 0;
+                        const perPerson =
+                          totalRs > 0 ? (totalRs / arr.length).toFixed(0) : '0';
                         return (
                           <View key={r.id} style={styles.ebPreviewRow}>
-                            <Text style={styles.ebPreviewName}>• {r.full_name}</Text>
-                            <Text style={styles.ebPreviewShare}>₹{perPerson}</Text>
+                            <Text style={styles.ebPreviewName}>
+                              • {r.full_name}
+                            </Text>
+                            <Text style={styles.ebPreviewShare}>
+                              ₹{perPerson}
+                            </Text>
                           </View>
                         );
                       })
                   ) : (
                     <Text style={styles.noOccupantsText}>
-                      No active residents currently assigned to Room {selectedRoomForEb}.
+                      No active residents currently assigned to Room{' '}
+                      {selectedRoomForEb}.
                     </Text>
                   )}
                 </View>
               ) : null}
             </ScrollView>
 
-            <View style={styles.modalActionButtons}>
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => setSplitEbModalVisible(false)}>
+                <Text style={styles.modalCancelBtnText}>Cancel</Text>
+              </Pressable>
               <Pressable
                 style={[
-                  styles.confirmPaidBtn,
-                  { backgroundColor: '#D97706' },
-                  generatingEb && styles.disabledBtn,
+                  styles.modalConfirmBtn,
+                  { backgroundColor: OwnerTheme.colors.warning },
+                  generatingEb && styles.btnDisabled,
                 ]}
                 disabled={generatingEb}
                 onPress={handleConfirmSplitEb}>
                 {generatingEb ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.confirmPaidBtnText}>Split & Send EB Bills</Text>
+                  <Text style={styles.modalConfirmBtnText}>Split & Send</Text>
                 )}
-              </Pressable>
-
-              <Pressable
-                style={styles.cancelModalBtn}
-                onPress={() => setSplitEbModalVisible(false)}>
-                <Text style={styles.cancelModalBtnText}>Cancel</Text>
               </Pressable>
             </View>
           </View>
@@ -1339,87 +1529,121 @@ export default function SimplifiedBillingManagementScreen() {
       <Modal
         visible={reviewModalVisible}
         transparent
-        animationType="slide"
+        animationType="fade"
         onRequestClose={() => setReviewModalVisible(false)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Review Payment Proof</Text>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalHeading}>Review Payment Proof</Text>
               <Pressable hitSlop={8} onPress={() => setReviewModalVisible(false)}>
-                <Text style={styles.modalCloseText}>✕</Text>
+                <X size={20} color={OwnerTheme.colors.textSecondary} />
               </Pressable>
             </View>
 
             {selectedReviewItem?.report && (
-              <ScrollView style={{ maxHeight: 420 }} showsVerticalScrollIndicator={false}>
-                <View style={styles.modalResidentInfo}>
+              <ScrollView
+                style={{ maxHeight: 420 }}
+                showsVerticalScrollIndicator={false}>
+                <View style={styles.reviewSummaryBox}>
                   <Text style={styles.modalResName}>
-                    {selectedReviewItem.full_name} (Room {selectedReviewItem.room_number})
+                    {selectedReviewItem.full_name} (Room{' '}
+                    {selectedReviewItem.room_number})
                   </Text>
                   <Text style={styles.modalBillPeriod}>
                     {selectedReviewItem.bill_title}
                   </Text>
                 </View>
 
-                <View style={styles.modalDetailRow}>
-                  <Text style={styles.modalLabel}>Claimed Amount:</Text>
-                  <Text style={styles.modalAmountHighlight}>
-                    {formatPaiseToRupees(selectedReviewItem.report.amount_paise)}
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Claimed Amount</Text>
+                  <Text style={styles.detailValueBold}>
+                    {formatPaiseToRupees(
+                      selectedReviewItem.report.amount_paise
+                    )}
                   </Text>
                 </View>
 
-                <View style={styles.modalDetailRow}>
-                  <Text style={styles.modalLabel}>Payment Method:</Text>
-                  <Text style={styles.modalValText}>
-                    {selectedReviewItem.report.claimed_method === 'upi' ? '📱 UPI / Online' : '💵 Cash'}
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Method</Text>
+                  <Text style={styles.detailValue}>
+                    {selectedReviewItem.report.claimed_method === 'upi'
+                      ? 'UPI / Online'
+                      : 'Cash'}
                   </Text>
                 </View>
 
                 {selectedReviewItem.report.reference_number ? (
-                  <View style={styles.modalDetailRow}>
-                    <Text style={styles.modalLabel}>Transaction / Ref ID:</Text>
-                    <Text style={styles.modalValText}>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Transaction Ref</Text>
+                    <Text style={styles.detailValue}>
                       {selectedReviewItem.report.reference_number}
-                    </Text>
-                  </View>
-                ) : null}
-
-                {selectedReviewItem.report.notes ? (
-                  <View style={styles.modalNotesBox}>
-                    <Text style={styles.modalLabel}>Student Note:</Text>
-                    <Text style={styles.modalNoteText}>
-                      {selectedReviewItem.report.notes}
                     </Text>
                   </View>
                 ) : null}
 
                 {selectedReviewItem.report.screenshot_url ? (
                   <View style={styles.screenshotSection}>
-                    <Text style={styles.modalLabel}>Attached Screenshot Proof:</Text>
+                    <Text style={styles.detailLabel}>Attached Screenshot</Text>
                     <Pressable
                       style={styles.screenshotWrap}
-                      onPress={() => setFullImageUrl(selectedReviewItem.report.screenshot_url)}>
-                      <Image
-                        source={{ uri: selectedReviewItem.report.screenshot_url }}
-                        style={styles.screenshotThumb}
-                        resizeMode="cover"
-                      />
-                      <Text style={styles.tapToViewText}>🔍 Tap to view full size</Text>
+                      onPress={() =>
+                        setFullImageUrl(
+                          reviewSignedUrl ||
+                            selectedReviewItem.report.screenshot_url
+                        )
+                      }>
+                      {loadingReviewUrl ? (
+                        <View
+                          style={[
+                            styles.screenshotThumb,
+                            {
+                              justifyContent: 'center',
+                              alignItems: 'center',
+                              backgroundColor: '#F1F5F9',
+                            },
+                          ]}>
+                          <ActivityIndicator
+                            size="small"
+                            color={OwnerTheme.colors.primary}
+                          />
+                        </View>
+                      ) : (
+                        <Image
+                          source={{
+                            uri:
+                              reviewSignedUrl ||
+                              selectedReviewItem.report.screenshot_url,
+                          }}
+                          style={styles.screenshotThumb}
+                          resizeMode="cover"
+                        />
+                      )}
+                      <Text style={styles.tapToViewText}>
+                        Tap to view full image
+                      </Text>
                     </Pressable>
                   </View>
                 ) : null}
               </ScrollView>
             )}
 
-            <View style={styles.modalActionButtons}>
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => setReviewModalVisible(false)}>
+                <Text style={styles.modalCancelBtnText}>Close</Text>
+              </Pressable>
               <Pressable
                 style={[
-                  styles.confirmPaidBtn,
-                  confirmingPayment && styles.disabledBtn,
+                  styles.modalConfirmBtn,
+                  confirmingPayment && styles.btnDisabled,
                 ]}
                 disabled={confirmingPayment}
                 onPress={() => {
-                  if (selectedReviewItem?.charge_id && selectedReviewItem.report?.id) {
+                  if (
+                    selectedReviewItem?.charge_id &&
+                    selectedReviewItem.report?.id
+                  ) {
                     handleConfirmPayment(
                       selectedReviewItem.charge_id,
                       selectedReviewItem.report.id,
@@ -1430,14 +1654,10 @@ export default function SimplifiedBillingManagementScreen() {
                 {confirmingPayment ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.confirmPaidBtnText}>✓ Confirm & Mark as Paid</Text>
+                  <Text style={styles.modalConfirmBtnText}>
+                    Confirm & Mark Paid
+                  </Text>
                 )}
-              </Pressable>
-
-              <Pressable
-                style={styles.cancelModalBtn}
-                onPress={() => setReviewModalVisible(false)}>
-                <Text style={styles.cancelModalBtnText}>Close</Text>
               </Pressable>
             </View>
           </View>
@@ -1451,13 +1671,15 @@ export default function SimplifiedBillingManagementScreen() {
         animationType="fade"
         onRequestClose={() => setFullImageUrl(null)}>
         <View style={styles.fullImageOverlay}>
-          <Pressable style={styles.fullImageCloseBtn} onPress={() => setFullImageUrl(null)}>
-            <Text style={styles.fullImageCloseText}>✕ Close</Text>
+          <Pressable
+            style={styles.fullImageCloseBtn}
+            onPress={() => setFullImageUrl(null)}>
+            <Text style={styles.fullImageCloseText}>Close ✕</Text>
           </Pressable>
           {fullImageUrl && (
             <Image
               source={{ uri: fullImageUrl }}
-              style={styles.fullImage}
+              style={{ width: '92%', height: '80%' }}
               resizeMode="contain"
             />
           )}
@@ -1470,671 +1692,488 @@ export default function SimplifiedBillingManagementScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: OwnerTheme.colors.background,
   },
   scrollContent: {
-    padding: 16,
-    paddingBottom: 40,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    maxWidth: 960,
     width: '100%',
-    maxWidth: 1080,
     alignSelf: 'center',
   },
-  topBar: {
+  headerActionBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    marginBottom: 14,
-  },
-  backBtn: {
-    paddingVertical: 7,
+    gap: 6,
+    paddingVertical: 6,
     paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.full,
     backgroundColor: '#FFFFFF',
-    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: OwnerTheme.colors.border,
   },
-  backBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  screenTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  screenSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  modeToggleBar: {
-    flexDirection: 'row',
-    backgroundColor: '#E2E8F0',
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: 14,
-  },
-  modeBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    alignItems: 'center',
-    borderRadius: 8,
-  },
-  modeBtnActive: {
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 2,
-    elevation: 2,
-  },
-  modeBtnText: {
+  headerActionBtnText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#64748B',
-  },
-  modeBtnTextActive: {
-    color: '#0284C7',
-    fontWeight: '800',
+    color: OwnerTheme.colors.primary,
   },
   monthSelectorBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 8,
+    borderRadius: OwnerTheme.radius.md,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 14,
+    borderColor: OwnerTheme.colors.border,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    marginBottom: 12,
   },
   monthNavBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 16,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 8,
+    width: 34,
+    height: 34,
+    borderRadius: OwnerTheme.radius.sm,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  monthNavArrow: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#0F172A',
+  monthNavBtnPressed: {
+    backgroundColor: '#F1F5F9',
   },
   monthLabelWrap: {
     alignItems: 'center',
   },
   monthLabelText: {
     fontSize: 15,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-  },
-  summaryCard: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderLeftWidth: 4,
-  },
-  cardBorderTotal: {
-    borderLeftColor: '#0284C7',
-  },
-  cardBorderReview: {
-    borderLeftColor: '#D97706',
-  },
-  cardBorderUnpaid: {
-    borderLeftColor: '#DC2626',
-  },
-  summaryNum: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  summaryLbl: {
-    fontSize: 11,
     fontWeight: '600',
-    color: '#64748B',
-    marginTop: 2,
+    color: OwnerTheme.colors.textPrimary,
   },
-  summarySubNote: {
-    fontSize: 9,
-    color: '#94A3B8',
-    marginTop: 2,
+  summaryGrid: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 10,
   },
-  generatorBanner: {
+  reviewBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#EFF6FF',
+    backgroundColor: '#FFFBEB',
     borderWidth: 1,
-    borderColor: '#BFDBFE',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 14,
-    gap: 10,
-  },
-  generatorTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#1E40AF',
-  },
-  generatorSub: {
-    fontSize: 11,
-    color: '#3B82F6',
-    marginTop: 2,
-  },
-  generatorActionBtn: {
-    backgroundColor: '#0284C7',
-    borderRadius: 8,
+    borderColor: '#FDE68A',
+    borderRadius: OwnerTheme.radius.md,
     paddingVertical: 9,
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
+    marginBottom: 10,
   },
-  generatorActionBtnText: {
-    color: '#FFFFFF',
+  reviewBannerIcon: {
+    marginRight: 8,
+  },
+  reviewBannerText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#92400E',
+  },
+  reviewBannerAction: {
     fontSize: 13,
     fontWeight: '700',
+    color: OwnerTheme.colors.primary,
   },
-  allDoneBox: {
+  inlineSuccessBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 14,
-    gap: 10,
-  },
-  allDoneText: {
-    fontSize: 13,
-    color: '#15803D',
-    fontWeight: '700',
-  },
-  allDoneSub: {
-    fontSize: 11,
-    color: '#16A34A',
-    marginTop: 2,
-  },
-  updateRentActionBtn: {
-    backgroundColor: '#0284C7',
-    borderRadius: 8,
+    gap: 6,
     paddingVertical: 8,
     paddingHorizontal: 12,
-  },
-  updateRentActionBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  editRentBadge: {
-    backgroundColor: '#E0F2FE',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-    marginLeft: 6,
-  },
-  editRentBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
-  filterTabsRow: {
-    flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 10,
-    padding: 3,
-    marginBottom: 14,
-  },
-  filterTab: {
-    flex: 1,
-    paddingVertical: 7,
-    alignItems: 'center',
-    borderRadius: 7,
-  },
-  filterTabActive: {
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  filterTabText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  filterTabTextActive: {
-    color: '#0284C7',
-    fontWeight: '800',
-  },
-  loadingBox: {
-    padding: 40,
-    alignItems: 'center',
-    gap: 10,
-  },
-  loadingText: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  emptyCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 24,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-  },
-  emptyTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  emptySubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    textAlign: 'center',
-    marginTop: 4,
-  },
-  rosterContainer: {
-    gap: 12,
-  },
-  residentCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  cardHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    backgroundColor: OwnerTheme.colors.successLight,
+    borderRadius: OwnerTheme.radius.sm,
     marginBottom: 8,
   },
-  roomBadge: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+  inlineSuccessText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: OwnerTheme.colors.success,
   },
-  roomBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#334155',
-  },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-  },
-  badgePaid: {
-    backgroundColor: '#DCFCE7',
-  },
-  badgePaidText: {
-    color: '#15803D',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  badgeReview: {
+  inlineWarningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
     backgroundColor: '#FEF3C7',
+    borderRadius: OwnerTheme.radius.sm,
+    marginBottom: 8,
   },
-  badgeReviewText: {
-    color: '#B45309',
-    fontSize: 11,
-    fontWeight: '800',
+  inlineWarningText: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#92400E',
   },
-  badgeUnpaid: {
-    backgroundColor: '#FEE2E2',
-  },
-  badgeUnpaidText: {
-    color: '#DC2626',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  badgeNotGen: {
-    backgroundColor: '#F1F5F9',
-  },
-  badgeNotGenText: {
-    color: '#64748B',
-    fontSize: 11,
+  inlineActionLink: {
+    fontSize: 12,
     fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  ebSplitterBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.md,
+    padding: 12,
+    marginBottom: 8,
+  },
+  ebSplitterTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  ebSplitterSub: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 2,
+  },
+  ebSplitterBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderRadius: OwnerTheme.radius.sm,
+    marginLeft: 10,
+  },
+  ebSplitterBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
+  },
+  cardsList: {
+    gap: 12,
+  },
+  billCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 14,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 10,
   },
   resName: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#0F172A',
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
   },
-  resPhone: {
+  resRoom: {
     fontSize: 12,
-    color: '#64748B',
+    color: OwnerTheme.colors.textSecondary,
     marginTop: 2,
   },
   breakdownBox: {
     backgroundColor: '#F8FAFC',
-    borderRadius: 10,
+    borderRadius: OwnerTheme.radius.sm,
     padding: 10,
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
-    gap: 6,
+    gap: 8,
   },
   breakdownRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  wmToggleRow: {
+  breakdownLabelGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  breakdownLabel: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  editLink: {
+    fontSize: 12,
+    color: OwnerTheme.colors.primary,
+    fontWeight: '600',
+  },
+  breakdownValue: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  wmRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
   },
-  breakdownLabel: {
-    fontSize: 12,
-    color: '#64748B',
-  },
-  breakdownVal: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#0F172A',
-  },
   totalRow: {
-    paddingTop: 6,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
+    borderTopColor: OwnerTheme.colors.border,
+    paddingTop: 8,
+    marginTop: 2,
   },
   totalLabel: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#0F172A',
+    color: OwnerTheme.colors.textPrimary,
   },
-  totalVal: {
+  totalValue: {
     fontSize: 15,
-    fontWeight: '800',
-    color: '#0284C7',
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
   },
   paidInfoBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     marginTop: 10,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    backgroundColor: OwnerTheme.colors.successLight,
+    borderRadius: OwnerTheme.radius.sm,
   },
   paidInfoText: {
     fontSize: 12,
-    color: '#16A34A',
-  },
-  boldText: {
-    fontWeight: '700',
-  },
-  reportPendingBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFBEB',
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    gap: 8,
-  },
-  reportAlertTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#B45309',
-  },
-  reportAlertSub: {
-    fontSize: 11,
-    color: '#78350F',
-    marginTop: 2,
-  },
-  reviewBtn: {
-    backgroundColor: '#D97706',
-    borderRadius: 6,
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-  },
-  reviewBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
+    color: OwnerTheme.colors.success,
+    fontWeight: '500',
   },
   actionRow: {
     marginTop: 10,
   },
-  directCashBtn: {
-    backgroundColor: '#F1F5F9',
-    borderRadius: 8,
-    paddingVertical: 9,
-    alignItems: 'center',
+  cashActionBtn: {
+    height: 42,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: OwnerTheme.colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  directCashBtnText: {
+  cashActionBtnText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#334155',
+    color: OwnerTheme.colors.textPrimary,
   },
+  reviewActionBtn: {
+    height: 42,
+    flexDirection: 'row',
+    gap: 6,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  reviewActionBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
+  },
+  loadingBox: {
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 8,
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  cardPressed: {
+    opacity: 0.85,
+  },
+  // Modals
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.6)',
-    justifyContent: Platform.OS === 'web' ? 'center' : 'flex-end',
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
     alignItems: 'center',
-    padding: Platform.OS === 'web' ? 20 : 0,
+    padding: 20,
   },
   modalCard: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    borderRadius: Platform.OS === 'web' ? 20 : 0,
-    padding: 20,
-    paddingBottom: 36,
     width: '100%',
-    maxWidth: 540,
-    alignSelf: 'center',
+    maxWidth: 460,
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    padding: 20,
+    ...OwnerTheme.shadow,
   },
-  modalHeader: {
+  modalHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 10,
   },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  modalCloseText: {
+  modalHeading: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#64748B',
-    padding: 4,
+    color: OwnerTheme.colors.textPrimary,
   },
-  modalSubHeader: {
-    fontSize: 12,
-    color: '#64748B',
-    lineHeight: 18,
+  modalExplanation: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
     marginBottom: 14,
+    lineHeight: 18,
   },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#334155',
+  inputFieldLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
     marginBottom: 6,
-    marginTop: 8,
   },
-  amountInputBox: {
-    backgroundColor: '#F8FAFC',
+  inputBox: {
+    height: 48,
     borderWidth: 1,
-    borderColor: '#0284C7',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 10,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.md,
+    paddingHorizontal: 12,
+    fontSize: 15,
+    color: OwnerTheme.colors.textPrimary,
+    backgroundColor: '#F8FAFC',
+    marginBottom: 16,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+  },
+  modalCancelBtn: {
+    height: 44,
+    paddingHorizontal: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalCancelBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  modalConfirmBtn: {
+    height: 44,
+    paddingHorizontal: 18,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalConfirmBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  btnDisabled: {
+    opacity: 0.6,
   },
   roomChipsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    marginBottom: 10,
+    marginBottom: 14,
   },
   roomChip: {
-    paddingVertical: 7,
+    paddingVertical: 6,
     paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: '#F1F5F9',
+    borderRadius: OwnerTheme.radius.full,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#FFFFFF',
   },
   roomChipSelected: {
-    backgroundColor: '#E0F2FE',
-    borderColor: '#0284C7',
+    backgroundColor: OwnerTheme.colors.primary,
+    borderColor: OwnerTheme.colors.primary,
   },
   roomChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#475569',
+    fontSize: 13,
+    color: OwnerTheme.colors.textPrimary,
   },
   roomChipTextSelected: {
-    color: '#0284C7',
-    fontWeight: '800',
+    color: '#FFFFFF',
+    fontWeight: '600',
   },
   ebSplitPreviewBox: {
     backgroundColor: '#F8FAFC',
-    borderRadius: 10,
+    borderRadius: OwnerTheme.radius.md,
     padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginVertical: 10,
-    gap: 6,
+    marginBottom: 14,
   },
   ebPreviewTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 4,
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+    marginBottom: 6,
   },
   ebPreviewRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 2,
+    paddingVertical: 3,
   },
   ebPreviewName: {
-    fontSize: 12,
-    color: '#334155',
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
   },
   ebPreviewShare: {
     fontSize: 13,
-    fontWeight: '700',
-    color: '#D97706',
+    fontWeight: '600',
+    color: OwnerTheme.colors.warning,
   },
   noOccupantsText: {
     fontSize: 12,
-    color: '#94A3B8',
-    fontStyle: 'italic',
+    color: OwnerTheme.colors.textMuted,
   },
-  modalResidentInfo: {
+  reviewSummaryBox: {
     backgroundColor: '#F8FAFC',
+    borderRadius: OwnerTheme.radius.md,
     padding: 12,
-    borderRadius: 8,
     marginBottom: 12,
   },
   modalResName: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#0F172A',
+    color: OwnerTheme.colors.textPrimary,
   },
   modalBillPeriod: {
     fontSize: 12,
-    color: '#0284C7',
-    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
     marginTop: 2,
   },
-  modalDetailRow: {
+  detailRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
     paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: OwnerTheme.colors.borderLight,
   },
-  modalLabel: {
+  detailLabel: {
     fontSize: 13,
-    color: '#64748B',
+    color: OwnerTheme.colors.textSecondary,
   },
-  modalValText: {
+  detailValue: {
     fontSize: 13,
-    fontWeight: '600',
-    color: '#0F172A',
+    fontWeight: '500',
+    color: OwnerTheme.colors.textPrimary,
   },
-  modalAmountHighlight: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#16A34A',
-  },
-  modalNotesBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 8,
-    padding: 10,
-    marginVertical: 8,
-  },
-  modalNoteText: {
-    fontSize: 12,
-    color: '#334155',
-    marginTop: 3,
+  detailValueBold: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
   },
   screenshotSection: {
     marginTop: 10,
   },
   screenshotWrap: {
     marginTop: 6,
-    borderRadius: 8,
-    overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
     alignItems: 'center',
-    backgroundColor: '#F1F5F9',
   },
   screenshotThumb: {
-    width: '100%',
+    width: 140,
     height: 140,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: '#E2E8F0',
   },
   tapToViewText: {
     fontSize: 11,
-    color: '#0284C7',
-    fontWeight: '600',
-    paddingVertical: 6,
-  },
-  modalActionButtons: {
-    marginTop: 16,
-    gap: 8,
-  },
-  confirmPaidBtn: {
-    backgroundColor: '#16A34A',
-    borderRadius: 8,
-    paddingVertical: 13,
-    alignItems: 'center',
-  },
-  confirmPaidBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  cancelModalBtn: {
-    backgroundColor: '#F1F5F9',
-    borderRadius: 8,
-    paddingVertical: 11,
-    alignItems: 'center',
-  },
-  cancelModalBtnText: {
-    color: '#475569',
-    fontSize: 13,
+    color: OwnerTheme.colors.primary,
+    marginTop: 4,
     fontWeight: '600',
   },
   fullImageOverlay: {
@@ -2157,15 +2196,5 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
-  },
-  fullImage: {
-    width: '90%',
-    height: '80%',
-  },
-  pressed: {
-    opacity: 0.8,
-  },
-  disabledBtn: {
-    opacity: 0.6,
   },
 });

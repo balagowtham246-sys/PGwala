@@ -16,6 +16,7 @@ import { router } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
+import { OwnerHeader } from '@/components/ui/owner';
 
 interface RoomResident {
   id: string;
@@ -241,23 +242,15 @@ export default function EbBillingScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <OwnerHeader
+        title="EB Room Bill Entry"
+        subtitle={propertyName}
+        showBack
+      />
       <KeyboardAvoidingView
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={styles.scrollContent} keyboardShouldPersistTaps="handled">
-          {/* Header */}
-          <View style={styles.topBar}>
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-              onPress={() => router.back()}>
-              <Text style={styles.backButtonText}>‹ Back</Text>
-            </Pressable>
-            <View style={styles.headerTitleWrap}>
-              <Text style={styles.screenTitle}>EB Room Bill Entry</Text>
-              <Text style={styles.screenSubtitle}>{propertyName}</Text>
-            </View>
-          </View>
 
           {loading ? (
             <View style={styles.loadingBox}>

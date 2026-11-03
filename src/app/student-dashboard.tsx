@@ -16,13 +16,30 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import {
+  Building2,
+  DoorOpen,
+  Utensils,
+  Receipt,
+  Wrench,
+  Clock,
+  LogIn,
+  LogOut,
+  ChevronRight,
+  Settings,
+  Check,
+  ArrowRight,
+  AlertCircle,
+  X,
+} from 'lucide-react-native';
 
-import { BottomTabInset } from '@/constants/theme';
+import { BottomTabInset, OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
 import { WashingMachineCard } from '@/components/washing-machine-card';
 
-interface StudentResidentInfo {
+// --- Types ---
+interface ResidentAccommodationInfo {
   id: string;
   property_id: string;
   profile_id: string;
@@ -39,7 +56,7 @@ interface StudentResidentInfo {
 
 export type MealType = 'breakfast' | 'lunch' | 'dinner';
 
-export interface StudentFoodMenu {
+export interface ResidentFoodMenu {
   id: string;
   meal_type: MealType;
   items: string;
@@ -47,7 +64,7 @@ export interface StudentFoodMenu {
   is_published: boolean;
 }
 
-export interface StudentMovementRecord {
+export interface ResidentMovementRecord {
   id: string;
   direction: 'IN' | 'OUT';
   event_time: string;
@@ -84,15 +101,6 @@ const MEAL_CONFIG: Record<MealType, { title: string; icon: string; timeHint: str
   },
 };
 
-function formatTodayDate(): string {
-  return new Date().toLocaleDateString('en-IN', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
-}
-
 function getTodayIsoDate(): string {
   const d = new Date();
   const y = d.getFullYear();
@@ -114,53 +122,45 @@ function formatMovementTime(isoString: string): string {
   }
 }
 
-export default function StudentDashboardScreen() {
-  const { user, profile, signOut } = useAuth();
+export default function ResidentDashboardScreen() {
+  const { user, profile } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [resident, setResident] = useState<StudentResidentInfo | null>(null);
-  const [menus, setMenus] = useState<Record<MealType, StudentFoodMenu | null>>({
+  const [resident, setResident] = useState<ResidentAccommodationInfo | null>(null);
+
+  // Active Meal Tab for in-place detail view
+  const [activeMealTab, setActiveMealTab] = useState<MealType>('breakfast');
+  const [menus, setMenus] = useState<Record<MealType, ResidentFoodMenu | null>>({
     breakfast: null,
     lunch: null,
     dinner: null,
   });
-  const [pendingDuesPaise, setPendingDuesPaise] = useState<number | null>(null);
-  const [billingSummary, setBillingSummary] = useState<{
-    outstandingPaise: number;
-    overduePaise: number;
-    pendingReportsCount: number;
-    recentApprovedPayment: {
-      id: string;
-      receipt_number: string;
-      amount_paise: number;
-      payment_date: string;
-      method: string;
-    } | null;
-  } | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Gate Movement / Attendance State
-  const [latestMovement, setLatestMovement] = useState<StudentMovementRecord | null>(null);
+  // Billing dues indicator
+  const [pendingDuesPaise, setPendingDuesPaise] = useState<number | null>(null);
+
+  // Movement & Gate Status
+  const [latestMovement, setLatestMovement] = useState<ResidentMovementRecord | null>(null);
   const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
-  const [leavingPurpose, setLeavingPurpose] = useState('College');
-  const [customPurpose, setCustomPurpose] = useState('');
-  const [returnTime, setReturnTime] = useState('Evening (~8:00 PM)');
-  const [customReturnTime, setCustomReturnTime] = useState('');
-  const [foodRequired, setFoodRequired] = useState(true);
   const [savingMovement, setSavingMovement] = useState(false);
 
-  /**
-   * 1. Load authenticated student's resident record from Supabase.
-   * Strictly relies on trusted profile_id = auth.uid() relation under RLS.
-   */
-  const loadStudentData = useCallback(async () => {
-    if (!user?.id) return;
+  // Going Out Form State
+  const [leavingPurpose, setLeavingPurpose] = useState<string>('College');
+  const [customPurpose, setCustomPurpose] = useState<string>('');
+  const [returnTime, setReturnTime] = useState<string>('Evening (~8:00 PM)');
+  const [customReturnTime, setCustomReturnTime] = useState<string>('');
+  const [foodRequired, setFoodRequired] = useState<boolean>(true);
 
+  // Feedback State
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  const loadResidentData = useCallback(async () => {
+    if (!user?.id) return;
     try {
       setErrorMessage(null);
 
-      // Fetch resident record securely linked to this authenticated profile
+      // 1. Fetch resident allocation record
       const { data: resData, error: resError } = await supabase
         .from('residents')
         .select(`
@@ -181,25 +181,20 @@ export default function StudentDashboardScreen() {
         .eq('is_active', true)
         .maybeSingle();
 
-      if (resError) {
-        throw new Error(resError.message);
-      }
+      if (resError) throw resError;
 
       if (!resData) {
-        // Not linked to any resident record yet
         setResident(null);
-        setMenus({ breakfast: null, lunch: null, dinner: null });
         setLoading(false);
         setRefreshing(false);
         return;
       }
 
-      // Handle joined property data cleanly
       const propertyObj = Array.isArray(resData.property)
         ? resData.property[0]
         : resData.property;
 
-      const residentInfo: StudentResidentInfo = {
+      const residentInfo: ResidentAccommodationInfo = {
         id: resData.id,
         property_id: resData.property_id,
         profile_id: resData.profile_id,
@@ -212,7 +207,7 @@ export default function StudentDashboardScreen() {
 
       setResident(residentInfo);
 
-      // 2. Fetch today's published food menus for the student's property
+      // 2. Fetch today's published food menus
       const todayIso = getTodayIsoDate();
       const { data: menuData, error: menuError } = await supabase
         .from('food_menus')
@@ -221,19 +216,18 @@ export default function StudentDashboardScreen() {
         .eq('menu_date', todayIso)
         .eq('is_published', true);
 
-      // If food_menus table doesn't exist yet or errors, fail softly without breaking dashboard
       if (menuError) {
-        console.warn('[StudentDashboard] Could not fetch food menus:', menuError.message);
+        console.warn('[ResidentDashboard] Could not fetch food menus:', menuError.message);
         setMenus({ breakfast: null, lunch: null, dinner: null });
       } else {
-        const menuMap: Record<MealType, StudentFoodMenu | null> = {
+        const menuMap: Record<MealType, ResidentFoodMenu | null> = {
           breakfast: null,
           lunch: null,
           dinner: null,
         };
 
         if (menuData && menuData.length > 0) {
-          for (const item of menuData as StudentFoodMenu[]) {
+          for (const item of menuData as ResidentFoodMenu[]) {
             if (['breakfast', 'lunch', 'dinner'].includes(item.meal_type)) {
               menuMap[item.meal_type] = item;
             }
@@ -242,59 +236,24 @@ export default function StudentDashboardScreen() {
         setMenus(menuMap);
       }
 
-      // 3. Fetch live billing summary (fails softly if billing not initialized)
+      // 3. Query outstanding dues for quick badge
       try {
-        const todayIso = getTodayIsoDate();
-
-        // 3a. Query outstanding charges & overdue amounts
         const { data: chargesData } = await supabase
           .from('charges')
-          .select('amount_paise, due_date')
+          .select('amount_paise')
           .eq('resident_id', residentInfo.id)
           .eq('status', 'outstanding');
 
         let totalOut = 0;
-        let totalOver = 0;
         if (chargesData && chargesData.length > 0) {
           for (const ch of chargesData) {
-            const amt = ch.amount_paise || 0;
-            totalOut += amt;
-            if (ch.due_date && ch.due_date < todayIso) {
-              totalOver += amt;
-            }
+            totalOut += ch.amount_paise || 0;
           }
         }
         setPendingDuesPaise(totalOut);
-
-        // 3b. Query pending payment reports submitted by this student
-        const { data: reportsData } = await supabase
-          .from('student_payment_reports')
-          .select('id')
-          .eq('resident_id', residentInfo.id)
-          .eq('status', 'pending');
-
-        const pendingReportsCount = reportsData ? reportsData.length : 0;
-
-        // 3c. Query most recent approved payment receipt
-        const { data: payData } = await supabase
-          .from('payments')
-          .select('id, receipt_number, amount_paise, payment_date, method')
-          .eq('resident_id', residentInfo.id)
-          .eq('status', 'approved')
-          .order('payment_date', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        setBillingSummary({
-          outstandingPaise: totalOut,
-          overduePaise: totalOver,
-          pendingReportsCount,
-          recentApprovedPayment: payData || null,
-        });
       } catch (billingErr) {
-        console.warn('[StudentDashboard] Billing summary fetch error:', billingErr);
+        console.warn('[ResidentDashboard] Dues fetch error:', billingErr);
         setPendingDuesPaise(null);
-        setBillingSummary(null);
       }
 
       // 4. Fetch latest gate movement status
@@ -307,14 +266,14 @@ export default function StudentDashboardScreen() {
           .limit(1)
           .maybeSingle();
 
-        setLatestMovement((movementData as StudentMovementRecord) || null);
+        setLatestMovement((movementData as ResidentMovementRecord) || null);
       } catch (movErr) {
-        console.warn('[StudentDashboard] Error fetching movement log:', movErr);
+        console.warn('[ResidentDashboard] Error fetching movement log:', movErr);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('[StudentDashboard] Error loading student data:', err);
-      setErrorMessage(`Failed to load student data: ${msg}`);
+      console.error('[ResidentDashboard] Error loading resident data:', err);
+      setErrorMessage(`Failed to load resident data: ${msg}`);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -322,12 +281,12 @@ export default function StudentDashboardScreen() {
   }, [user?.id]);
 
   useEffect(() => {
-    loadStudentData();
-  }, [loadStudentData]);
+    loadResidentData();
+  }, [loadResidentData]);
 
   const handleRefresh = () => {
     setRefreshing(true);
-    loadStudentData();
+    loadResidentData();
   };
 
   // 1-tap Check-In when back at PG
@@ -344,7 +303,7 @@ export default function StudentDashboardScreen() {
       if (!data?.success) throw new Error(data?.error || 'Failed to update attendance.');
 
       Alert.alert('Welcome Back! 🏠', 'You have marked yourself INSIDE the PG.');
-      await loadStudentData();
+      await loadResidentData();
     } catch (err: any) {
       Alert.alert('Update Failed', err.message || 'Could not record check-in.');
     } finally {
@@ -378,7 +337,7 @@ export default function StudentDashboardScreen() {
 
       setGoingOutModalVisible(false);
       Alert.alert('Status Updated 🚶', 'You have marked yourself OUT of the PG.');
-      await loadStudentData();
+      await loadResidentData();
     } catch (err: any) {
       Alert.alert('Update Failed', err.message || 'Could not record departure.');
     } finally {
@@ -386,40 +345,40 @@ export default function StudentDashboardScreen() {
     }
   };
 
-  const handleSignOut = async () => {
-    if (Platform.OS === 'web') {
-      const confirmed = typeof window !== 'undefined' ? window.confirm('Are you sure you want to sign out?') : true;
-      if (confirmed) {
-        await signOut();
-        router.replace('/login');
-      }
-      return;
-    }
-
-    Alert.alert('Sign Out', 'Are you sure you want to sign out?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out',
-        style: 'destructive',
-        onPress: async () => {
-          await signOut();
-          router.replace('/login');
-        },
-      },
-    ]);
-  };
-
-  const showPlaceholderNotice = (featureName: string, description: string) => {
-    Alert.alert(
-      `${featureName} (Coming Soon)`,
-      `${description}\n\nThis feature is currently under active development.`
-    );
-  };
-
   const isInside = !latestMovement || latestMovement.direction === 'IN';
+
+  const getInitials = (name?: string | null) => {
+    if (!name) return 'RE';
+    const parts = name.trim().split(' ');
+    if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      {/* Top Header: Brand + PG Accommodation Badge + Settings Cog */}
+      <View style={styles.headerRow}>
+        <Text style={styles.brandTitle}>PGwala</Text>
+
+        <View style={styles.propertyPill}>
+          <Building2 size={14} color={OwnerTheme.colors.primary} />
+          <Text style={styles.propertyPillText} numberOfLines={1}>
+            {resident?.property?.name || 'Resident Portal'}
+          </Text>
+        </View>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Resident Settings"
+          style={({ pressed }) => [
+            styles.settingsBtn,
+            pressed && styles.btnPressed,
+          ]}
+          onPress={() => router.push('/student-settings')}>
+          <Settings size={18} color={OwnerTheme.colors.primary} />
+        </Pressable>
+      </View>
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -427,501 +386,341 @@ export default function StudentDashboardScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            colors={['#0284C7']}
+            colors={[OwnerTheme.colors.primary]}
           />
         }>
-
-        {/* Top Bar with Student Greeting & Sign Out */}
-        <View style={styles.topBar}>
-          <View style={styles.greetingWrapper}>
-            <Text style={styles.portalTag}>STUDENT PORTAL</Text>
-            <Text style={styles.greetingTitle}>
-              Hello, {resident?.full_name || profile?.full_name || 'Student'}!
-            </Text>
-            <Text style={styles.dateSubtitle}>{formatTodayDate()}</Text>
-          </View>
-
-          <View style={styles.topBarActions}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Open Settings"
-              style={({ pressed }) => [
-                styles.settingsButton,
-                pressed && styles.settingsButtonPressed,
-              ]}
-              onPress={() => router.push('/student-settings')}>
-              <Text style={styles.settingsButtonText}>⚙️ Settings</Text>
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.signOutButton,
-                pressed && styles.signOutButtonPressed,
-              ]}
-              onPress={handleSignOut}>
-              <Text style={styles.signOutButtonText}>Sign Out</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        {/* Temporary Password Warning Banner */}
+        {/* Temporary Password Alert Banner */}
         {user?.user_metadata?.must_change_password && (
           <Pressable
             style={({ pressed }) => [
               styles.tempPasswordBanner,
               pressed && { opacity: 0.8 },
             ]}
-            onPress={() => router.push('/student-settings')}>
-            <Text style={styles.tempPasswordIcon}>🔑</Text>
+            onPress={() => router.push('/student-profile-edit')}>
+            <AlertCircle size={18} color="#92400E" />
             <View style={{ flex: 1 }}>
               <Text style={styles.tempPasswordTitle}>Temporary Password Active</Text>
               <Text style={styles.tempPasswordSubtitle}>
-                You are currently using an initial temporary password. Tap here to set your private password.
+                Tap here to set your private password and secure your resident account.
               </Text>
             </View>
-            <Text style={styles.tempPasswordActionText}>Change →</Text>
+            <ChevronRight size={16} color="#92400E" />
           </Pressable>
         )}
 
         {/* Error Banner */}
         {errorMessage && (
           <View style={styles.errorBanner}>
-            <Text style={styles.errorIcon}>⚠️</Text>
             <Text style={styles.errorText}>{errorMessage}</Text>
-            <Pressable hitSlop={8} onPress={loadStudentData}>
+            <Pressable hitSlop={8} onPress={loadResidentData}>
               <Text style={styles.retryText}>Retry</Text>
             </Pressable>
           </View>
         )}
 
-        {/* Loading State */}
         {loading ? (
           <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
-            <Text style={styles.loadingText}>Loading your accommodation details...</Text>
+            <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+            <Text style={styles.loadingText}>Loading accommodation details...</Text>
           </View>
         ) : resident ? (
-          /* Enrolled Accommodation Card */
           <>
-            <View style={styles.residentCard}>
-              <View style={styles.residentHeaderRow}>
-                <View style={styles.propertyInfo}>
-                  <Text style={styles.propertyIcon}>🏢</Text>
-                  <View>
-                    <Text style={styles.propertyName}>
-                      {resident.property?.name || 'Your PG Accommodation'}
-                    </Text>
-                    {resident.property?.address && (
-                      <Text style={styles.propertyAddress}>
-                        {resident.property.address}
-                      </Text>
-                    )}
+            {/* Top 1: Simplified Resident Tile Card */}
+            <View style={styles.residentTileCard}>
+              <View style={styles.avatarCircle}>
+                <Text style={styles.avatarText}>
+                  {getInitials(resident.full_name)}
+                </Text>
+              </View>
+
+              <View style={styles.residentTileInfo}>
+                <View style={styles.residentNameRow}>
+                  <Text style={styles.residentTileName} numberOfLines={1}>
+                    {resident.full_name}
+                  </Text>
+                  <View style={styles.roomPill}>
+                    <Text style={styles.roomPillText}>Room {resident.room_number}</Text>
                   </View>
                 </View>
 
-                <View style={styles.activePill}>
-                  <View style={styles.activeDot} />
-                  <Text style={styles.activePillText}>Active</Text>
-                </View>
+                <Text style={styles.residentTileProp} numberOfLines={1}>
+                  {resident.property?.name || 'Assigned PG'}
+                  {resident.property?.address ? ` • ${resident.property.address}` : ''}
+                </Text>
               </View>
 
-              <View style={styles.divider} />
+              <View style={styles.activeDotBadge}>
+                <View style={styles.activeDot} />
+                <Text style={styles.activeDotText}>Active</Text>
+              </View>
+            </View>
 
-              <View style={styles.detailsRow}>
-                <View style={styles.detailItem}>
-                  <Text style={styles.detailLabel}>Assigned Room</Text>
-                  <Text style={styles.detailValue}>Room {resident.room_number}</Text>
+            {/* Top 2: 1 x 2 Hero Section (Washing Machine & Gate Attendance Side-by-Side) */}
+            <View style={styles.heroRow}>
+              {/* Left Column: Washing Machine Card */}
+              <WashingMachineCard
+                propertyId={resident.property_id}
+                userRole="student"
+                currentResidentId={resident.id}
+                compact
+                style={{ flex: 1 }}
+              />
+
+              {/* Right Column: Gate Attendance Marking System */}
+              <View style={styles.gateHeroCard}>
+                <View style={styles.gateHeaderRow}>
+                  <View
+                    style={[
+                      styles.gateIconCircle,
+                      isInside ? styles.gateIconIn : styles.gateIconOut,
+                    ]}>
+                    {isInside ? (
+                      <LogIn size={18} color={OwnerTheme.colors.success} />
+                    ) : (
+                      <LogOut size={18} color={OwnerTheme.colors.warning} />
+                    )}
+                  </View>
+                  <View
+                    style={[
+                      styles.gatePill,
+                      isInside ? styles.gatePillIn : styles.gatePillOut,
+                    ]}>
+                    <Text
+                      style={[
+                        styles.gatePillText,
+                        isInside ? styles.gateTextIn : styles.gateTextOut,
+                      ]}>
+                      {isInside ? 'INSIDE' : 'OUTSIDE'}
+                    </Text>
+                  </View>
                 </View>
 
-                <View style={styles.detailItem}>
-                  <Text style={styles.detailLabel}>Registered Name</Text>
-                  <Text style={styles.detailValue}>{resident.full_name}</Text>
+                <Text style={styles.gateTitle}>Gate Attendance</Text>
+                <Text style={styles.gateSubtitle} numberOfLines={1}>
+                  {latestMovement?.event_time
+                    ? `${isInside ? 'In since' : 'Out at'} ${formatMovementTime(latestMovement.event_time)}`
+                    : 'Present on campus'}
+                </Text>
+
+                <View style={styles.gateActionWrap}>
+                  {isInside ? (
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.gateActionBtn,
+                        styles.gateOutBtn,
+                        pressed && styles.btnPressed,
+                      ]}
+                      onPress={() => {
+                        setFoodRequired(true);
+                        setGoingOutModalVisible(true);
+                      }}>
+                      <Text style={styles.gateOutBtnText}>🚶 Going Out</Text>
+                    </Pressable>
+                  ) : (
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.gateActionBtn,
+                        styles.gateInBtn,
+                        pressed && styles.btnPressed,
+                        savingMovement && styles.btnDisabled,
+                      ]}
+                      disabled={savingMovement}
+                      onPress={handleMarkBackIn}>
+                      {savingMovement ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.gateInBtnText}>✓ Mark Inside</Text>
+                      )}
+                    </Pressable>
+                  )}
                 </View>
               </View>
             </View>
 
-            {/* Live Washing Machine Status Card */}
-            <WashingMachineCard
-              propertyId={resident.property_id}
-              userRole="student"
-              currentResidentId={resident.id}
-            />
-
-            {/* Live Gate Attendance / Movement Card */}
-            <View style={styles.gateCard}>
-              <View style={styles.gateCardHeaderRow}>
-                <View style={styles.gateHeaderLeft}>
-                  <View
-                    style={[
-                      styles.gateIconWrap,
-                      isInside ? styles.gateIconWrapIn : styles.gateIconWrapOut,
-                    ]}>
-                    <Text style={styles.gateIconEmoji}>{isInside ? '🏠' : '🚶'}</Text>
-                  </View>
-                  <View>
-                    <Text style={styles.gateCardTitle}>Gate Attendance</Text>
-                    <Text style={styles.gateCardSubtitle}>
-                      {latestMovement?.event_time
-                        ? `${isInside ? 'Inside since' : 'Left at'} ${formatMovementTime(latestMovement.event_time)}`
-                        : 'Currently in accommodation'}
-                    </Text>
-                  </View>
+            {/* Section 3: Today's Food Menu (Interactive In-Place Card) */}
+            <View style={styles.menuCard}>
+              <View style={styles.menuHeader}>
+                <View style={styles.menuHeaderLeft}>
+                  <Utensils size={16} color={OwnerTheme.colors.primary} />
+                  <Text style={styles.menuTitle}>Today's Food Menu</Text>
                 </View>
+                <Text style={styles.menuPublishedHint}>Published Daily</Text>
+              </View>
 
-                {/* Status Pill */}
-                <View
-                  style={[
-                    styles.gateStatusPill,
-                    isInside ? styles.gatePillIn : styles.gatePillOut,
-                  ]}>
-                  <Text
-                    style={[
-                      styles.gateStatusPillText,
-                      isInside ? styles.gateTextIn : styles.gateTextOut,
-                    ]}>
-                    {isInside ? 'INSIDE PG' : 'OUTSIDE PG'}
+              {/* 3-Chip Meal Selector */}
+              <View style={styles.mealSegmentRow}>
+                {(['breakfast', 'lunch', 'dinner'] as MealType[]).map((mealKey) => {
+                  const cfg = MEAL_CONFIG[mealKey];
+                  const hasMenu = Boolean(menus[mealKey]);
+                  const isSelected = activeMealTab === mealKey;
+
+                  return (
+                    <Pressable
+                      key={mealKey}
+                      accessibilityRole="button"
+                      style={[
+                        styles.mealSegmentChip,
+                        isSelected && styles.mealSegmentChipSelected,
+                      ]}
+                      onPress={() => setActiveMealTab(mealKey)}>
+                      <Text style={styles.mealChipEmoji}>{cfg.icon}</Text>
+                      <Text
+                        style={[
+                          styles.mealChipText,
+                          isSelected && styles.mealChipTextSelected,
+                        ]}>
+                        {cfg.title}
+                      </Text>
+                      <View
+                        style={[
+                          styles.mealDot,
+                          hasMenu ? styles.mealDotActive : styles.mealDotInactive,
+                        ]}
+                      />
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {/* In-Place Selected Meal Details */}
+              <View style={styles.mealDetailBox}>
+                <View style={styles.mealDetailTop}>
+                  <Text style={styles.mealDetailTitle}>
+                    {MEAL_CONFIG[activeMealTab].title}
+                  </Text>
+                  <Text style={styles.mealDetailTime}>
+                    {MEAL_CONFIG[activeMealTab].timeHint}
                   </Text>
                 </View>
-              </View>
 
-              {/* Inside Details Summary */}
-              {isInside && (
-                <View style={styles.gateInsideDetailsBox}>
-                  <View style={styles.gateDetailRow}>
-                    <Text style={styles.gateDetailLabel}>Food Status:</Text>
-                    <Text style={[styles.gateDetailValue, styles.foodNeededText]}>
-                      🍽️ Eating at PG (Included)
+                {menus[activeMealTab] ? (
+                  <View style={styles.mealItemsContainer}>
+                    <Text style={styles.mealItemsText}>
+                      {menus[activeMealTab]!.items}
                     </Text>
-                  </View>
-                </View>
-              )}
-
-              {/* OUT Details Summary */}
-              {!isInside && latestMovement && (
-                <View style={styles.gateOutDetailsBox}>
-                  {latestMovement.purpose ? (
-                    <View style={styles.gateDetailRow}>
-                      <Text style={styles.gateDetailLabel}>Purpose:</Text>
-                      <Text style={styles.gateDetailValue}>{latestMovement.purpose}</Text>
-                    </View>
-                  ) : null}
-                  {latestMovement.expected_return_time ? (
-                    <View style={styles.gateDetailRow}>
-                      <Text style={styles.gateDetailLabel}>Expected Return:</Text>
-                      <Text style={styles.gateDetailValue}>
-                        {latestMovement.expected_return_time}
+                    {menus[activeMealTab]!.notes ? (
+                      <Text style={styles.mealNotesText}>
+                        Note: {menus[activeMealTab]!.notes}
                       </Text>
-                    </View>
-                  ) : null}
-                  <View style={styles.gateDetailRow}>
-                    <Text style={styles.gateDetailLabel}>Dinner / Food:</Text>
+                    ) : null}
+                  </View>
+                ) : (
+                  <Text style={styles.noMenuText}>
+                    No menu published for {MEAL_CONFIG[activeMealTab].title.toLowerCase()} today.
+                  </Text>
+                )}
+              </View>
+            </View>
+
+            {/* Section 4: Resident Services (Neatly Aligned 3-Card Grid) */}
+            <View style={styles.sectionHeaderRow}>
+              <Text style={styles.sectionHeading}>Resident Services</Text>
+            </View>
+
+            <View style={styles.servicesList}>
+              {/* Bills & Rent */}
+              <Pressable
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.serviceCard,
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() => router.push('/student-billing')}>
+                <View
+                  style={[
+                    styles.serviceIconWrap,
+                    { backgroundColor: '#F1F5F9' },
+                  ]}>
+                  <Receipt size={18} color={OwnerTheme.colors.textPrimary} />
+                </View>
+                <View style={styles.serviceTextCol}>
+                  <Text style={styles.serviceTitle}>My Bills & Rent</Text>
+                  <Text style={styles.serviceSubtitle}>Dues, payments & receipts</Text>
+                </View>
+                {pendingDuesPaise !== null ? (
+                  <View
+                    style={[
+                      styles.duesBadge,
+                      pendingDuesPaise > 0 ? styles.duesPending : styles.duesClear,
+                    ]}>
                     <Text
                       style={[
-                        styles.gateDetailValue,
-                        latestMovement.food_required
-                          ? styles.foodNeededText
-                          : styles.foodNotNeededText,
+                        styles.duesBadgeText,
+                        pendingDuesPaise > 0 ? styles.duesPendingText : styles.duesClearText,
                       ]}>
-                      {latestMovement.food_required
-                        ? '🍽️ Dinner Required'
-                        : '❌ No Dinner Needed'}
+                      {pendingDuesPaise > 0
+                        ? `₹${(pendingDuesPaise / 100).toLocaleString('en-IN')}`
+                        : 'Clear'}
                     </Text>
                   </View>
+                ) : null}
+                <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
+              </Pressable>
+
+              {/* Maintenance & Complaints */}
+              <Pressable
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.serviceCard,
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() => router.push('/student-complaints')}>
+                <View
+                  style={[
+                    styles.serviceIconWrap,
+                    { backgroundColor: OwnerTheme.colors.warningLight },
+                  ]}>
+                  <Wrench size={18} color={OwnerTheme.colors.warning} />
                 </View>
-              )}
+                <View style={styles.serviceTextCol}>
+                  <Text style={styles.serviceTitle}>Complaints & Requests</Text>
+                  <Text style={styles.serviceSubtitle}>Raise room maintenance or repairs</Text>
+                </View>
+                <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
+              </Pressable>
 
-              {/* Action Buttons */}
-              <View style={styles.gateActionRow}>
-                {isInside ? (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.gateActionBtn,
-                      styles.gateOutBtn,
-                      pressed && styles.pressed,
-                    ]}
-                    onPress={() => {
-                      setFoodRequired(true);
-                      setGoingOutModalVisible(true);
-                    }}>
-                    <Text style={styles.gateOutBtnText}>🚶 Going Out</Text>
-                  </Pressable>
-                ) : (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.gateActionBtn,
-                      styles.gateInBtn,
-                      pressed && styles.pressed,
-                      savingMovement && styles.btnDisabled,
-                    ]}
-                    disabled={savingMovement}
-                    onPress={handleMarkBackIn}>
-                    {savingMovement ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <Text style={styles.gateInBtnText}>✓ I am Back (Mark Inside)</Text>
-                    )}
-                  </Pressable>
-                )}
-
-                <Pressable
-                  accessibilityRole="button"
-                  style={styles.gateHistoryLinkBtn}
-                  onPress={() => router.push('/student-gate-history')}>
-                  <Text style={styles.gateHistoryLinkText}>History ›</Text>
-                </Pressable>
-              </View>
+              {/* Gate History */}
+              <Pressable
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.serviceCard,
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() => router.push('/student-gate-history')}>
+                <View
+                  style={[
+                    styles.serviceIconWrap,
+                    { backgroundColor: OwnerTheme.colors.primaryLight },
+                  ]}>
+                  <Clock size={18} color={OwnerTheme.colors.primary} />
+                </View>
+                <View style={styles.serviceTextCol}>
+                  <Text style={styles.serviceTitle}>Gate Movement History</Text>
+                  <Text style={styles.serviceSubtitle}>Review your entry & exit logs</Text>
+                </View>
+                <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
+              </Pressable>
             </View>
           </>
         ) : (
-          /* Unlinked / Pending Allocation State */
+          /* Unlinked Account State */
           <View style={styles.unlinkedCard}>
-            <Text style={styles.unlinkedIcon}>📋</Text>
+            <Text style={{ fontSize: 32 }}>📋</Text>
             <Text style={styles.unlinkedTitle}>Awaiting Room Allocation</Text>
             <Text style={styles.unlinkedBody}>
               Your account is signed in, but has not yet been linked to a room allocation by your PG owner.
             </Text>
-            <View style={styles.accountDetailBox}>
-              <Text style={styles.accountDetailLabel}>Your Registered Account:</Text>
-              <Text style={styles.accountDetailValue}>{user?.email || profile?.full_name}</Text>
+            <View style={styles.accountBox}>
+              <Text style={styles.accountBoxLabel}>Signed in as:</Text>
+              <Text style={styles.accountBoxValue}>{user?.email || profile?.full_name}</Text>
             </View>
             <Text style={styles.unlinkedHint}>
-              Please contact your PG owner to link your account to your room record. Pull down to refresh once linked.
+              Please contact your PG administrator to assign your room. Pull down to refresh once completed.
             </Text>
           </View>
         )}
 
-        {/* Section: Rent & Bills Overview */}
-        {resident && (
-          <>
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionTitle}>My Rent & Bills</Text>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => router.push('/student-billing')}>
-                <Text style={styles.sectionLink}>View All ›</Text>
-              </Pressable>
-            </View>
-
-            <View style={styles.billingOverviewCard}>
-              <View style={styles.billingOverviewTop}>
-                <View>
-                  <Text style={styles.billingOverviewLabel}>Current Month Bill</Text>
-                  <Text
-                    style={[
-                      styles.billingOverviewAmount,
-                      (billingSummary?.outstandingPaise || 0) > 0
-                        ? styles.amountDue
-                        : styles.amountClear,
-                    ]}>
-                    {(billingSummary?.outstandingPaise || 0) > 0
-                      ? `₹${((billingSummary?.outstandingPaise || 0) / 100).toLocaleString('en-IN')}`
-                      : '₹0 (All Paid)'}
-                  </Text>
-                </View>
-
-                <Pressable
-                  style={styles.payDuesButton}
-                  onPress={() => router.push('/student-billing')}>
-                  <Text style={styles.payDuesButtonText}>
-                    {(billingSummary?.outstandingPaise || 0) > 0 ? 'Pay Bill' : 'View Bills'}
-                  </Text>
-                </Pressable>
-              </View>
-
-              {/* Overdue Alert Banner if overdue charges exist */}
-              {(billingSummary?.overduePaise || 0) > 0 && (
-                <View style={styles.studentOverdueBanner}>
-                  <Text style={styles.studentOverdueIcon}>⚠️</Text>
-                  <Text style={styles.studentOverdueText}>
-                    Bill past due date (₹{((billingSummary!.overduePaise) / 100).toLocaleString('en-IN')}). Please pay promptly.
-                  </Text>
-                </View>
-              )}
-
-              {/* Pending Payment Reports Banner if awaiting review */}
-              {(billingSummary?.pendingReportsCount || 0) > 0 && (
-                <View style={styles.studentPendingReportBanner}>
-                  <Text style={styles.studentPendingReportIcon}>🕒</Text>
-                  <Text style={styles.studentPendingReportText}>
-                    {billingSummary!.pendingReportsCount} payment report{billingSummary!.pendingReportsCount > 1 ? 's' : ''} submitted — awaiting owner verification
-                  </Text>
-                </View>
-              )}
-
-              {/* Recent Approved Payment Info */}
-              {billingSummary?.recentApprovedPayment ? (
-                <Pressable
-                  style={styles.recentPaymentBox}
-                  onPress={() =>
-                    router.push({
-                      pathname: '/receipt-detail',
-                      params: { id: billingSummary.recentApprovedPayment!.id },
-                    })
-                  }>
-                  <View style={styles.recentPaymentIconWrap}>
-                    <Text style={styles.recentPaymentIcon}>🧾</Text>
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.recentPaymentTitle}>
-                      Receipt {billingSummary.recentApprovedPayment.receipt_number}
-                    </Text>
-                    <Text style={styles.recentPaymentMeta}>
-                      ₹{(billingSummary.recentApprovedPayment.amount_paise / 100).toLocaleString('en-IN')} paid via {billingSummary.recentApprovedPayment.method.toUpperCase()} on {billingSummary.recentApprovedPayment.payment_date}
-                    </Text>
-                  </View>
-                  <Text style={styles.recentPaymentLink}>View ›</Text>
-                </Pressable>
-              ) : null}
-            </View>
-          </>
-        )}
-
-        {/* Section: Today's Food Menu */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Today's Food Menu</Text>
-          <Text style={styles.sectionMeta}>Published Daily</Text>
-        </View>
-
-        {!resident ? (
-          <View style={styles.emptyMenuBox}>
-            <Text style={styles.emptyMenuTitle}>Menu Unavailable</Text>
-            <Text style={styles.emptyMenuSubtitle}>
-              Food menus will appear here once your account is linked to your PG property.
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.mealsContainer}>
-            {(['breakfast', 'lunch', 'dinner'] as MealType[]).map((mealType) => {
-              const menu = menus[mealType];
-              const config = MEAL_CONFIG[mealType];
-
-              return (
-                <View key={mealType} style={styles.mealCard}>
-                  <View style={styles.mealHeader}>
-                    <Text style={styles.mealIcon}>{config.icon}</Text>
-                    <View style={styles.mealTitleWrapper}>
-                      <Text style={styles.mealTitle}>{config.title}</Text>
-                      <Text style={styles.mealTimeHint}>{config.timeHint}</Text>
-                    </View>
-                    <View
-                      style={[
-                        styles.menuStatusBadge,
-                        menu ? styles.menuStatusAvailable : styles.menuStatusNotSet,
-                      ]}>
-                      <Text
-                        style={[
-                          styles.menuStatusText,
-                          menu ? styles.menuStatusTextAvailable : styles.menuStatusTextNotSet,
-                        ]}>
-                        {menu ? 'Published' : 'Not set'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  {menu ? (
-                    <View style={styles.menuContentBox}>
-                      <Text style={styles.menuItemsText}>{menu.items}</Text>
-                      {menu.notes && (
-                        <View style={styles.notesRow}>
-                          <Text style={styles.notesIcon}>📝</Text>
-                          <Text style={styles.notesText}>{menu.notes}</Text>
-                        </View>
-                      )}
-                    </View>
-                  ) : (
-                    <View style={styles.emptyMealContent}>
-                      <Text style={styles.emptyMealText}>
-                        No menu published for {config.title.toLowerCase()} today.
-                      </Text>
-                    </View>
-                  )}
-                </View>
-              );
-            })}
-          </View>
-        )}
-
-        {/* Section: Quick Actions / Future Services (Placeholders) */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Student Services</Text>
-          <Text style={styles.sectionMeta}>PGwala Features</Text>
-        </View>
-
-        <View style={styles.servicesGrid}>
-          {/* Gate History */}
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.serviceCard,
-              pressed && styles.serviceCardPressed,
-            ]}
-            onPress={() => router.push('/student-gate-history')}>
-            <View style={styles.serviceIconBox}>
-              <Text style={styles.serviceIcon}>🚪</Text>
-            </View>
-            <View style={styles.serviceContent}>
-              <Text style={styles.serviceTitle}>My Gate History</Text>
-              <Text style={styles.serviceSubtitle}>View entry and exit timestamps</Text>
-            </View>
-            <Text style={styles.actionArrow}>›</Text>
-          </Pressable>
-
-          {/* Bills & Rent */}
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.serviceCard,
-              pressed && styles.serviceCardPressed,
-            ]}
-            onPress={() => router.push('/student-billing')}>
-            <View style={styles.serviceIconBox}>
-              <Text style={styles.serviceIcon}>💵</Text>
-            </View>
-            <View style={styles.serviceContent}>
-              <Text style={styles.serviceTitle}>My Bills & Rent</Text>
-              <Text style={styles.serviceSubtitle}>Dues, payments & receipts</Text>
-            </View>
-            {pendingDuesPaise !== null ? (
-              <View
-                style={[
-                  styles.duesPill,
-                  pendingDuesPaise > 0 ? styles.duesPillPending : styles.duesPillClear,
-                ]}>
-                <Text
-                  style={[
-                    styles.duesPillText,
-                    pendingDuesPaise > 0 ? styles.duesTextPending : styles.duesTextClear,
-                  ]}>
-                  {pendingDuesPaise > 0
-                    ? `₹${(pendingDuesPaise / 100).toLocaleString('en-IN')}`
-                    : 'Clear'}
-                </Text>
-              </View>
-            ) : null}
-            <Text style={styles.actionArrow}>›</Text>
-          </Pressable>
-
-          {/* Complaints & Requests */}
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.serviceCard,
-              pressed && styles.serviceCardPressed,
-            ]}
-            onPress={() => router.push('/student-complaints')}>
-            <View style={styles.serviceIconBox}>
-              <Text style={styles.serviceIcon}>🔧</Text>
-            </View>
-            <View style={styles.serviceContent}>
-              <Text style={styles.serviceTitle}>Complaints & Requests</Text>
-              <Text style={styles.serviceSubtitle}>Raise room or PG maintenance issues</Text>
-            </View>
-            <Text style={styles.actionArrow}>›</Text>
-          </Pressable>
-        </View>
-
-        <View style={{ height: BottomTabInset + 40 }} />
+        <View style={{ height: BottomTabInset + 20 }} />
       </ScrollView>
 
       {/* Modal: Mark Going Out */}
@@ -936,31 +735,29 @@ export default function StudentDashboardScreen() {
           <View style={styles.modalCard}>
             <View style={styles.modalHeaderRow}>
               <Text style={styles.modalTitle}>Going Out of PG</Text>
-              <Pressable
-                hitSlop={8}
-                onPress={() => setGoingOutModalVisible(false)}>
-                <Text style={styles.modalCloseText}>✕</Text>
+              <Pressable hitSlop={8} onPress={() => setGoingOutModalVisible(false)}>
+                <X size={20} color={OwnerTheme.colors.textSecondary} />
               </Pressable>
             </View>
             <Text style={styles.modalSubtitle}>
-              Convey your purpose, expected return, and dinner requirement to the owner.
+              Inform PG management about your departure and dinner requirement.
             </Text>
 
             {/* Purpose Selection */}
             <Text style={styles.inputSectionLabel}>Purpose of Leaving</Text>
-            <View style={styles.chipsWrap}>
+            <View style={styles.optionChipRow}>
               {PURPOSE_OPTIONS.map((opt) => (
                 <Pressable
                   key={opt}
                   style={[
-                    styles.chipBtn,
-                    leavingPurpose === opt && styles.chipBtnSelected,
+                    styles.optionChip,
+                    leavingPurpose === opt && styles.optionChipSelected,
                   ]}
                   onPress={() => setLeavingPurpose(opt)}>
                   <Text
                     style={[
-                      styles.chipText,
-                      leavingPurpose === opt && styles.chipTextSelected,
+                      styles.optionChipText,
+                      leavingPurpose === opt && styles.optionChipTextSelected,
                     ]}>
                     {opt}
                   </Text>
@@ -970,29 +767,29 @@ export default function StudentDashboardScreen() {
 
             {leavingPurpose === 'Other' && (
               <TextInput
-                style={styles.textInputBox}
-                placeholder="Specify your purpose"
-                placeholderTextColor="#94A3B8"
+                style={styles.textInput}
+                placeholder="Specify your purpose..."
+                placeholderTextColor={OwnerTheme.colors.textMuted}
                 value={customPurpose}
                 onChangeText={setCustomPurpose}
               />
             )}
 
-            {/* Expected Return Time */}
+            {/* Expected Return */}
             <Text style={styles.inputSectionLabel}>Expected Return Time</Text>
-            <View style={styles.chipsWrap}>
+            <View style={styles.optionChipRow}>
               {RETURN_TIME_OPTIONS.map((opt) => (
                 <Pressable
                   key={opt}
                   style={[
-                    styles.chipBtn,
-                    returnTime === opt && styles.chipBtnSelected,
+                    styles.optionChip,
+                    returnTime === opt && styles.optionChipSelected,
                   ]}
                   onPress={() => setReturnTime(opt)}>
                   <Text
                     style={[
-                      styles.chipText,
-                      returnTime === opt && styles.chipTextSelected,
+                      styles.optionChipText,
+                      returnTime === opt && styles.optionChipTextSelected,
                     ]}>
                     {opt}
                   </Text>
@@ -1002,40 +799,37 @@ export default function StudentDashboardScreen() {
 
             {returnTime === 'Custom' && (
               <TextInput
-                style={styles.textInputBox}
-                placeholder="e.g. 7:30 PM, Sunday evening"
-                placeholderTextColor="#94A3B8"
+                style={styles.textInput}
+                placeholder="e.g. 9:30 PM tonight"
+                placeholderTextColor={OwnerTheme.colors.textMuted}
                 value={customReturnTime}
                 onChangeText={setCustomReturnTime}
               />
             )}
 
-            {/* Food / Dinner Switch */}
-            <View style={styles.foodSwitchRow}>
+            {/* Dinner Requirement Switch */}
+            <View style={styles.switchRow}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.foodSwitchTitle}>Dinner / Food Required?</Text>
-                <Text style={styles.foodSwitchSubtitle}>
-                  {foodRequired
-                    ? 'Yes, please prepare dinner for me.'
-                    : 'No dinner needed for me tonight.'}
+                <Text style={styles.switchLabel}>Do you need Dinner tonight?</Text>
+                <Text style={styles.switchHint}>
+                  Helps the kitchen prepare the right quantity of food
                 </Text>
               </View>
               <Switch
                 value={foodRequired}
                 onValueChange={setFoodRequired}
-                trackColor={{ false: '#CBD5E1', true: '#86EFAC' }}
-                thumbColor={foodRequired ? '#16A34A' : '#F8FAFC'}
+                trackColor={{ false: '#E2E8F0', true: OwnerTheme.colors.primary }}
+                thumbColor="#FFFFFF"
               />
             </View>
 
-            {/* Action Buttons */}
-            <View style={styles.modalActionRow}>
+            {/* Submit & Cancel Buttons */}
+            <View style={styles.modalBtnRow}>
               <Pressable
                 style={styles.modalCancelBtn}
                 onPress={() => setGoingOutModalVisible(false)}>
-                <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                <Text style={styles.modalCancelText}>Cancel</Text>
               </Pressable>
-
               <Pressable
                 style={[
                   styles.modalConfirmBtn,
@@ -1046,7 +840,7 @@ export default function StudentDashboardScreen() {
                 {savingMovement ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.modalConfirmBtnText}>Confirm Going Out</Text>
+                  <Text style={styles.modalConfirmText}>Confirm Departure</Text>
                 )}
               </Pressable>
             </View>
@@ -1060,624 +854,69 @@ export default function StudentDashboardScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: OwnerTheme.colors.background,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: OwnerTheme.colors.border,
+    gap: 10,
+  },
+  brandTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: OwnerTheme.colors.primary,
+    letterSpacing: -0.5,
+  },
+  propertyPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.background,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    maxWidth: 240,
+  },
+  propertyPillText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+    flex: 1,
+  },
+  settingsBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: 40,
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    marginBottom: 18,
-  },
-  greetingWrapper: {
-    flex: 1,
-  },
-  portalTag: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: '#0284C7',
-    letterSpacing: 0.8,
-    textTransform: 'uppercase',
-  },
-  greetingTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#0F172A',
-    letterSpacing: -0.3,
-    marginTop: 2,
-  },
-  dateSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  topBarActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  settingsButton: {
-    paddingVertical: 7,
-    paddingHorizontal: 10,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  settingsButtonPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  settingsButtonText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#334155',
-  },
-  signOutButton: {
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  signOutButtonPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  signOutButtonText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#DC2626',
-  },
-  errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-  },
-  errorIcon: {
-    fontSize: 16,
-    marginRight: 8,
-  },
-  errorText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#DC2626',
-    fontWeight: '500',
-  },
-  retryText: {
-    color: '#0284C7',
-    fontSize: 13,
-    fontWeight: '700',
-    paddingHorizontal: 6,
-  },
-  loadingBox: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    padding: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 18,
-    gap: 8,
-  },
-  loadingText: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  residentCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 18,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.05,
-        shadowRadius: 3,
-      },
-      android: {
-        elevation: 1,
-      },
-    }),
-  },
-  residentHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  propertyInfo: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flex: 1,
-  },
-  propertyIcon: {
-    fontSize: 24,
-  },
-  propertyName: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  propertyAddress: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  activePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    gap: 6,
-  },
-  activeDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#16A34A',
-  },
-  activePillText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#15803D',
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#F1F5F9',
-    marginVertical: 14,
-  },
-  detailsRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  detailItem: {
-    flex: 1,
-  },
-  detailLabel: {
-    fontSize: 11,
-    color: '#64748B',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-  },
-  detailValue: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0284C7',
-    marginTop: 2,
-  },
-  unlinkedCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#FED7AA',
-    borderLeftWidth: 4,
-    borderLeftColor: '#F97316',
-    marginBottom: 18,
-    alignItems: 'center',
-  },
-  unlinkedIcon: {
-    fontSize: 32,
-    marginBottom: 8,
-  },
-  unlinkedTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#C2410C',
-    marginBottom: 4,
-  },
-  unlinkedBody: {
-    fontSize: 13,
-    color: '#475569',
-    textAlign: 'center',
-    lineHeight: 18,
-    marginBottom: 12,
-  },
-  accountDetailBox: {
-    backgroundColor: '#F8FAFC',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  accountDetailLabel: {
-    fontSize: 11,
-    color: '#64748B',
-  },
-  accountDetailValue: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginTop: 2,
-  },
-  unlinkedHint: {
-    fontSize: 12,
-    color: '#94A3B8',
-    textAlign: 'center',
-    lineHeight: 16,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  sectionMeta: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
-  },
-  sectionLink: {
-    fontSize: 13,
-    color: '#0284C7',
-    fontWeight: '600',
-  },
-  billingOverviewCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 20,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.05,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 2,
-      },
-    }),
-  },
-  billingOverviewTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  billingOverviewLabel: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '600',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  billingOverviewAmount: {
-    fontSize: 24,
-    fontWeight: '800',
-    marginTop: 4,
-  },
-  amountDue: {
-    color: '#0F172A',
-  },
-  amountClear: {
-    color: '#16A34A',
-  },
-  payDuesButton: {
-    backgroundColor: '#0284C7',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  payDuesButtonText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  studentOverdueBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 10,
-    gap: 8,
-  },
-  studentOverdueIcon: {
-    fontSize: 16,
-  },
-  studentOverdueText: {
-    fontSize: 12,
-    color: '#DC2626',
-    fontWeight: '600',
-    flex: 1,
-  },
-  studentPendingReportBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 10,
-    gap: 8,
-  },
-  studentPendingReportIcon: {
-    fontSize: 16,
-  },
-  studentPendingReportText: {
-    fontSize: 12,
-    color: '#B45309',
-    fontWeight: '600',
-    flex: 1,
-  },
-  recentPaymentBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    padding: 10,
-    marginTop: 12,
-  },
-  recentPaymentIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    backgroundColor: '#E0F2FE',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  recentPaymentIcon: {
-    fontSize: 18,
-  },
-  recentPaymentTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  recentPaymentMeta: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  recentPaymentLink: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0284C7',
-    marginLeft: 8,
-  },
-  emptyMenuBox: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-    marginBottom: 18,
-  },
-  emptyMenuTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#64748B',
-  },
-  emptyMenuSubtitle: {
-    fontSize: 12,
-    color: '#94A3B8',
-    textAlign: 'center',
-    marginTop: 4,
-    lineHeight: 16,
-  },
-  mealsContainer: {
+    maxWidth: 800,
+    width: '100%',
+    alignSelf: 'center',
     gap: 12,
-    marginBottom: 20,
-  },
-  mealCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    overflow: 'hidden',
-  },
-  mealHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    backgroundColor: '#FAFAFA',
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  mealIcon: {
-    fontSize: 20,
-    marginRight: 10,
-  },
-  mealTitleWrapper: {
-    flex: 1,
-  },
-  mealTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  mealTimeHint: {
-    fontSize: 11,
-    color: '#64748B',
-  },
-  menuStatusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  menuStatusAvailable: {
-    backgroundColor: '#DCFCE7',
-  },
-  menuStatusNotSet: {
-    backgroundColor: '#F1F5F9',
-  },
-  menuStatusText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  menuStatusTextAvailable: {
-    color: '#15803D',
-  },
-  menuStatusTextNotSet: {
-    color: '#94A3B8',
-  },
-  menuContentBox: {
-    padding: 14,
-  },
-  menuItemsText: {
-    fontSize: 13,
-    color: '#1E293B',
-    lineHeight: 20,
-    fontWeight: '500',
-  },
-  notesRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFBEB',
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    marginTop: 8,
-    gap: 6,
-  },
-  notesIcon: {
-    fontSize: 12,
-  },
-  notesText: {
-    fontSize: 11,
-    color: '#92400E',
-    flex: 1,
-  },
-  emptyMealContent: {
-    padding: 12,
-    alignItems: 'center',
-  },
-  emptyMealText: {
-    fontSize: 12,
-    color: '#94A3B8',
-    fontStyle: 'italic',
-  },
-  servicesGrid: {
-    gap: 10,
-    marginBottom: 20,
-  },
-  serviceCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  serviceCardPressed: {
-    backgroundColor: '#F8FAFC',
-  },
-  serviceIconBox: {
-    width: 40,
-    height: 40,
-    borderRadius: 10,
-    backgroundColor: '#F0F9FF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  serviceIcon: {
-    fontSize: 20,
-  },
-  serviceContent: {
-    flex: 1,
-  },
-  serviceTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  serviceSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  comingSoonBadge: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  comingSoonText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#64748B',
-  },
-  actionArrow: {
-    fontSize: 22,
-    color: '#94A3B8',
-    marginLeft: 8,
-    fontWeight: '300',
-  },
-  duesPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    marginLeft: 6,
-  },
-  duesPillPending: {
-    backgroundColor: '#FEF3C7',
-    borderWidth: 1,
-    borderColor: '#FCD34D',
-  },
-  duesPillClear: {
-    backgroundColor: '#DCFCE7',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-  },
-  duesPillText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  duesTextPending: {
-    color: '#B45309',
-  },
-  duesTextClear: {
-    color: '#16A34A',
   },
   tempPasswordBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
     gap: 10,
-  },
-  tempPasswordIcon: {
-    fontSize: 20,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+    borderRadius: OwnerTheme.radius.card,
+    padding: 12,
   },
   tempPasswordTitle: {
     fontSize: 13,
@@ -1687,179 +926,437 @@ const styles = StyleSheet.create({
   tempPasswordSubtitle: {
     fontSize: 11,
     color: '#B45309',
-    marginTop: 2,
-    lineHeight: 16,
+    marginTop: 1,
   },
-  tempPasswordActionText: {
+  errorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 12,
+  },
+  errorText: {
+    fontSize: 12,
+    color: '#991B1B',
+    flex: 1,
+  },
+  retryText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#B45309',
-    marginLeft: 6,
+    color: OwnerTheme.colors.primary,
+    marginLeft: 8,
   },
-  gateCard: {
+  loadingBox: {
+    paddingVertical: 40,
+    alignItems: 'center',
+  },
+  loadingText: {
+    marginTop: 8,
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  residentTileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 16,
+    borderRadius: OwnerTheme.radius.card,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 16,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.05,
-        shadowRadius: 3,
-      },
-      android: {
-        elevation: 1,
-      },
-    }),
+    borderColor: OwnerTheme.colors.border,
+    padding: 12,
+    gap: 12,
   },
-  gateCardHeaderRow: {
+  avatarCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: OwnerTheme.colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: 0.5,
+  },
+  residentTileInfo: {
+    flex: 1,
+  },
+  residentNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  residentTileName: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  roomPill: {
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: OwnerTheme.radius.sm,
+  },
+  roomPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  residentTileProp: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 2,
+  },
+  activeDotBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#F0FDF4',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: OwnerTheme.radius.full,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  activeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: OwnerTheme.colors.success,
+  },
+  activeDotText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: OwnerTheme.colors.success,
+  },
+  heroRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  gateHeroCard: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    justifyContent: 'space-between',
+    minHeight: 140,
+  },
+  gateHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  gateHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    flex: 1,
-  },
-  gateIconWrap: {
-    width: 42,
-    height: 42,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  gateIconWrapIn: {
-    backgroundColor: '#F0FDF4',
-  },
-  gateIconWrapOut: {
-    backgroundColor: '#FEF3C7',
-  },
-  gateIconEmoji: {
-    fontSize: 22,
-  },
-  gateCardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  gateCardSubtitle: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 1,
-  },
-  gateStatusPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+  gateIconCircle: {
+    width: 34,
+    height: 34,
     borderRadius: 8,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gateIconIn: {
+    backgroundColor: OwnerTheme.colors.successLight,
+  },
+  gateIconOut: {
+    backgroundColor: OwnerTheme.colors.warningLight,
+  },
+  gatePill: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 9999,
   },
   gatePillIn: {
-    backgroundColor: '#DCFCE7',
+    backgroundColor: OwnerTheme.colors.successLight,
   },
   gatePillOut: {
-    backgroundColor: '#FEF3C7',
+    backgroundColor: OwnerTheme.colors.warningLight,
   },
-  gateStatusPillText: {
-    fontSize: 11,
+  gatePillText: {
+    fontSize: 10,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
   gateTextIn: {
-    color: '#15803D',
+    color: OwnerTheme.colors.success,
   },
   gateTextOut: {
-    color: '#B45309',
+    color: OwnerTheme.colors.warning,
   },
-  gateInsideDetailsBox: {
-    backgroundColor: '#F0FDF4',
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 12,
-    borderWidth: 1,
-    borderColor: '#DCFCE7',
-  },
-  gateOutDetailsBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    padding: 12,
-    marginTop: 12,
-    gap: 6,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  gateDetailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  gateDetailLabel: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
-  },
-  gateDetailValue: {
-    fontSize: 12,
+  gateTitle: {
+    fontSize: 13,
     fontWeight: '700',
-    color: '#0F172A',
+    color: OwnerTheme.colors.textPrimary,
+    marginTop: 6,
   },
-  foodNeededText: {
-    color: '#15803D',
+  gateSubtitle: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 1,
   },
-  foodNotNeededText: {
-    color: '#B45309',
-  },
-  gateActionRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 14,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-    gap: 12,
+  gateActionWrap: {
+    marginTop: 10,
   },
   gateActionBtn: {
-    flex: 1,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: OwnerTheme.radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
   },
   gateOutBtn: {
-    backgroundColor: '#EA580C',
+    backgroundColor: OwnerTheme.colors.warning,
   },
   gateOutBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
   },
   gateInBtn: {
-    backgroundColor: '#16A34A',
+    backgroundColor: OwnerTheme.colors.success,
   },
   gateInBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  gateHistoryLinkBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 8,
-  },
-  gateHistoryLinkText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#0284C7',
+  },
+  menuCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 12,
+  },
+  menuHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  menuHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  menuTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  menuPublishedHint: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textMuted,
+  },
+  mealSegmentRow: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: OwnerTheme.radius.sm,
+    padding: 3,
+    gap: 4,
+  },
+  mealSegmentChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    borderRadius: 6,
+    gap: 4,
+  },
+  mealSegmentChipSelected: {
+    backgroundColor: '#FFFFFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  mealChipEmoji: {
+    fontSize: 13,
+  },
+  mealChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  mealChipTextSelected: {
+    color: OwnerTheme.colors.textPrimary,
+    fontWeight: '700',
+  },
+  mealDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
+  },
+  mealDotActive: {
+    backgroundColor: OwnerTheme.colors.success,
+  },
+  mealDotInactive: {
+    backgroundColor: '#CBD5E1',
+  },
+  mealDetailBox: {
+    marginTop: 10,
+    padding: 10,
+    backgroundColor: '#FAFAFA',
+    borderRadius: OwnerTheme.radius.sm,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.borderLight,
+  },
+  mealDetailTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  mealDetailTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  mealDetailTime: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textMuted,
+  },
+  mealItemsContainer: {
+    gap: 4,
+  },
+  mealItemsText: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textPrimary,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  mealNotesText: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textSecondary,
+    fontStyle: 'italic',
+  },
+  noMenuText: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textMuted,
+    fontStyle: 'italic',
+    paddingVertical: 4,
+  },
+  sectionHeaderRow: {
+    marginTop: 2,
+    marginBottom: 2,
+  },
+  sectionHeading: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  servicesList: {
+    gap: 8,
+  },
+  serviceCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 12,
+    gap: 12,
+  },
+  serviceIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: OwnerTheme.radius.sm,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  serviceTextCol: {
+    flex: 1,
+  },
+  serviceTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  serviceSubtitle: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 1,
+  },
+  duesBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: OwnerTheme.radius.sm,
+  },
+  duesPending: {
+    backgroundColor: OwnerTheme.colors.dangerLight,
+  },
+  duesClear: {
+    backgroundColor: OwnerTheme.colors.successLight,
+  },
+  duesBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  duesPendingText: {
+    color: OwnerTheme.colors.danger,
+  },
+  duesClearText: {
+    color: OwnerTheme.colors.success,
+  },
+  unlinkedCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 24,
+    alignItems: 'center',
+    gap: 10,
+  },
+  unlinkedTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  unlinkedBody: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  accountBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: OwnerTheme.radius.sm,
+    padding: 10,
+    width: '100%',
+    alignItems: 'center',
+  },
+  accountBoxLabel: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textMuted,
+  },
+  accountBoxValue: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+    marginTop: 2,
+  },
+  unlinkedHint: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 15,
+  },
+  btnPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.99 }],
+  },
+  btnDisabled: {
+    opacity: 0.6,
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'flex-end',
   },
   modalCard: {
@@ -1867,7 +1364,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
-    paddingBottom: 36,
+    gap: 12,
   },
   modalHeaderRow: {
     flexDirection: 'row',
@@ -1876,123 +1373,100 @@ const styles = StyleSheet.create({
   },
   modalTitle: {
     fontSize: 18,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  modalCloseText: {
-    fontSize: 18,
     fontWeight: '700',
-    color: '#64748B',
-    padding: 4,
+    color: OwnerTheme.colors.textPrimary,
   },
   modalSubtitle: {
     fontSize: 12,
-    color: '#64748B',
-    marginTop: 4,
-    marginBottom: 16,
+    color: OwnerTheme.colors.textSecondary,
   },
   inputSectionLabel: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
-    color: '#334155',
-    marginBottom: 8,
+    color: OwnerTheme.colors.textPrimary,
     marginTop: 4,
   },
-  chipsWrap: {
+  optionChipRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 8,
-    marginBottom: 12,
   },
-  chipBtn: {
-    paddingHorizontal: 12,
+  optionChip: {
     paddingVertical: 7,
-    borderRadius: 8,
+    paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.sm,
     backgroundColor: '#F1F5F9',
     borderWidth: 1,
     borderColor: '#E2E8F0',
   },
-  chipBtnSelected: {
-    backgroundColor: '#E0F2FE',
-    borderColor: '#0284C7',
+  optionChipSelected: {
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderColor: OwnerTheme.colors.primary,
   },
-  chipText: {
+  optionChipText: {
     fontSize: 12,
-    color: '#475569',
     fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
   },
-  chipTextSelected: {
-    color: '#0284C7',
+  optionChipTextSelected: {
+    color: OwnerTheme.colors.primary,
     fontWeight: '700',
   },
-  textInputBox: {
-    backgroundColor: '#F8FAFC',
+  textInput: {
+    height: 44,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.sm,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 13,
-    color: '#0F172A',
-    marginBottom: 12,
+    fontSize: 14,
+    color: OwnerTheme.colors.textPrimary,
+    backgroundColor: '#FAFAFA',
   },
-  foodSwitchRow: {
+  switchRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    padding: 12,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginVertical: 12,
-    gap: 12,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: OwnerTheme.colors.borderLight,
+    marginTop: 6,
   },
-  foodSwitchTitle: {
+  switchLabel: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#0F172A',
+    color: OwnerTheme.colors.textPrimary,
   },
-  foodSwitchSubtitle: {
+  switchHint: {
     fontSize: 11,
-    color: '#64748B',
+    color: OwnerTheme.colors.textSecondary,
     marginTop: 2,
   },
-  modalActionRow: {
+  modalBtnRow: {
     flexDirection: 'row',
     gap: 10,
     marginTop: 10,
   },
   modalCancelBtn: {
     flex: 1,
-    paddingVertical: 13,
-    borderRadius: 8,
+    paddingVertical: 12,
+    borderRadius: OwnerTheme.radius.md,
     backgroundColor: '#F1F5F9',
     alignItems: 'center',
-    justifyContent: 'center',
   },
-  modalCancelBtnText: {
+  modalCancelText: {
     fontSize: 14,
-    fontWeight: '700',
-    color: '#475569',
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
   },
   modalConfirmBtn: {
     flex: 2,
-    paddingVertical: 13,
-    borderRadius: 8,
-    backgroundColor: '#EA580C',
+    paddingVertical: 12,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.primary,
     alignItems: 'center',
-    justifyContent: 'center',
   },
-  modalConfirmBtnText: {
+  modalConfirmText: {
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
   },
-  pressed: {
-    opacity: 0.8,
-  },
-  btnDisabled: {
-    opacity: 0.5,
-  },
 });
-

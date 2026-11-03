@@ -19,7 +19,7 @@ import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 
 import { useAuth } from '@/context/auth-context';
-import { supabase } from '@/lib/supabase';
+import { supabase, getSignedPaymentProofUrl } from '@/lib/supabase';
 
 interface StudentBillCardItem {
   charge_id: string;
@@ -87,7 +87,7 @@ export default function SimplifiedStudentBillingScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [residentId, setResidentId] = useState<string | null>(null);
-  const [residentName, setResidentName] = useState('Student');
+  const [residentName, setResidentName] = useState('Resident');
   const [roomNumber, setRoomNumber] = useState('');
   const [propertyName, setPropertyName] = useState('My PG');
 
@@ -310,19 +310,30 @@ export default function SimplifiedStudentBillingScreen() {
     setPaymentModalVisible(true);
   };
 
+  // Securely resolve and view uploaded screenshot with time-limited signed URL
+  const handleViewUploadedScreenshot = async (rawUrlOrPath: string) => {
+    try {
+      const signed = await getSignedPaymentProofUrl(rawUrlOrPath);
+      setFullImageUrl(signed || rawUrlOrPath);
+    } catch {
+      setFullImageUrl(rawUrlOrPath);
+    }
+  };
+
   // Submit payment proof
   const handleSubmitPaymentProof = async () => {
     if (!selectedBillForPayment || submittingProof || !residentId) return;
 
     try {
       setSubmittingProof(true);
-      let uploadedScreenshotUrl: string | null = null;
+      let uploadedScreenshotPath: string | null = null;
 
       // 1. Upload screenshot to Supabase Storage if an image was picked
       if (selectedScreenshot?.base64) {
         try {
-          const fileExt = selectedScreenshot.uri.split('.').pop()?.toLowerCase() || 'jpg';
-          const fileName = `${residentId}_${Date.now()}.${fileExt}`;
+          const fileExt =
+            selectedScreenshot.uri.split('.').pop()?.toLowerCase() || 'jpg';
+          const fileName = `${residentId}/${Date.now()}_${selectedBillForPayment.charge_id}.${fileExt}`;
           const bytes = decodeBase64ToBytes(selectedScreenshot.base64);
 
           const { error: uploadErr } = await supabase.storage
@@ -332,30 +343,36 @@ export default function SimplifiedStudentBillingScreen() {
               upsert: true,
             });
 
-          if (!uploadErr) {
-            const { data: publicUrlData } = supabase.storage
-              .from('payment-proofs')
-              .getPublicUrl(fileName);
-            uploadedScreenshotUrl = publicUrlData.publicUrl;
-          } else {
-            console.warn('[Storage] Upload note:', uploadErr.message);
+          if (uploadErr) {
+            throw new Error(`Storage upload failed: ${uploadErr.message}`);
           }
-        } catch (uploadException) {
-          console.warn('[Storage] Upload failed, proceeding without cloud url:', uploadException);
+
+          // Store the relative private storage path
+          uploadedScreenshotPath = fileName;
+        } catch (uploadException: any) {
+          throw new Error(
+            uploadException?.message ||
+              'Failed to upload payment screenshot. Please try again.'
+          );
         }
+      } else if (selectedScreenshot && !selectedScreenshot.base64) {
+        throw new Error(
+          'Image data could not be processed. Please select the screenshot again.'
+        );
       }
 
       // 2. Submit payment proof via atomic RPC
       const { data, error } = await supabase.rpc('submit_student_payment_proof', {
         p_charge_id: selectedBillForPayment.charge_id,
         p_claimed_method: paymentMethod,
-        p_screenshot_url: uploadedScreenshotUrl || selectedScreenshot?.uri || undefined,
+        p_screenshot_url: uploadedScreenshotPath || undefined,
         p_reference_number: referenceNumber.trim() || undefined,
         p_notes: studentNotes.trim() || undefined,
       });
 
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Failed to submit payment proof.');
+      if (!data?.success)
+        throw new Error(data?.error || 'Failed to submit payment proof.');
 
       setPaymentModalVisible(false);
       setSelectedScreenshot(null);
@@ -501,7 +518,11 @@ export default function SimplifiedStudentBillingScreen() {
                     {currentRentBill.pending_report.screenshot_url && (
                       <Pressable
                         style={styles.previewScreenshotBtn}
-                        onPress={() => setFullImageUrl(currentRentBill.pending_report!.screenshot_url)}>
+                        onPress={() =>
+                          handleViewUploadedScreenshot(
+                            currentRentBill.pending_report!.screenshot_url!
+                          )
+                        }>
                         <Text style={styles.previewScreenshotText}>🔍 View Uploaded Screenshot</Text>
                       </Pressable>
                     )}
@@ -593,7 +614,11 @@ export default function SimplifiedStudentBillingScreen() {
                     {currentEbBill.pending_report.screenshot_url && (
                       <Pressable
                         style={styles.previewScreenshotBtn}
-                        onPress={() => setFullImageUrl(currentEbBill.pending_report!.screenshot_url)}>
+                        onPress={() =>
+                          handleViewUploadedScreenshot(
+                            currentEbBill.pending_report!.screenshot_url!
+                          )
+                        }>
                         <Text style={styles.previewScreenshotText}>🔍 View Uploaded Screenshot</Text>
                       </Pressable>
                     )}

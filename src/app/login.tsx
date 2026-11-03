@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import {
-  ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -12,14 +12,18 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import { Eye, EyeOff, AlertCircle } from 'lucide-react-native';
 
+import { OwnerTheme } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuth, UserProfile } from '@/context/auth-context';
+import { PrimaryButton } from '@/components/ui/owner';
 
 export default function LoginScreen() {
   const { signOut } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -27,6 +31,12 @@ export default function LoginScreen() {
     const trimmedEmail = email.trim();
     if (!trimmedEmail || !password) {
       setErrorMessage('Please enter both email and password.');
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      setErrorMessage('Please enter a valid email address.');
       return;
     }
 
@@ -42,11 +52,16 @@ export default function LoginScreen() {
         });
 
       if (authError) {
-        // Map common errors to friendly user-facing messages
-        if (authError.message.toLowerCase().includes('invalid login credentials')) {
-          setErrorMessage('Invalid email or password. Please check and try again.');
+        if (
+          authError.message.toLowerCase().includes('invalid login credentials')
+        ) {
+          setErrorMessage(
+            'Invalid email or password. Please verify and try again.'
+          );
         } else if (authError.message.toLowerCase().includes('network')) {
-          setErrorMessage('Network connection error. Please verify your internet connection.');
+          setErrorMessage(
+            'Network connection error. Please verify your internet connection.'
+          );
         } else {
           setErrorMessage(authError.message);
         }
@@ -69,10 +84,9 @@ export default function LoginScreen() {
         .single();
 
       if (profileError || !profileData) {
-        // Sign out to clean up session
         await signOut();
         setErrorMessage(
-          'Profile record not found for this account. Contact the system administrator.'
+          'Profile record not found for this account. Contact system support.'
         );
         setLoading(false);
         return;
@@ -101,6 +115,14 @@ export default function LoginScreen() {
     }
   };
 
+  const handleForgotPassword = () => {
+    Alert.alert(
+      'Reset Password',
+      'If you have forgotten your password, please contact your PG administrator or support at support@pgwala.in to request a password reset link.',
+      [{ text: 'OK' }]
+    );
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <KeyboardAvoidingView
@@ -110,27 +132,26 @@ export default function LoginScreen() {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          
           {/* Brand Header */}
           <View style={styles.brandContainer}>
             <View style={styles.logoBadge}>
               <Text style={styles.logoBadgeText}>PG</Text>
             </View>
             <Text style={styles.appTitle}>PGwala</Text>
-            <Text style={styles.appSubtitle}>Owner & Student Portal</Text>
+            <Text style={styles.appSubtitle}>Property Management</Text>
           </View>
 
           {/* Login Card */}
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Sign In</Text>
             <Text style={styles.cardSubtitle}>
-              Access your PG accommodation dashboard
+              Enter your credentials to access your dashboard
             </Text>
 
             {/* Error Message Banner */}
             {errorMessage && (
               <View style={styles.errorBox}>
-                <Text style={styles.errorIcon}>⚠️</Text>
+                <AlertCircle size={16} color={OwnerTheme.colors.danger} />
                 <Text style={styles.errorText}>{errorMessage}</Text>
               </View>
             )}
@@ -141,7 +162,7 @@ export default function LoginScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="you@example.com"
-                placeholderTextColor="#94A3B8"
+                placeholderTextColor={OwnerTheme.colors.textMuted}
                 autoCapitalize="none"
                 autoCorrect={false}
                 keyboardType="email-address"
@@ -156,39 +177,49 @@ export default function LoginScreen() {
 
             {/* Password Field */}
             <View style={styles.fieldGroup}>
-              <Text style={styles.fieldLabel}>Password</Text>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter your password"
-                placeholderTextColor="#94A3B8"
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-                value={password}
-                onChangeText={(text) => {
-                  setPassword(text);
-                  if (errorMessage) setErrorMessage(null);
-                }}
-                editable={!loading}
-              />
+              <View style={styles.passwordLabelRow}>
+                <Text style={styles.fieldLabel}>Password</Text>
+                <Pressable hitSlop={6} onPress={handleForgotPassword}>
+                  <Text style={styles.forgotPasswordText}>
+                    Forgot Password?
+                  </Text>
+                </Pressable>
+              </View>
+              <View style={styles.passwordInputContainer}>
+                <TextInput
+                  style={styles.passwordInput}
+                  placeholder="Enter your password"
+                  placeholderTextColor={OwnerTheme.colors.textMuted}
+                  secureTextEntry={!showPassword}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  value={password}
+                  onChangeText={(text) => {
+                    setPassword(text);
+                    if (errorMessage) setErrorMessage(null);
+                  }}
+                  editable={!loading}
+                />
+                <Pressable
+                  hitSlop={8}
+                  style={styles.eyeBtn}
+                  onPress={() => setShowPassword(!showPassword)}>
+                  {showPassword ? (
+                    <EyeOff size={18} color={OwnerTheme.colors.textSecondary} />
+                  ) : (
+                    <Eye size={18} color={OwnerTheme.colors.textSecondary} />
+                  )}
+                </Pressable>
+              </View>
             </View>
 
             {/* Sign In Button */}
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.submitButton,
-                pressed && styles.submitButtonPressed,
-                loading && styles.submitButtonDisabled,
-              ]}
+            <PrimaryButton
+              label="Sign In"
               onPress={handleSignIn}
-              disabled={loading}>
-              {loading ? (
-                <ActivityIndicator color="#FFFFFF" />
-              ) : (
-                <Text style={styles.submitButtonText}>Sign In</Text>
-              )}
-            </Pressable>
+              loading={loading}
+              style={{ marginTop: 8 }}
+            />
           </View>
 
           {/* Footer Note */}
@@ -206,7 +237,7 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC', // Slate 50
+    backgroundColor: OwnerTheme.colors.background,
   },
   keyboardContainer: {
     flex: 1,
@@ -216,89 +247,76 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 20,
     paddingVertical: 24,
+    maxWidth: 440,
+    width: '100%',
+    alignSelf: 'center',
   },
   brandContainer: {
     alignItems: 'center',
-    marginBottom: 28,
+    marginBottom: 24,
   },
   logoBadge: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
-    backgroundColor: '#0284C7', // Sky 600
+    width: 52,
+    height: 52,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 10,
+    ...OwnerTheme.shadow,
   },
   logoBadgeText: {
     fontSize: 22,
-    fontWeight: '900',
+    fontWeight: '800',
     color: '#FFFFFF',
     letterSpacing: 1,
   },
   appTitle: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#0F172A', // Slate 900
-    letterSpacing: -0.5,
+    ...OwnerTheme.typography.screenHeading,
+    fontSize: 26,
+    color: OwnerTheme.colors.textPrimary,
   },
   appSubtitle: {
-    fontSize: 14,
-    color: '#64748B', // Slate 500
-    fontWeight: '600',
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+    fontWeight: '500',
     marginTop: 2,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
   },
   card: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 22,
+    borderRadius: OwnerTheme.radius.card,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.06,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 3,
-      },
-    }),
+    borderColor: OwnerTheme.colors.border,
+    padding: 22,
+    ...OwnerTheme.shadow,
   },
   cardTitle: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#0F172A',
+    color: OwnerTheme.colors.textPrimary,
   },
   cardSubtitle: {
     fontSize: 13,
-    color: '#64748B',
-    marginTop: 4,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 3,
     marginBottom: 18,
   },
   errorBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FEF2F2',
+    gap: 8,
+    backgroundColor: OwnerTheme.colors.dangerLight,
     borderWidth: 1,
     borderColor: '#FECACA',
-    borderRadius: 10,
+    borderRadius: OwnerTheme.radius.md,
     padding: 12,
-    marginBottom: 16,
-  },
-  errorIcon: {
-    fontSize: 16,
-    marginRight: 8,
+    marginBottom: 14,
   },
   errorText: {
     flex: 1,
-    color: '#DC2626',
     fontSize: 13,
+    color: OwnerTheme.colors.danger,
     fontWeight: '500',
-    lineHeight: 18,
   },
   fieldGroup: {
     marginBottom: 16,
@@ -306,50 +324,57 @@ const styles = StyleSheet.create({
   fieldLabel: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#334155',
+    color: OwnerTheme.colors.textPrimary,
     marginBottom: 6,
   },
-  input: {
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 15,
-    color: '#0F172A',
-    minHeight: 48,
-  },
-  submitButton: {
-    backgroundColor: '#0284C7',
-    borderRadius: 10,
-    paddingVertical: 14,
+  passwordLabelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 6,
-    minHeight: 50,
+    marginBottom: 6,
   },
-  submitButtonPressed: {
-    opacity: 0.85,
+  forgotPasswordText: {
+    fontSize: 12,
+    color: OwnerTheme.colors.primary,
+    fontWeight: '600',
   },
-  submitButtonDisabled: {
-    opacity: 0.7,
+  input: {
+    height: 50,
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    paddingHorizontal: 14,
+    fontSize: 15,
+    color: OwnerTheme.colors.textPrimary,
+    backgroundColor: '#F8FAFC',
   },
-  submitButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
+  passwordInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 50,
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#F8FAFC',
+    paddingRight: 10,
+  },
+  passwordInput: {
+    flex: 1,
+    height: '100%',
+    paddingHorizontal: 14,
+    fontSize: 15,
+    color: OwnerTheme.colors.textPrimary,
+  },
+  eyeBtn: {
+    padding: 6,
   },
   footer: {
-    marginTop: 24,
+    marginTop: 20,
     alignItems: 'center',
-    paddingHorizontal: 12,
   },
   footerText: {
     fontSize: 12,
-    color: '#94A3B8',
+    color: OwnerTheme.colors.textMuted,
     textAlign: 'center',
-    lineHeight: 18,
   },
 });
-

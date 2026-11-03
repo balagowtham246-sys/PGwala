@@ -16,9 +16,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 
-import { BottomTabInset } from '@/constants/theme';
+import { BottomTabInset, OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
+import { OwnerHeader } from '@/components/ui/owner';
 
 export type MealType = 'breakfast' | 'lunch' | 'dinner';
 
@@ -92,6 +94,7 @@ function isSameDay(d1: Date, d2: Date): boolean {
 
 export default function FoodMenuScreen() {
   const { user } = useAuth();
+  const { selectedProperty } = useProperty();
 
   const [loadingProperty, setLoadingProperty] = useState(true);
   const [property, setProperty] = useState<PropertyInfo | null>(null);
@@ -127,6 +130,11 @@ export default function FoodMenuScreen() {
       setErrorMessage(null);
       setLoadingProperty(true);
 
+      if (selectedProperty) {
+        setProperty({ id: selectedProperty.id, name: selectedProperty.name });
+        return;
+      }
+
       let query = supabase
         .from('properties')
         .select('id, name')
@@ -153,7 +161,7 @@ export default function FoodMenuScreen() {
     } finally {
       setLoadingProperty(false);
     }
-  }, [user?.id]);
+  }, [user?.id, selectedProperty]);
 
   // 2. Fetch food menus for the selected property and date
   const loadMenusForDate = useCallback(
@@ -416,6 +424,11 @@ export default function FoodMenuScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <OwnerHeader
+        title="Food Menu"
+        subtitle={property ? property.name : 'Daily Meals Management'}
+        showBack
+      />
       <KeyboardAvoidingView
         style={styles.keyboardContainer}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -427,26 +440,9 @@ export default function FoodMenuScreen() {
             <RefreshControl
               refreshing={refreshing}
               onRefresh={handleRefresh}
-              colors={['#0284C7']}
+              colors={[OwnerTheme.colors.primary]}
             />
           }>
-
-          {/* Top Bar with Back Button */}
-          <View style={styles.topBar}>
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && styles.backButtonPressed,
-              ]}
-              onPress={() => router.back()}>
-              <Text style={styles.backButtonText}>‹ Back</Text>
-            </Pressable>
-            <View style={styles.titleWrapper}>
-              <Text style={styles.screenTitle}>Food Menu</Text>
-              <Text style={styles.screenSubtitle}>Daily Meals Management</Text>
-            </View>
-          </View>
 
           {/* Property Context Badge */}
           {loadingProperty ? (

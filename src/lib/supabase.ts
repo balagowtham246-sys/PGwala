@@ -104,3 +104,64 @@ export async function testSupabaseConnection(): Promise<{
   }
 }
 
+/**
+ * Resolves a private or public payment proof storage path/URL into a secure signed URL.
+ * Handles:
+ * - relative storage paths (e.g. "resident_id/1234_abc.jpg")
+ * - full legacy public URLs ("https://.../storage/v1/object/public/payment-proofs/...")
+ * - existing signed URLs or null values
+ */
+export async function getSignedPaymentProofUrl(
+  pathOrUrl: string | null | undefined,
+  expiresInSeconds = 3600
+): Promise<string | null> {
+  if (!pathOrUrl) return null;
+  const trimmed = pathOrUrl.trim();
+  if (!trimmed) return null;
+
+  // If it's already a signed URL with token, return as-is
+  if (trimmed.includes('token=') && trimmed.startsWith('http')) {
+    return trimmed;
+  }
+
+  // If it's a local file URL or unsupported scheme, don't attempt storage signing
+  if (
+    trimmed.startsWith('file:') ||
+    trimmed.startsWith('ph:') ||
+    trimmed.startsWith('content:')
+  ) {
+    return trimmed;
+  }
+
+  let relativePath = trimmed;
+
+  // If it's a full Supabase storage URL, extract the relative path inside 'payment-proofs'
+  if (trimmed.includes('/storage/v1/object/public/payment-proofs/')) {
+    const parts = trimmed.split('/storage/v1/object/public/payment-proofs/');
+    relativePath = parts[1]
+      ? decodeURIComponent(parts[1].split('?')[0])
+      : trimmed;
+  } else if (trimmed.includes('/storage/v1/object/sign/payment-proofs/')) {
+    const parts = trimmed.split('/storage/v1/object/sign/payment-proofs/');
+    relativePath = parts[1]
+      ? decodeURIComponent(parts[1].split('?')[0])
+      : trimmed;
+  }
+
+  try {
+    const { data, error } = await supabase.storage
+      .from('payment-proofs')
+      .createSignedUrl(relativePath, expiresInSeconds);
+
+    if (error) {
+      console.warn('[Storage] createSignedUrl error:', error.message);
+      return trimmed;
+    }
+
+    return data?.signedUrl || trimmed;
+  } catch (err) {
+    console.warn('[Storage] Failed to create signed URL:', err);
+    return trimmed;
+  }
+}
+

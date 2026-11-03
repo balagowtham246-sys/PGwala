@@ -1,41 +1,50 @@
 import { router } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  useWindowDimensions,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import {
+  DoorOpen,
+  Utensils,
+  Receipt,
+  Wrench,
+  User,
+  ArrowRight,
+  LogIn,
+  LogOut,
+  Building2,
+  ChevronDown,
+  Check,
+  Plus,
+  X,
+  AlertCircle,
+  BellRing,
+} from 'lucide-react-native';
 
-import { BottomTabInset } from '@/constants/theme';
+import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useProperty, PropertyItem } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
-import { WashingMachineCard } from '@/components/washing-machine-card';
+import {
+  StatisticCard,
+  StatusBadge,
+  SectionHeader,
+  EmptyState,
+  ErrorState,
+} from '@/components/ui/owner';
 
 // --- Types ---
-interface SummaryCardProps {
-  label: string;
-  value: number | string;
-  sublabel: string;
-  accentColor: string;
-  onPress?: () => void;
-  isLargeScreen?: boolean;
-}
-
-interface ActionButtonProps {
-  iconText: string;
-  title: string;
-  subtitle: string;
-  onPress: () => void;
-}
-
 interface ResidentRecord {
   id: string;
   full_name: string;
@@ -50,106 +59,93 @@ interface MovementLogRecord {
   direction: 'IN' | 'OUT';
   event_time: string;
   note: string | null;
-  resident?: {
-    full_name: string;
-    room_number: string;
-  };
+  purpose?: string | null;
+  expected_return_time?: string | null;
+  food_required?: boolean;
 }
 
 interface ActivityItem {
   id: string;
-  title: string;
+  residentName: string;
+  roomNumber: string;
+  direction: 'IN' | 'OUT';
+  purpose: string | null;
   time: string;
-  tag: string;
-  tagColor: string;
+}
+
+interface TodayMenuSummary {
+  breakfast: boolean;
+  lunch: boolean;
+  dinner: boolean;
 }
 
 export default function OwnerDashboard() {
   const { user, session, profile, isLoading: authLoading, signOut } = useAuth();
-  const { width } = useWindowDimensions();
-  const isLargeScreen = width >= 768;
+  const {
+    properties,
+    selectedProperty,
+    selectedPropertyId,
+    selectProperty,
+    addProperty,
+    refreshProperties,
+  } = useProperty();
 
-  // Dashboard state powered by live Supabase queries
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [propertyName, setPropertyName] = useState<string>('My PG');
-  const [propertyId, setPropertyId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Property Switcher Modal State
+  const [switcherVisible, setSwitcherVisible] = useState(false);
+  const [showAddPropertyModal, setShowAddPropertyModal] = useState(false);
+  const [newPropName, setNewPropName] = useState('');
+  const [newPropAddress, setNewPropAddress] = useState('');
+  const [creatingProperty, setCreatingProperty] = useState(false);
+
+  // Key Operational State (Gate, Menu, Complaints)
   const [stats, setStats] = useState({
     totalResidents: 0,
     studentsInside: 0,
     studentsOutside: 0,
-    studentsUnknown: 0,
-    totalCollectedPaise: 0,
-    outstandingPaise: 0,
-    overduePaise: 0,
-    pendingReportsCount: 0,
-    pendingBillsCount: 0,
-    pendingBillsAmount: 0,
     openComplaintsCount: 0,
+  });
+
+  const [todayMenu, setTodayMenu] = useState<TodayMenuSummary>({
+    breakfast: false,
+    lunch: false,
+    dinner: false,
   });
 
   const [recentActivities, setRecentActivities] = useState<ActivityItem[]>([]);
 
-  // Formatted date string (e.g., "Thursday, 29 October 2026")
-  const todayDate = new Date().toLocaleDateString('en-IN', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
+  // Non-college Departure In-App Push Alert State
+  const [departureAlert, setDepartureAlert] = useState<{
+    residentName: string;
+    roomNumber: string;
+    purpose: string;
+    time: string;
+  } | null>(null);
 
-  // Fetch all dashboard data from Supabase
+  // Anti-flooding: Track recent alert timestamps per resident (15-min throttle)
+  const alertThrottleRef = useRef<Map<string, number>>(new Map());
+
+  // ISO string for today 'YYYY-MM-DD'
+  const todayIsoDate = new Date().toISOString().split('T')[0];
+
+  // Fetch operational dashboard data scoped to the active selected property
   const loadDashboardData = useCallback(async () => {
-    // Defense-in-depth: Never fire queries if unauthenticated or not an owner
-    if (!user?.id || profile?.role !== 'owner') {
+    if (!user?.id || profile?.role !== 'owner' || !selectedPropertyId) {
+      setLoading(false);
       return;
     }
 
     try {
       setErrorMessage(null);
 
-      // 1. Fetch the owner's property (scoped explicitly to authenticated owner)
-      const { data: properties, error: propError } = await supabase
-        .from('properties')
-        .select('id, name')
-        .eq('owner_id', user.id)
-        .eq('is_active', true)
-        .order('created_at', { ascending: true })
-        .limit(1);
-
-      if (propError) throw propError;
-
-      if (!properties || properties.length === 0) {
-        setPropertyName('No Property Found');
-        setStats({
-          totalResidents: 0,
-          studentsInside: 0,
-          studentsOutside: 0,
-          studentsUnknown: 0,
-          totalCollectedPaise: 0,
-          outstandingPaise: 0,
-          overduePaise: 0,
-          pendingReportsCount: 0,
-          pendingBillsCount: 0,
-          pendingBillsAmount: 0,
-          openComplaintsCount: 0,
-        });
-        setRecentActivities([]);
-        setLoading(false);
-        return;
-      }
-
-      const activeProp = properties[0];
-      setPropertyId(activeProp.id);
-      setPropertyName(activeProp.name);
-
-      // 2. Fetch all residents for this property (active & inactive)
+      // 1. Fetch active residents of selected property
       const { data: residentsData, error: resError } = await supabase
         .from('residents')
         .select('id, full_name, room_number, property_id, is_active')
-        .eq('property_id', activeProp.id);
+        .eq('property_id', selectedPropertyId);
 
       if (resError) throw resError;
 
@@ -162,13 +158,6 @@ export default function OwnerDashboard() {
           totalResidents: 0,
           studentsInside: 0,
           studentsOutside: 0,
-          studentsUnknown: 0,
-          totalCollectedPaise: 0,
-          outstandingPaise: 0,
-          overduePaise: 0,
-          pendingReportsCount: 0,
-          pendingBillsCount: 0,
-          pendingBillsAmount: 0,
           openComplaintsCount: 0,
         });
         setRecentActivities([]);
@@ -176,108 +165,77 @@ export default function OwnerDashboard() {
         return;
       }
 
-      // 3. Fetch movement logs for all property residents (preserving historical records)
+      // 2. Fetch recent movement logs
       const { data: logsData, error: logsError } = await supabase
         .from('movement_logs')
-        .select('id, resident_id, direction, event_time, note')
+        .select(
+          'id, resident_id, direction, event_time, note, purpose, expected_return_time, food_required'
+        )
         .in('resident_id', allResidentIds)
-        .order('event_time', { ascending: false });
+        .order('event_time', { ascending: false })
+        .limit(60);
 
       if (logsError) throw logsError;
-
       const logs: MovementLogRecord[] = logsData ?? [];
 
-      // 4. Calculate status per resident based on their LATEST movement log
-      // Computed STRICTLY for active residents only (inactive residents are excluded)
-      const latestStatusMap = new Map<string, 'IN' | 'OUT'>();
-
+      // Calculate resident status based on newest log
+      const latestStatusMap = new Map<string, MovementLogRecord>();
       for (const log of logs) {
         if (!latestStatusMap.has(log.resident_id)) {
-          latestStatusMap.set(log.resident_id, log.direction);
+          latestStatusMap.set(log.resident_id, log);
         }
       }
 
       let insideCount = 0;
       let outsideCount = 0;
-      let unknownCount = 0;
 
       for (const res of activeResidents) {
-        const latestDirection = latestStatusMap.get(res.id);
-        if (latestDirection === 'IN') {
+        const latest = latestStatusMap.get(res.id);
+        const direction = latest?.direction || 'IN';
+
+        if (direction === 'IN') {
           insideCount += 1;
-        } else if (latestDirection === 'OUT') {
-          outsideCount += 1;
         } else {
-          // Resident has NO movement logs yet -> treat as UNKNOWN
-          unknownCount += 1;
+          outsideCount += 1;
         }
       }
 
-      // 4b. Fetch live billing records (fails softly if billing tables not yet migrated)
-      let totalCollectedPaise = 0;
-      let outstandingPaise = 0;
-      let overduePaise = 0;
-      let pendingReportsCount = 0;
-      let pendingBillsCount = 0;
-      let pendingBillsAmount = 0;
-
-      const todayIso = new Date().toISOString().split('T')[0];
-
+      // 3. Fetch today's food menu status
       try {
-        // Authoritative query 1: Approved payments (strictly excludes reversed payments)
-        const { data: paymentsData } = await supabase
-          .from('payments')
-          .select('amount_paise')
-          .eq('property_id', activeProp.id)
-          .eq('status', 'approved');
+        const { data: menuData } = await supabase
+          .from('food_menus')
+          .select('meal_type, is_published')
+          .eq('property_id', selectedPropertyId)
+          .eq('menu_date', todayIsoDate);
 
-        if (paymentsData && paymentsData.length > 0) {
-          totalCollectedPaise = paymentsData.reduce(
-            (acc, curr) => acc + (curr.amount_paise || 0),
-            0
-          );
-        }
+        const summary: TodayMenuSummary = {
+          breakfast: false,
+          lunch: false,
+          dinner: false,
+        };
 
-        // Authoritative query 2: Outstanding charges & overdue calculation
-        const { data: chargesData } = await supabase
-          .from('charges')
-          .select('amount_paise, due_date')
-          .eq('property_id', activeProp.id)
-          .eq('status', 'outstanding');
-
-        if (chargesData && chargesData.length > 0) {
-          pendingBillsCount = chargesData.length;
-          for (const ch of chargesData) {
-            const amt = ch.amount_paise || 0;
-            outstandingPaise += amt;
-            if (ch.due_date && ch.due_date < todayIso) {
-              overduePaise += amt;
-            }
+        if (menuData) {
+          for (const m of menuData) {
+            if (m.meal_type === 'breakfast' && m.is_published)
+              summary.breakfast = true;
+            if (m.meal_type === 'lunch' && m.is_published)
+              summary.lunch = true;
+            if (m.meal_type === 'dinner' && m.is_published)
+              summary.dinner = true;
           }
-          pendingBillsAmount = outstandingPaise;
         }
-
-        // Authoritative query 3: Pending student payment reports awaiting verification
-        const { data: reportsData } = await supabase
-          .from('student_payment_reports')
-          .select('id')
-          .eq('property_id', activeProp.id)
-          .eq('status', 'pending');
-
-        if (reportsData) {
-          pendingReportsCount = reportsData.length;
-        }
-      } catch (billingErr) {
-        console.warn('[OwnerDashboard] Could not fetch billing overview:', billingErr);
+        setTodayMenu(summary);
+      } catch (menuErr) {
+        console.warn('[OwnerDashboard] Could not fetch food menu:', menuErr);
       }
 
-      // 4c. Fetch open maintenance complaints count
+      // 4. Fetch open maintenance complaints count
       let openComplaintsCount = 0;
       try {
         const { data: compData } = await supabase
           .from('complaints')
           .select('id')
-          .eq('property_id', activeProp.id)
+          .eq('property_id', selectedPropertyId)
           .eq('status', 'open');
 
         if (compData) {
@@ -291,30 +249,20 @@ export default function OwnerDashboard() {
         totalResidents: activeResidents.length,
         studentsInside: insideCount,
         studentsOutside: outsideCount,
-        studentsUnknown: unknownCount,
-        totalCollectedPaise,
-        outstandingPaise,
-        overduePaise,
-        pendingReportsCount,
-        pendingBillsCount,
-        pendingBillsAmount,
         openComplaintsCount,
       });
 
-      // 5. Build recent gate activity feed from the latest 5 logs
-      // Uses allResidents map so deactivated residents' past events still display their names
+      // 5. Build recent activity feed (latest 3)
       const residentMap = new Map<string, ResidentRecord>();
       for (const r of allResidents) {
         residentMap.set(r.id, r);
       }
 
-      const activities: ActivityItem[] = logs.slice(0, 5).map((log) => {
+      const activities: ActivityItem[] = logs.slice(0, 2).map((log) => {
         const resident = residentMap.get(log.resident_id);
         const residentName = resident ? resident.full_name : 'Resident';
-        const room = resident ? ` (${resident.room_number})` : '';
-        const directionText = log.direction === 'IN' ? 'marked IN' : 'marked OUT';
+        const roomNumber = resident?.room_number || '';
 
-        // Format event time (e.g., "09:15 AM")
         const eventDate = new Date(log.event_time);
         const timeFormatted = eventDate.toLocaleTimeString('en-IN', {
           hour: '2-digit',
@@ -324,10 +272,11 @@ export default function OwnerDashboard() {
 
         return {
           id: log.id,
-          title: `${residentName}${room} ${directionText}`,
+          residentName,
+          roomNumber,
+          direction: log.direction,
+          purpose: log.purpose || null,
           time: timeFormatted,
-          tag: log.direction === 'IN' ? 'Gate IN' : 'Gate OUT',
-          tagColor: log.direction === 'IN' ? '#DCFCE7' : '#FFEDD5', // Green or Orange badge
         };
       });
 
@@ -335,147 +284,129 @@ export default function OwnerDashboard() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[OwnerDashboard] Error loading data:', err);
-      if (
-        typeof err === 'object' &&
-        err !== null &&
-        'code' in err &&
-        (err as { code: string }).code === '42501'
-      ) {
-        setErrorMessage(
-          'Session expired or unauthorized. Please log out and sign in again.'
-        );
-      } else {
-        setErrorMessage(`Failed to load dashboard: ${msg}`);
-      }
+      setErrorMessage(`Failed to load dashboard: ${msg}`);
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id, profile?.role]);
+  }, [user?.id, profile?.role, selectedPropertyId, todayIsoDate]);
 
   useEffect(() => {
-    // Wait until auth initialization completes
     if (authLoading) return;
-
-    // Handle signed-out state: active redirect to login
     if (!session || !user?.id) {
       router.replace('/login');
       return;
     }
-
-    // Handle student role: active redirect to student portal
-    if (profile && profile.role !== 'owner') {
-      if (profile.role === 'student') {
-        router.replace('/student-dashboard');
-      } else {
-        router.replace('/login');
-      }
-      return;
-    }
-
-    // Owner verified: load dashboard data
     if (profile?.role === 'owner') {
       loadDashboardData();
     }
   }, [authLoading, session, user?.id, profile?.role, loadDashboardData]);
 
-  // Pull-to-refresh handler
+  // Non-college Movement Realtime Push Listener
+  useEffect(() => {
+    if (!selectedPropertyId) return;
+
+    const channel = supabase
+      .channel(`non_college_alerts_${selectedPropertyId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'movement_logs',
+        },
+        async (payload) => {
+          const newLog = payload.new as MovementLogRecord;
+          if (newLog.direction === 'OUT') {
+            const rawPurpose = (newLog.purpose || '').trim().toLowerCase();
+            const isCollege =
+              rawPurpose === 'college' ||
+              rawPurpose.includes('college') ||
+              rawPurpose.includes('class');
+
+            // Non-college departure detected
+            if (!isCollege) {
+              const now = Date.now();
+              const lastAlertTime =
+                alertThrottleRef.current.get(newLog.resident_id) || 0;
+
+              // Anti-flooding throttle: Skip if alerted within 15 minutes for this resident
+              if (now - lastAlertTime < 15 * 60 * 1000) {
+                return;
+              }
+              alertThrottleRef.current.set(newLog.resident_id, now);
+
+              // Fetch resident details for readable notification
+              const { data: res } = await supabase
+                .from('residents')
+                .select('full_name, room_number')
+                .eq('id', newLog.resident_id)
+                .single();
+
+              const resName = res?.full_name || 'Resident';
+              const resRoom = res?.room_number || '';
+              const eventDate = new Date(newLog.event_time);
+              const formattedTime = eventDate.toLocaleTimeString('en-IN', {
+                hour: '2-digit',
+                minute: '2-digit',
+                hour12: true,
+              });
+
+              setDepartureAlert({
+                residentName: resName,
+                roomNumber: resRoom,
+                purpose: newLog.purpose || 'Personal Outing',
+                time: formattedTime,
+              });
+
+              // Also refresh dashboard stats in background
+              loadDashboardData();
+            }
+          }
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [selectedPropertyId, loadDashboardData]);
+
   const handleRefresh = () => {
     setRefreshing(true);
     loadDashboardData();
   };
 
-  // Sign out handler (Cross-platform: uses window.confirm on Web, Alert.alert on native)
-  const handleSignOut = async () => {
-    if (Platform.OS === 'web') {
-      const confirmed = typeof window !== 'undefined' ? window.confirm('Are you sure you want to log out of PGwala?') : true;
-      if (confirmed) {
-        await signOut();
-        router.replace('/login');
-      }
+  // Add new PG property from modal
+  const handleCreateProperty = async () => {
+    const trimmed = newPropName.trim();
+    if (!trimmed) {
+      Alert.alert('Required', 'Please enter a PG property name.');
       return;
     }
 
-    Alert.alert('Sign Out', 'Are you sure you want to log out of PGwala?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Sign Out',
-        style: 'destructive',
-        onPress: async () => {
-          await signOut();
-          router.replace('/login');
-        },
-      },
-    ]);
+    try {
+      setCreatingProperty(true);
+      await addProperty(trimmed, newPropAddress.trim() || undefined);
+      setShowAddPropertyModal(false);
+      setSwitcherVisible(false);
+      setNewPropName('');
+      setNewPropAddress('');
+      Alert.alert('Property Added', `Switched to "${trimmed}".`);
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Could not add property.');
+    } finally {
+      setCreatingProperty(false);
+    }
   };
 
-  // Action handler for buttons
-  const handleQuickAction = (featureName: string) => {
-    Alert.alert(
-      featureName,
-      `Opening ${featureName}... This module will be connected next.`,
-      [{ text: 'OK' }]
-    );
-  };
-
-  // 1. Initial auth loading state (restoring session from storage)
+  // Auth Loading
   if (authLoading) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.authLoadingContainer}>
-          <ActivityIndicator size="large" color="#0284C7" />
+          <ActivityIndicator size="large" color={OwnerTheme.colors.primary} />
           <Text style={styles.authNoticeText}>Initializing session...</Text>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  // 2. Signed-out state: prevents getting stuck on loading screen
-  if (!session || !user) {
-    return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.authLoadingContainer}>
-          <ActivityIndicator size="large" color="#0284C7" />
-          <Text style={styles.authNoticeText}>Redirecting to login...</Text>
-          <Pressable
-            style={styles.authActionButton}
-            onPress={() => router.replace('/login')}>
-            <Text style={styles.authActionButtonText}>Go to Login</Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  // 3. User authenticated but profile missing or failed to fetch
-  if (!profile) {
-    return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.authLoadingContainer}>
-          <Text style={styles.authErrorTitle}>Profile Not Found</Text>
-          <Text style={styles.authNoticeText}>
-            Could not load user profile. Please sign in again.
-          </Text>
-          <Pressable
-            style={styles.authActionButton}
-            onPress={async () => {
-              await signOut();
-              router.replace('/login');
-            }}>
-            <Text style={styles.authActionButtonText}>Sign Out & Retry</Text>
-          </Pressable>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
-  // 4. Non-owner account accessing owner dashboard
-  if (profile.role !== 'owner') {
-    return (
-      <SafeAreaView style={styles.safeArea}>
-        <View style={styles.authLoadingContainer}>
-          <ActivityIndicator size="large" color="#0284C7" />
-          <Text style={styles.authNoticeText}>Redirecting to student portal...</Text>
         </View>
       </SafeAreaView>
     );
@@ -483,6 +414,65 @@ export default function OwnerDashboard() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      {/* Non-College Departure Push Alert Banner */}
+      {departureAlert && (
+        <View style={styles.pushAlertBanner}>
+          <View style={styles.pushAlertIconWrap}>
+            <BellRing size={16} color="#B91C1C" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.pushAlertTitle}>
+              Departure Alert: {departureAlert.residentName} (Room{' '}
+              {departureAlert.roomNumber})
+            </Text>
+            <Text style={styles.pushAlertText}>
+              Left for: {departureAlert.purpose} at {departureAlert.time}
+            </Text>
+          </View>
+          <Pressable
+            hitSlop={8}
+            onPress={() => setDepartureAlert(null)}
+            style={styles.pushAlertClose}>
+            <X size={16} color="#7F1D1D" />
+          </Pressable>
+        </View>
+      )}
+
+      {/* Top Header: Brand + Global Property Switcher + Account */}
+      <View style={styles.headerRow}>
+        <View style={styles.headerLeft}>
+          <Text style={styles.brandTitle}>PGwala</Text>
+        </View>
+
+        {/* Global Property Switcher Pill */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Switch active property"
+          style={({ pressed }) => [
+            styles.propertySwitcherPill,
+            pressed && styles.cardPressed,
+          ]}
+          onPress={() => setSwitcherVisible(true)}>
+          <Building2 size={15} color={OwnerTheme.colors.primary} />
+          <Text style={styles.propertySwitcherText} numberOfLines={1}>
+            {selectedProperty?.name || 'Select PG'}
+          </Text>
+          <ChevronDown size={14} color={OwnerTheme.colors.textSecondary} />
+        </Pressable>
+
+        {/* Dedicated Account Button */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Account and Settings"
+          style={({ pressed }) => [
+            styles.accountBtn,
+            pressed && styles.cardPressed,
+          ]}
+          onPress={() => router.push('/owner-settings')}>
+          <User size={18} color={OwnerTheme.colors.primary} />
+        </Pressable>
+      </View>
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -490,741 +480,784 @@ export default function OwnerDashboard() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            colors={['#0284C7']}
+            colors={[OwnerTheme.colors.primary]}
           />
         }>
-
-        {/* Header Section */}
-        <View style={styles.header}>
-          <View>
-            <Text style={styles.appTitle}>PGwala</Text>
-            <Text style={styles.appSubtitle}>{propertyName}</Text>
-          </View>
-          <View style={styles.headerActions}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Open Settings"
-              style={({ pressed }) => [
-                styles.settingsButton,
-                pressed && styles.settingsButtonPressed,
-              ]}
-              onPress={() => router.push('/owner-settings')}>
-              <Text style={styles.settingsButtonText}>⚙️ Settings</Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Sign Out"
-              style={({ pressed }) => [
-                styles.signOutButton,
-                pressed && styles.signOutButtonPressed,
-              ]}
-              onPress={handleSignOut}>
-              <Text style={styles.signOutButtonText}>Log out</Text>
-            </Pressable>
-          </View>
-        </View>
-
-        {/* Welcome & Date Greeting Card */}
-        <View style={styles.greetingCard}>
-          <Text style={styles.greetingTitle}>
-            Welcome, {profile?.full_name || 'Owner'} 👋
-          </Text>
-          <Text style={styles.greetingDate}>{todayDate}</Text>
-          <Text style={styles.greetingNote}>
-            Here is the live status of your PG accommodation.
-          </Text>
-        </View>
-
-        {/* Live Washing Machine Availability */}
-        {propertyId && (
-          <WashingMachineCard
-            propertyId={propertyId}
-            userRole="owner"
-          />
-        )}
-
-        {/* Error Banner if query failed */}
         {errorMessage && (
-          <View style={styles.errorBanner}>
-            <Text style={styles.errorBannerIcon}>⚠️</Text>
-            <Text style={styles.errorBannerText}>{errorMessage}</Text>
-            <Pressable hitSlop={8} onPress={loadDashboardData}>
-              <Text style={styles.retryText}>Retry</Text>
-            </Pressable>
-          </View>
+          <ErrorState message={errorMessage} onRetry={loadDashboardData} />
         )}
 
-        {/* Section: Gate Status */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Gate & Resident Status</Text>
-          <Text style={styles.sectionMeta}>
-            Total {stats.totalResidents} Active Resident{stats.totalResidents === 1 ? '' : 's'}
-          </Text>
-        </View>
-
-        {/* Gate Summary Cards */}
-        {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
-            <Text style={styles.loadingText}>Loading live PG status...</Text>
-          </View>
-        ) : (
-          <View style={styles.gridContainer}>
-            <SummaryCard
-              label="Inside PG"
-              value={stats.studentsInside}
-              sublabel={stats.studentsUnknown > 0 ? `${stats.studentsUnknown} unknown` : 'Checked in'}
-              accentColor="#16A34A" // Green
-              onPress={() => router.push('/student-in-out')}
-              isLargeScreen={true}
-            />
-            <SummaryCard
-              label="Outside PG"
-              value={stats.studentsOutside}
-              sublabel="Checked out"
-              accentColor="#EA580C" // Orange
-              onPress={() => router.push('/student-in-out')}
-              isLargeScreen={true}
-            />
-          </View>
-        )}
-
-        {/* Section: Financial & Billing Overview */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Financial & Billing</Text>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => router.push('/billing-management')}>
-            <Text style={styles.linkText}>Manage Bills ›</Text>
-          </Pressable>
-        </View>
-
-        {/* Pending Reports Notification Banner */}
-        {stats.pendingReportsCount > 0 && (
-          <Pressable
-            style={styles.pendingReportsBanner}
-            onPress={() => router.push('/billing-management')}>
-            <View style={styles.pendingReportsLeft}>
-              <Text style={styles.pendingReportsIcon}>🔔</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.pendingReportsTitle}>
-                  {stats.pendingReportsCount} Payment Report{stats.pendingReportsCount > 1 ? 's' : ''} Pending
-                </Text>
-                <Text style={styles.pendingReportsSub}>
-                  Student payments awaiting verification & approval
-                </Text>
-              </View>
-            </View>
-            <View style={styles.reviewBadge}>
-              <Text style={styles.reviewBadgeText}>Review</Text>
-            </View>
-          </Pressable>
-        )}
-
-        {/* Live Financial Cards */}
-        {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
-            <Text style={styles.loadingText}>Loading financial summary...</Text>
-          </View>
-        ) : (
-          <View style={styles.gridContainer}>
-            <SummaryCard
-              label="Total Collected"
-              value={`₹${(stats.totalCollectedPaise / 100).toLocaleString('en-IN')}`}
-              sublabel="Confirmed payments"
-              accentColor="#16A34A"
-              isLargeScreen={isLargeScreen}
-            />
-            <SummaryCard
-              label="Unpaid Bills"
-              value={`₹${(stats.outstandingPaise / 100).toLocaleString('en-IN')}`}
-              sublabel={`${stats.pendingBillsCount} pending bill${stats.pendingBillsCount === 1 ? '' : 's'}`}
-              accentColor="#0284C7"
-              onPress={() => router.push('/billing-management')}
-              isLargeScreen={isLargeScreen}
-            />
-            <SummaryCard
-              label="Past Due"
-              value={`₹${(stats.overduePaise / 100).toLocaleString('en-IN')}`}
-              sublabel={stats.overduePaise > 0 ? 'Past due date' : 'All up to date'}
-              accentColor={stats.overduePaise > 0 ? '#DC2626' : '#64748B'}
-              onPress={() => router.push('/billing-management')}
-              isLargeScreen={isLargeScreen}
-            />
-            <SummaryCard
-              label="Needs Review"
-              value={stats.pendingReportsCount}
-              sublabel={stats.pendingReportsCount > 0 ? 'Payment proof sent' : 'All confirmed'}
-              accentColor={stats.pendingReportsCount > 0 ? '#D97706' : '#16A34A'}
-              onPress={() => router.push('/billing-management')}
-              isLargeScreen={isLargeScreen}
-            />
-          </View>
-        )}
-
-        {/* Section: Quick Actions */}
-        <Text style={styles.sectionTitle}>Quick Actions</Text>
-        <View style={styles.actionsList}>
-          <ActionButton
-            iconText="👤"
-            title="Add Resident"
-            subtitle="Register new student & assign room"
-            onPress={() => router.push('/add-resident')}
-          />
-          <ActionButton
-            iconText="🚪"
-            title="Gate Attendance"
-            subtitle="Live attendance, return times & meal counts"
+        {/* Priority Area 1: Live Gate Status (Side-by-side Hero Row) */}
+        <View style={styles.gateStatsRow}>
+          <StatisticCard
+            label="Inside PG"
+            value={stats.studentsInside}
+            accentColor={OwnerTheme.colors.success}
+            icon={LogIn}
+            sublabel="Present in PG"
             onPress={() => router.push('/student-in-out')}
+            style={styles.gateStatHalfCard}
           />
-          <ActionButton
-            iconText="🍛"
-            title="Food Menu"
-            subtitle="Manage daily breakfast, lunch & dinner"
-            onPress={() => router.push('/food-menu')}
-          />
-          <ActionButton
-            iconText="💵"
-            title="Rent & Bills"
-            subtitle="Manage monthly rent, washing machine & payments"
-            onPress={() => router.push('/billing-management')}
-          />
-          <ActionButton
-            iconText="🔧"
-            title="Maintenance & Issues"
-            subtitle={
-              stats.openComplaintsCount > 0
-                ? `${stats.openComplaintsCount} open complaint${stats.openComplaintsCount === 1 ? '' : 's'} to resolve`
-                : 'View & manage resident maintenance requests'
-            }
-            onPress={() => router.push('/owner-complaints')}
+          <StatisticCard
+            label="Outside PG"
+            value={stats.studentsOutside}
+            accentColor={OwnerTheme.colors.warning}
+            icon={LogOut}
+            sublabel="Checked out"
+            onPress={() => router.push('/student-in-out')}
+            style={styles.gateStatHalfCard}
           />
         </View>
 
-        {/* Section: Recent Activity */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Recent Activity</Text>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => router.push('/student-in-out')}>
-            <Text style={styles.linkText}>View all</Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.activityContainer}>
-          {loading ? (
-            <View style={styles.emptyActivityBox}>
-              <ActivityIndicator size="small" color="#0284C7" />
-            </View>
-          ) : recentActivities.length === 0 ? (
-            <View style={styles.emptyActivityBox}>
-              <Text style={styles.emptyActivityTitle}>No gate logs yet</Text>
-              <Text style={styles.emptyActivitySub}>
-                Recent gate check-ins and check-outs will appear here.
+        {/* Priority Area 2: Food Menu Today Quick Card */}
+        <View style={styles.menuQuickCard}>
+          <View style={styles.menuQuickHeader}>
+            <View style={styles.menuQuickTitleCol}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Utensils size={15} color={OwnerTheme.colors.primary} />
+                <Text style={styles.menuQuickTitle}>Today's Food Menu</Text>
+              </View>
+              <Text style={styles.menuQuickSubtitle}>
+                Breakfast, lunch & dinner status
               </Text>
             </View>
-          ) : (
-            recentActivities.map((item, index) => (
-              <View
-                key={item.id}
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.menuUpdateBtn,
+                pressed && styles.cardPressed,
+              ]}
+              onPress={() => router.push('/food-menu')}>
+              <Text style={styles.menuUpdateBtnText}>Update Menu ›</Text>
+            </Pressable>
+          </View>
+
+          <View style={styles.menuPillRow}>
+            <View
+              style={[
+                styles.mealPill,
+                todayMenu.breakfast ? styles.mealPillPublished : styles.mealPillDraft,
+              ]}>
+              <Text
                 style={[
-                  styles.activityRow,
-                  index === recentActivities.length - 1 && styles.activityRowLast,
+                  styles.mealPillText,
+                  todayMenu.breakfast && styles.mealPillTextPublished,
                 ]}>
-                <View style={styles.activityContent}>
-                  <Text style={styles.activityTitle}>{item.title}</Text>
-                  <Text style={styles.activityTime}>{item.time}</Text>
-                </View>
+                Breakfast {todayMenu.breakfast ? '✓' : '• Draft'}
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.mealPill,
+                todayMenu.lunch ? styles.mealPillPublished : styles.mealPillDraft,
+              ]}>
+              <Text
+                style={[
+                  styles.mealPillText,
+                  todayMenu.lunch && styles.mealPillTextPublished,
+                ]}>
+                Lunch {todayMenu.lunch ? '✓' : '• Draft'}
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.mealPill,
+                todayMenu.dinner ? styles.mealPillPublished : styles.mealPillDraft,
+              ]}>
+              <Text
+                style={[
+                  styles.mealPillText,
+                  todayMenu.dinner && styles.mealPillTextPublished,
+                ]}>
+                Dinner {todayMenu.dinner ? '✓' : '• Draft'}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Priority Area 3: Handy Quick Actions Grid (2x2 Compact) */}
+        <View style={styles.quickGrid}>
+          <Pressable
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.quickCard,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => router.push('/student-in-out')}>
+            <View
+              style={[
+                styles.quickIconWrap,
+                { backgroundColor: OwnerTheme.colors.successLight },
+              ]}>
+              <DoorOpen size={20} color={OwnerTheme.colors.success} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.quickTitle}>Gate Attendance</Text>
+              <Text style={styles.quickSub}>Movement & dinner list</Text>
+            </View>
+            <ArrowRight size={15} color={OwnerTheme.colors.textMuted} />
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.quickCard,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => router.push('/food-menu')}>
+            <View
+              style={[
+                styles.quickIconWrap,
+                { backgroundColor: OwnerTheme.colors.primaryLight },
+              ]}>
+              <Utensils size={20} color={OwnerTheme.colors.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.quickTitle}>Food Menu</Text>
+              <Text style={styles.quickSub}>Daily meal planner</Text>
+            </View>
+            <ArrowRight size={15} color={OwnerTheme.colors.textMuted} />
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.quickCard,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => router.push('/billing-management')}>
+            <View
+              style={[
+                styles.quickIconWrap,
+                { backgroundColor: '#F1F5F9' },
+              ]}>
+              <Receipt size={20} color={OwnerTheme.colors.textPrimary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.quickTitle}>Rent & Bills</Text>
+              <Text style={styles.quickSub}>Monthly collections</Text>
+            </View>
+            <ArrowRight size={15} color={OwnerTheme.colors.textMuted} />
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.quickCard,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => router.push('/owner-complaints')}>
+            <View
+              style={[
+                styles.quickIconWrap,
+                {
+                  backgroundColor:
+                    stats.openComplaintsCount > 0
+                      ? OwnerTheme.colors.warningLight
+                      : '#F1F5F9',
+                },
+              ]}>
+              <Wrench
+                size={20}
+                color={
+                  stats.openComplaintsCount > 0
+                    ? OwnerTheme.colors.warning
+                    : OwnerTheme.colors.textSecondary
+                }
+              />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.quickTitle}>Maintenance</Text>
+              <Text style={styles.quickSub}>
+                {stats.openComplaintsCount > 0
+                  ? `${stats.openComplaintsCount} open issues`
+                  : 'All resolved'}
+              </Text>
+            </View>
+            <ArrowRight size={15} color={OwnerTheme.colors.textMuted} />
+          </Pressable>
+        </View>
+
+        {/* Priority Area 4: Recent Gate Movements */}
+        <SectionHeader
+          title="Recent Movement"
+          actionText="View all ›"
+          onAction={() => router.push('/student-in-out')}
+          style={{ marginTop: 12, marginBottom: 8 }}
+        />
+
+        <View style={styles.activityCard}>
+          {loading ? (
+            <View style={styles.activityLoading}>
+              <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+            </View>
+          ) : recentActivities.length === 0 ? (
+            <EmptyState
+              title="No recent movements"
+              description="Student gate check-ins and check-outs will display here."
+            />
+          ) : (
+            recentActivities.map((item, index) => {
+              const isEntry = item.direction === 'IN';
+              return (
                 <View
+                  key={item.id}
                   style={[
-                    styles.tagBadge,
-                    { backgroundColor: item.tagColor },
+                    styles.activityRow,
+                    index === recentActivities.length - 1 &&
+                      styles.activityRowLast,
                   ]}>
-                  <Text style={styles.tagText}>{item.tag}</Text>
+                  <View
+                    style={[
+                      styles.activityIconCircle,
+                      {
+                        backgroundColor: isEntry
+                          ? OwnerTheme.colors.successLight
+                          : OwnerTheme.colors.warningLight,
+                      },
+                    ]}>
+                    {isEntry ? (
+                      <LogIn size={14} color={OwnerTheme.colors.success} />
+                    ) : (
+                      <LogOut size={14} color={OwnerTheme.colors.warning} />
+                    )}
+                  </View>
+                  <View style={styles.activityDetails}>
+                    <Text style={styles.activityResidentName}>
+                      {item.residentName} (Room {item.roomNumber})
+                    </Text>
+                    <Text style={styles.activityActionText}>
+                      marked {item.direction}
+                      {item.purpose ? ` • ${item.purpose}` : ''}
+                    </Text>
+                  </View>
+                  <Text style={styles.activityTimeText}>{item.time}</Text>
                 </View>
-              </View>
-            ))
+              );
+            })
           )}
         </View>
 
-        {/* Bottom spacer */}
-        <View style={{ height: 40 }} />
+        <View style={{ height: 24 }} />
       </ScrollView>
+
+      {/* Global Property Switcher Modal */}
+      <Modal
+        visible={switcherVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSwitcherVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.switcherModalCard}>
+            <View style={styles.switcherModalHeader}>
+              <Text style={styles.switcherModalTitle}>Switch PG Property</Text>
+              <Pressable hitSlop={8} onPress={() => setSwitcherVisible(false)}>
+                <X size={20} color={OwnerTheme.colors.textSecondary} />
+              </Pressable>
+            </View>
+            <Text style={styles.switcherModalSub}>
+              Select which accommodation to view and manage:
+            </Text>
+
+            <ScrollView style={{ maxHeight: 260 }}>
+              {properties.map((prop) => {
+                const isSelected = prop.id === selectedPropertyId;
+                return (
+                  <Pressable
+                    key={prop.id}
+                    style={[
+                      styles.propertyItemRow,
+                      isSelected && styles.propertyItemRowSelected,
+                    ]}
+                    onPress={async () => {
+                      await selectProperty(prop.id);
+                      setSwitcherVisible(false);
+                    }}>
+                    <Building2
+                      size={18}
+                      color={
+                        isSelected
+                          ? OwnerTheme.colors.primary
+                          : OwnerTheme.colors.textSecondary
+                      }
+                      style={{ marginRight: 10 }}
+                    />
+                    <View style={{ flex: 1 }}>
+                      <Text
+                        style={[
+                          styles.propertyNameItem,
+                          isSelected && styles.propertyNameItemSelected,
+                        ]}>
+                        {prop.name}
+                      </Text>
+                      {prop.address ? (
+                        <Text style={styles.propertyAddressItem} numberOfLines={1}>
+                          {prop.address}
+                        </Text>
+                      ) : null}
+                    </View>
+                    {isSelected && (
+                      <Check size={18} color={OwnerTheme.colors.primary} />
+                    )}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            <Pressable
+              style={styles.addPropertyBtn}
+              onPress={() => setShowAddPropertyModal(true)}>
+              <Plus size={16} color={OwnerTheme.colors.primary} />
+              <Text style={styles.addPropertyBtnText}>Add Another PG Property</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Add New Property Sub-Modal */}
+      <Modal
+        visible={showAddPropertyModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAddPropertyModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.switcherModalCard}>
+            <View style={styles.switcherModalHeader}>
+              <Text style={styles.switcherModalTitle}>Add New PG Property</Text>
+              <Pressable
+                hitSlop={8}
+                onPress={() => setShowAddPropertyModal(false)}>
+                <X size={20} color={OwnerTheme.colors.textSecondary} />
+              </Pressable>
+            </View>
+
+            <Text style={styles.inputLabel}>PG Name *</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="e.g. Shalom Girls PG"
+              placeholderTextColor={OwnerTheme.colors.textMuted}
+              value={newPropName}
+              onChangeText={setNewPropName}
+            />
+
+            <Text style={styles.inputLabel}>Address (Optional)</Text>
+            <TextInput
+              style={styles.textInput}
+              placeholder="e.g. Street 4, College Road"
+              placeholderTextColor={OwnerTheme.colors.textMuted}
+              value={newPropAddress}
+              onChangeText={setNewPropAddress}
+            />
+
+            <View style={styles.modalActions}>
+              <Pressable
+                style={styles.modalCancelBtn}
+                onPress={() => setShowAddPropertyModal(false)}>
+                <Text style={styles.modalCancelBtnText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[
+                  styles.modalConfirmBtn,
+                  creatingProperty && { opacity: 0.6 },
+                ]}
+                disabled={creatingProperty}
+                onPress={handleCreateProperty}>
+                {creatingProperty ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.modalConfirmBtnText}>Create PG</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
 
-// --- Sub-components ---
-
-function SummaryCard({
-  label,
-  value,
-  sublabel,
-  accentColor,
-  onPress,
-  isLargeScreen = false,
-}: SummaryCardProps) {
-  const content = (
-    <>
-      <View style={[styles.cardAccentBar, { backgroundColor: accentColor }]} />
-      <Text
-        style={[styles.summaryValue, { color: accentColor }]}
-        numberOfLines={1}
-        adjustsFontSizeToFit>
-        {value}
-      </Text>
-      <Text style={styles.summaryLabel} numberOfLines={1}>
-        {label}
-      </Text>
-      <Text style={styles.summarySublabel} numberOfLines={1}>
-        {sublabel}
-      </Text>
-    </>
-  );
-
-  const cardStyle = [
-    styles.summaryCard,
-    isLargeScreen ? styles.summaryCardLarge : styles.summaryCardSmall,
-  ];
-
-  if (onPress) {
-    return (
-      <Pressable
-        accessibilityRole="button"
-        style={({ pressed }) => [
-          cardStyle,
-          pressed && { opacity: 0.85, transform: [{ scale: 0.99 }] },
-        ]}
-        onPress={onPress}>
-        {content}
-      </Pressable>
-    );
-  }
-
-  return <View style={cardStyle}>{content}</View>;
-}
-
-function ActionButton({ iconText, title, subtitle, onPress }: ActionButtonProps) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      style={({ pressed }) => [
-        styles.actionCard,
-        pressed && styles.actionCardPressed,
-      ]}
-      onPress={onPress}>
-      <View style={styles.actionIconContainer}>
-        <Text style={styles.actionIconText}>{iconText}</Text>
-      </View>
-      <View style={styles.actionTextContainer}>
-        <Text style={styles.actionTitle}>{title}</Text>
-        <Text style={styles.actionSubtitle}>{subtitle}</Text>
-      </View>
-      <Text style={styles.actionArrow}>›</Text>
-    </Pressable>
-  );
-}
-
-// --- Stylesheet ---
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC', // Slate 50 background
+    backgroundColor: OwnerTheme.colors.background,
   },
   scrollContent: {
     paddingHorizontal: 16,
-    paddingTop: 12,
+    paddingTop: 8,
+    maxWidth: 960,
     width: '100%',
-    maxWidth: 1080,
     alignSelf: 'center',
+    gap: 10,
   },
-  header: {
+  headerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: OwnerTheme.colors.border,
+    gap: 10,
   },
-  appTitle: {
-    fontSize: 26,
+  headerLeft: {
+    justifyContent: 'center',
+  },
+  brandTitle: {
+    fontSize: 22,
     fontWeight: '800',
-    color: '#0F172A', // Slate 900
+    color: OwnerTheme.colors.primary,
     letterSpacing: -0.5,
   },
-  appSubtitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#0284C7', // Sky 600
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  badgeContainer: {
-    backgroundColor: '#E0F2FE',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 16,
-  },
-  badgeText: {
-    color: '#0369A1',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  headerActions: {
+  propertySwitcherPill: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-  },
-  settingsButton: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    gap: 6,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.background,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: OwnerTheme.colors.border,
+    maxWidth: 240,
   },
-  settingsButtonPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  settingsButtonText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#334155',
-  },
-  signOutButton: {
-    backgroundColor: '#FEE2E2', // light red
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 16,
-  },
-  signOutButtonPressed: {
-    opacity: 0.7,
-  },
-  signOutButtonText: {
-    color: '#DC2626', // Red 600
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  greetingCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.05,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 2,
-      },
-    }),
-  },
-  greetingTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1E293B',
-  },
-  greetingDate: {
+  propertySwitcherText: {
     fontSize: 13,
-    color: '#64748B',
-    marginTop: 2,
-    fontWeight: '500',
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+    flex: 1,
   },
-  greetingNote: {
-    fontSize: 14,
-    color: '#475569',
-    marginTop: 8,
+  accountBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  errorBanner: {
+  pushAlertBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-  },
-  errorBannerIcon: {
-    fontSize: 16,
-    marginRight: 8,
-  },
-  errorBannerText: {
-    flex: 1,
-    color: '#DC2626',
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  retryText: {
-    color: '#0284C7',
-    fontSize: 13,
-    fontWeight: '700',
-    paddingHorizontal: 6,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  sectionMeta: {
-    fontSize: 13,
-    color: '#64748B',
-    fontWeight: '500',
-  },
-  linkText: {
-    fontSize: 13,
-    color: '#0284C7',
-    fontWeight: '600',
-  },
-  loadingBox: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    padding: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 24,
+    borderBottomWidth: 1,
+    borderBottomColor: '#FCA5A5',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
     gap: 8,
   },
-  loadingText: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  pendingReportsBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 16,
-  },
-  pendingReportsLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-    gap: 10,
-  },
-  pendingReportsIcon: {
-    fontSize: 22,
-  },
-  pendingReportsTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#92400E',
-  },
-  pendingReportsSub: {
-    fontSize: 12,
-    color: '#B45309',
-    marginTop: 2,
-  },
-  reviewBadge: {
-    backgroundColor: '#D97706',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
-    marginLeft: 8,
-  },
-  reviewBadgeText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  gridContainer: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 12,
-    marginBottom: 24,
-  },
-  summaryCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    position: 'relative',
-    overflow: 'hidden',
-  },
-  summaryCardSmall: {
-    flexBasis: '47%',
-    flexGrow: 1,
-    minWidth: 140,
-  },
-  summaryCardLarge: {
-    flex: 1,
-    minWidth: 160,
-  },
-  cardAccentBar: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 4,
-  },
-  summaryValue: {
-    fontSize: 26,
-    fontWeight: '800',
-    marginTop: 4,
-  },
-  summaryLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1E293B',
-    marginTop: 2,
-  },
-  summarySublabel: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  actionsList: {
-    gap: 10,
-    marginBottom: 24,
-  },
-  actionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    minHeight: 64, // Ensures accessible minimum 48px+ touch target
-  },
-  actionCardPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  actionIconContainer: {
-    width: 44,
-    height: 44,
-    borderRadius: 10,
-    backgroundColor: '#F1F5F9',
+  pushAlertIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#FEE2E2',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 14,
   },
-  actionIconText: {
-    fontSize: 22,
+  pushAlertTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#991B1B',
   },
-  actionTextContainer: {
+  pushAlertText: {
+    fontSize: 11,
+    color: '#B91C1C',
+  },
+  pushAlertClose: {
+    padding: 4,
+  },
+  gateStatsRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  gateStatHalfCard: {
     flex: 1,
   },
-  actionTitle: {
+  menuQuickCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 12,
+  },
+  menuQuickHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  menuQuickTitleCol: {
+    flex: 1,
+  },
+  menuQuickTitle: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#0F172A',
+    color: OwnerTheme.colors.textPrimary,
   },
-  actionSubtitle: {
+  menuQuickSubtitle: {
     fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 1,
   },
-  actionArrow: {
-    fontSize: 24,
-    color: '#94A3B8',
-    marginLeft: 8,
-    fontWeight: '300',
+  menuUpdateBtn: {
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderRadius: OwnerTheme.radius.sm,
   },
-  activityContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 14,
+  menuUpdateBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
   },
-  emptyActivityBox: {
-    paddingVertical: 24,
+  menuPillRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  mealPill: {
+    flex: 1,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: OwnerTheme.radius.sm,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  emptyActivityTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#334155',
+  mealPillPublished: {
+    backgroundColor: OwnerTheme.colors.successLight,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
   },
-  emptyActivitySub: {
-    fontSize: 12,
-    color: '#94A3B8',
-    marginTop: 4,
-    textAlign: 'center',
+  mealPillDraft: {
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.borderLight,
+  },
+  mealPillText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  mealPillTextPublished: {
+    color: OwnerTheme.colors.success,
+  },
+  quickGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  quickCard: {
+    width: '48.8%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 10,
+    gap: 8,
+  },
+  quickIconWrap: {
+    width: 36,
+    height: 36,
+    borderRadius: OwnerTheme.radius.sm,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  quickTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  quickSub: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 1,
+  },
+  activityCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 2,
+  },
+  activityLoading: {
+    paddingVertical: 16,
+    alignItems: 'center',
   },
   activityRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
+    paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
+    borderBottomColor: OwnerTheme.colors.borderLight,
   },
   activityRowLast: {
     borderBottomWidth: 0,
   },
-  activityContent: {
+  activityIconCircle: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  activityDetails: {
     flex: 1,
-    paddingRight: 10,
   },
-  activityTitle: {
-    fontSize: 14,
+  activityResidentName: {
+    fontSize: 13,
     fontWeight: '600',
-    color: '#1E293B',
+    color: OwnerTheme.colors.textPrimary,
   },
-  activityTime: {
-    fontSize: 12,
-    color: '#94A3B8',
-    marginTop: 3,
-  },
-  tagBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  tagText: {
+  activityActionText: {
     fontSize: 11,
-    fontWeight: '600',
-    color: '#334155',
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 1,
+  },
+  activityTimeText: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textMuted,
+  },
+  cardPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.99 }],
   },
   authLoadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 24,
+    padding: 24,
   },
   authNoticeText: {
-    fontSize: 14,
-    color: '#64748B',
     marginTop: 12,
-    textAlign: 'center',
+    fontSize: 14,
+    color: OwnerTheme.colors.textSecondary,
   },
-  authErrorTitle: {
-    fontSize: 18,
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  switcherModalCard: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    padding: 20,
+    ...OwnerTheme.shadow,
+  },
+  switcherModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  switcherModalTitle: {
+    fontSize: 17,
     fontWeight: '700',
-    color: '#0F172A',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  switcherModalSub: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+    marginBottom: 14,
+  },
+  propertyItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.sm,
     marginBottom: 6,
-    textAlign: 'center',
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.borderLight,
   },
-  authActionButton: {
-    backgroundColor: '#0284C7',
-    borderRadius: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 24,
-    marginTop: 16,
+  propertyItemRowSelected: {
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderColor: OwnerTheme.colors.primary,
   },
-  authActionButtonText: {
-    color: '#FFFFFF',
+  propertyNameItem: {
     fontSize: 14,
     fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  propertyNameItemSelected: {
+    color: OwnerTheme.colors.primary,
+  },
+  propertyAddressItem: {
+    fontSize: 11,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 1,
+  },
+  addPropertyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 12,
+    paddingVertical: 10,
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.primary,
+    borderStyle: 'dashed',
+  },
+  addPropertyBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+    marginBottom: 4,
+    marginTop: 8,
+  },
+  textInput: {
+    height: 46,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.md,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: OwnerTheme.colors.textPrimary,
+    backgroundColor: '#F8FAFC',
+    marginBottom: 8,
+  },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 10,
+    marginTop: 12,
+  },
+  modalCancelBtn: {
+    height: 40,
+    paddingHorizontal: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalCancelBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  modalConfirmBtn: {
+    height: 40,
+    paddingHorizontal: 16,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalConfirmBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#FFFFFF',
   },
 });
