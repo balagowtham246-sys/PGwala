@@ -87,7 +87,7 @@ export default function SimplifiedStudentBillingScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [residentId, setResidentId] = useState<string | null>(null);
-  const [residentName, setResidentName] = useState('Student');
+  const [residentName, setResidentName] = useState('Resident');
   const [roomNumber, setRoomNumber] = useState('');
   const [propertyName, setPropertyName] = useState('My PG');
 

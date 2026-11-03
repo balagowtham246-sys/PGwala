@@ -1,10 +1,9 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState, useMemo } from 'react';
 import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,9 +12,22 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
+import {
+  AlertTriangle,
+  CheckCircle2,
+} from 'lucide-react-native';
 
+import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
+import {
+  OwnerHeader,
+  PrimaryButton,
+  SecondaryButton,
+  DestructiveButton,
+  StatusBadge,
+  ErrorState,
+} from '@/components/ui/owner';
 
 interface ResidentData {
   id: string;
@@ -59,6 +71,16 @@ export default function EditResidentScreen() {
   const [unlinking, setUnlinking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  // Check if form has unsaved changes
+  const hasChanges = useMemo(() => {
+    if (!resident) return false;
+    return (
+      fullName.trim() !== resident.full_name ||
+      roomNumber.trim() !== resident.room_number ||
+      phoneNumber.trim() !== (resident.phone_number || '')
+    );
+  }, [resident, fullName, roomNumber, phoneNumber]);
 
   // 1. Fetch the resident details from Supabase
   const loadResident = useCallback(async () => {
@@ -126,7 +148,7 @@ export default function EditResidentScreen() {
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, user?.id]);
 
   useEffect(() => {
     if (id && user?.id) {
@@ -134,8 +156,27 @@ export default function EditResidentScreen() {
     }
   }, [id, user?.id, loadResident]);
 
-  // 2. Handle Edit / Update Resident (full_name, room_number, phone_number)
-  // Strictly preserves property_id, profile_id, and is_active untouched.
+  // Back navigation with unsaved changes confirmation
+  const handleBack = () => {
+    if (hasChanges) {
+      Alert.alert(
+        'Unsaved Changes',
+        'You have unsaved changes. Are you sure you want to discard them?',
+        [
+          { text: 'Stay Here', style: 'cancel' },
+          {
+            text: 'Discard & Exit',
+            style: 'destructive',
+            onPress: () => router.back(),
+          },
+        ]
+      );
+    } else {
+      router.back();
+    }
+  };
+
+  // 2. Handle Edit / Update Resident Details
   const handleSave = async () => {
     if (!user?.id) {
       Alert.alert('Authentication Required', 'You must be signed in as an owner.');
@@ -171,95 +212,54 @@ export default function EditResidentScreen() {
     setSuccessMessage(null);
 
     try {
-      // Allowed column update: full_name, phone_number, room_number
       const updatePayload = {
         full_name: trimmedName,
         room_number: trimmedRoom,
         phone_number: trimmedPhone || null,
       };
 
-      console.log('[EditResident] Updating resident payload:', {
-        id: resident.id,
-        payload: updatePayload,
-      });
-
       const { data, error } = await supabase
         .from('residents')
         .update(updatePayload)
         .eq('id', resident.id)
-        .eq('property_id', resident.property_id) // Defense-in-depth scope check
-        .select('id, property_id, profile_id, full_name, room_number, phone_number, is_active')
+        .eq('property_id', resident.property_id)
+        .select(
+          'id, property_id, profile_id, full_name, room_number, phone_number, is_active'
+        )
         .single();
 
       if (error) {
-        console.error('[EditResident] Update error:', error);
-        const errDetail = error.details ? ` (${error.details})` : error.hint ? ` (${error.hint})` : '';
-        const fullMessage = `Update Failed [Code: ${error.code || 'UNKNOWN'}]: ${error.message}${errDetail}`;
-        Alert.alert('Update Failed', fullMessage);
-        setErrorMessage(fullMessage);
-        return;
+        throw new Error(error.message);
       }
 
-      if (!data || !data.id) {
-        console.error('[EditResident] Update returned no row data:', data);
-        const noRowMsg = 'Update Failed: The database did not return the updated resident record.';
-        Alert.alert('Update Failed', noRowMsg);
-        setErrorMessage(noRowMsg);
-        return;
-      }
-
-      // Update confirmed
-      console.log('[EditResident] Resident updated successfully:', data);
       setResident({
         ...data,
         profile: resident.profile || null,
       });
-      setSuccessMessage('Resident details updated successfully!');
-
-      Alert.alert('Changes Saved', `${data.full_name}'s details have been updated.`, [
-        {
-          text: 'Done',
-          onPress: () => router.back(),
-        },
-        {
-          text: 'Stay on Screen',
-          style: 'cancel',
-        },
-      ]);
+      setSuccessMessage('Resident details updated successfully.');
+      Alert.alert('Changes Saved', `${data.full_name}'s details have been updated.`);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('[EditResident] Unexpected error during update:', err);
-      Alert.alert('Update Failed', `Could not update resident: ${msg}`);
+      console.error('[EditResident] Update error:', err);
       setErrorMessage(`Update Failed: ${msg}`);
     } finally {
       setSaving(false);
     }
   };
 
-  // 3. Handle Link Student Account (Owner-Only RPC Call)
-  // Invokes public.link_resident_profile(p_resident_id, p_student_email).
-  // Never updates residents.profile_id directly from the client.
+  // 3. Handle Link Student Account (Owner RPC)
   const handleLinkStudent = async () => {
-    if (!user?.id) {
-      Alert.alert('Authentication Required', 'You must be signed in as an owner.');
-      return;
-    }
+    if (!user?.id || !resident) return;
 
-    if (!resident) {
-      Alert.alert('Error', 'Resident details not loaded.');
-      return;
-    }
-
-    const trimmedEmail = studentEmail.trim();
+    const trimmedEmail = studentEmail.trim().toLowerCase();
     if (!trimmedEmail) {
       setErrorMessage('Please enter the student account email address.');
       return;
     }
 
-    // Email format validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(trimmedEmail)) {
-      setErrorMessage('Please enter a valid email address (e.g. student@example.com).');
+      setErrorMessage('Please enter a valid email address.');
       return;
     }
 
@@ -268,70 +268,39 @@ export default function EditResidentScreen() {
     setSuccessMessage(null);
 
     try {
-      console.log('[EditResident] Calling link_resident_profile RPC:', {
-        p_resident_id: resident.id,
-        p_student_email: trimmedEmail,
-      });
-
       const { data, error } = await supabase.rpc('link_resident_profile', {
         p_resident_id: resident.id,
         p_student_email: trimmedEmail,
       });
 
-      if (error) {
-        console.error('[EditResident] RPC link error:', error);
-        const errMsg = error.message || 'Failed to connect to the database to link account.';
-        Alert.alert('Linking Failed', errMsg);
-        setErrorMessage(errMsg);
-        return;
-      }
-
+      if (error) throw error;
       const res = data as RpcResponse | null;
-      if (!res) {
-        const errMsg = 'Linking Failed: No response received from server.';
-        Alert.alert('Linking Failed', errMsg);
-        setErrorMessage(errMsg);
-        return;
+      if (!res?.success) {
+        throw new Error(res?.error || 'Failed to link student account.');
       }
 
-      if (!res.success) {
-        const errMsg = res.error || 'Failed to link student account.';
-        Alert.alert('Linking Failed', errMsg);
-        setErrorMessage(errMsg);
-        return;
-      }
-
-      // Confirmed success
-      const successMsg = res.message || 'Student account linked successfully!';
+      const successMsg = res.message || 'Student account linked successfully.';
       setSuccessMessage(successMsg);
       setStudentEmail('');
       Alert.alert('Account Linked', successMsg);
-
-      // Reload resident data to update profile_id and joined profile
       await loadResident();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('[EditResident] Unexpected error during link:', err);
-      Alert.alert('Linking Failed', msg);
-      setErrorMessage(`Linking Failed: ${msg}`);
+      setErrorMessage(msg);
     } finally {
       setLinking(false);
     }
   };
 
-  // 4. Handle Unlink Student Account (Owner-Only RPC Call with confirmation)
-  // Invokes public.unlink_resident_profile(p_resident_id).
+  // 4. Handle Unlink Student Account (with confirmation)
   const handleConfirmUnlink = () => {
     if (!resident) return;
 
     Alert.alert(
       'Unlink Student Account?',
-      `Are you sure you want to unlink the student account from ${resident.full_name} (Room ${resident.room_number})?\n\n• The student will no longer have access to this room or published menus on their portal.\n• You can link another account at any time.`,
+      `Are you sure you want to unlink the student account from ${resident.full_name} (Room ${resident.room_number})?\n\n• The student will no longer have access to this room in their portal.\n• Historical billing and gate logs remain untouched.`,
       [
-        {
-          text: 'Cancel',
-          style: 'cancel',
-        },
+        { text: 'Cancel', style: 'cancel' },
         {
           text: 'Unlink Account',
           style: 'destructive',
@@ -349,68 +318,39 @@ export default function EditResidentScreen() {
     setSuccessMessage(null);
 
     try {
-      console.log('[EditResident] Calling unlink_resident_profile RPC:', {
-        p_resident_id: resident.id,
-      });
-
       const { data, error } = await supabase.rpc('unlink_resident_profile', {
         p_resident_id: resident.id,
       });
 
-      if (error) {
-        console.error('[EditResident] RPC unlink error:', error);
-        const errMsg = error.message || 'Failed to unlink account.';
-        Alert.alert('Unlink Failed', errMsg);
-        setErrorMessage(errMsg);
-        return;
-      }
-
+      if (error) throw error;
       const res = data as RpcResponse | null;
-      if (!res) {
-        const errMsg = 'Unlink Failed: No response received from server.';
-        Alert.alert('Unlink Failed', errMsg);
-        setErrorMessage(errMsg);
-        return;
-      }
-
-      if (!res.success) {
-        const errMsg = res.error || 'Failed to unlink student account.';
-        Alert.alert('Unlink Failed', errMsg);
-        setErrorMessage(errMsg);
-        return;
+      if (!res?.success) {
+        throw new Error(res?.error || 'Failed to unlink student account.');
       }
 
       const successMsg = res.message || 'Student account unlinked successfully.';
       setSuccessMessage(successMsg);
       Alert.alert('Account Unlinked', successMsg);
-
-      // Reload resident data to update profile_id
       await loadResident();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('[EditResident] Unexpected error during unlink:', err);
-      Alert.alert('Unlink Failed', msg);
-      setErrorMessage(`Unlink Failed: ${msg}`);
+      setErrorMessage(msg);
     } finally {
       setUnlinking(false);
     }
   };
 
   // 5. Handle Deactivate Resident (Soft Deactivation: is_active = false)
-  // Preserves resident record and historical movement_logs. Never deletes records.
   const handleConfirmDeactivate = () => {
     if (!resident) return;
 
     Alert.alert(
       'Deactivate Resident?',
-      `Are you sure you want to deactivate ${resident.full_name} (Room ${resident.room_number})?\n\n• They will no longer appear in active attendance lists.\n• No new IN/OUT movements can be recorded for them.\n• Historical gate records will be preserved.`,
+      `Are you sure you want to deactivate ${resident.full_name} (Room ${resident.room_number})?\n\n• They will no longer appear in active attendance lists.\n• All previous payments, receipts, and gate history are strictly preserved.\n• This action does NOT delete any historical data.`,
       [
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Cancel',
-          style: 'cancel',
-        },
-        {
-          text: 'Deactivate',
+          text: 'Deactivate Resident',
           style: 'destructive',
           onPress: performDeactivation,
         },
@@ -426,9 +366,6 @@ export default function EditResidentScreen() {
     setSuccessMessage(null);
 
     try {
-      console.log('[EditResident] Deactivating resident:', resident.id);
-
-      // Only update is_active to false
       const { data, error } = await supabase
         .from('residents')
         .update({ is_active: false })
@@ -437,357 +374,220 @@ export default function EditResidentScreen() {
         .select('id, full_name, is_active')
         .single();
 
-      if (error) {
-        console.error('[EditResident] Deactivation error:', error);
-        const errDetail = error.details ? ` (${error.details})` : error.hint ? ` (${error.hint})` : '';
-        const fullMessage = `Deactivation Failed [Code: ${error.code || 'UNKNOWN'}]: ${error.message}${errDetail}`;
-        Alert.alert('Deactivation Failed', fullMessage);
-        setErrorMessage(fullMessage);
-        return;
-      }
-
-      if (!data || data.is_active !== false) {
-        console.error('[EditResident] Deactivation returned unexpected status:', data);
-        const msg = 'Deactivation Failed: Database did not confirm inactive status.';
-        Alert.alert('Deactivation Failed', msg);
-        setErrorMessage(msg);
-        return;
-      }
-
-      console.log('[EditResident] Resident deactivated successfully:', data);
-      setResident((prev) => (prev ? { ...prev, is_active: false } : null));
+      if (error) throw error;
 
       Alert.alert(
         'Resident Deactivated',
-        `${data.full_name} has been marked as inactive. They have been removed from active attendance tracking while all previous logs are preserved.`,
+        `${resident.full_name} has been moved to inactive status. Historical records are preserved.`,
         [
           {
             text: 'OK',
-            onPress: () => router.back(),
+            onPress: () => router.replace('/(tabs)'),
           },
         ]
       );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('[EditResident] Unexpected error during deactivation:', err);
-      Alert.alert('Deactivation Failed', `Could not deactivate resident: ${msg}`);
       setErrorMessage(`Deactivation Failed: ${msg}`);
     } finally {
       setDeactivating(false);
     }
   };
 
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <OwnerHeader title="Edit Resident" showBack onBack={handleBack} />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={OwnerTheme.colors.primary} />
+          <Text style={styles.loadingText}>Loading resident details...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const isLinked = Boolean(resident?.profile_id);
+
   return (
     <SafeAreaView style={styles.safeArea}>
+      <OwnerHeader
+        title="Edit Resident"
+        subtitle={resident ? `${resident.full_name} • Room ${resident.room_number}` : ''}
+        showBack
+        onBack={handleBack}
+      />
+
       <KeyboardAvoidingView
-        style={styles.keyboardContainer}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled">
+          {errorMessage && (
+            <ErrorState
+              message={errorMessage}
+              onRetry={() => setErrorMessage(null)}
+            />
+          )}
 
-          {/* Top Bar with Back Button */}
-          <View style={styles.topBar}>
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.backButton,
-                pressed && styles.backButtonPressed,
-              ]}
-              onPress={() => router.back()}>
-              <Text style={styles.backButtonText}>‹ Back</Text>
-            </Pressable>
-            <View style={styles.titleWrapper}>
-              <Text style={styles.screenTitle}>Edit Resident</Text>
-              <Text style={styles.screenSubtitle}>Update resident details</Text>
+          {successMessage && (
+            <View style={styles.successBanner}>
+              <CheckCircle2 size={16} color={OwnerTheme.colors.success} />
+              <Text style={styles.successBannerText}>{successMessage}</Text>
             </View>
+          )}
+
+          {/* Section A: Resident Information */}
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Resident Information</Text>
+              <StatusBadge
+                label={resident?.is_active ? 'ACTIVE' : 'INACTIVE'}
+                variant={resident?.is_active ? 'success' : 'neutral'}
+                size="sm"
+              />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Full Name</Text>
+              <TextInput
+                style={styles.textInput}
+                value={fullName}
+                onChangeText={(val) => {
+                  setFullName(val);
+                  setErrorMessage(null);
+                  setSuccessMessage(null);
+                }}
+                placeholder="Full name"
+                placeholderTextColor={OwnerTheme.colors.textMuted}
+              />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Room Number</Text>
+              <TextInput
+                style={styles.textInput}
+                value={roomNumber}
+                onChangeText={(val) => {
+                  setRoomNumber(val);
+                  setErrorMessage(null);
+                  setSuccessMessage(null);
+                }}
+                placeholder="Room number"
+                placeholderTextColor={OwnerTheme.colors.textMuted}
+                autoCapitalize="characters"
+              />
+            </View>
+
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Phone Number</Text>
+              <TextInput
+                style={styles.textInput}
+                value={phoneNumber}
+                onChangeText={(val) => {
+                  setPhoneNumber(val);
+                  setErrorMessage(null);
+                  setSuccessMessage(null);
+                }}
+                placeholder="Phone number"
+                placeholderTextColor={OwnerTheme.colors.textMuted}
+                keyboardType="phone-pad"
+              />
+            </View>
+
+            <PrimaryButton
+              label="Save Changes"
+              onPress={handleSave}
+              loading={saving}
+              disabled={!hasChanges || saving}
+              style={{ marginTop: 6 }}
+            />
           </View>
 
-          {/* Loading Indicator */}
-          {loading ? (
-            <View style={styles.loadingBox}>
-              <ActivityIndicator size="small" color="#0284C7" />
-              <Text style={styles.loadingText}>Loading resident details...</Text>
+          {/* Section B: Student Portal Access */}
+          <View style={styles.sectionCard}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Student Portal Access</Text>
+              <StatusBadge
+                label={isLinked ? 'LINKED' : 'NOT LINKED'}
+                variant={isLinked ? 'success' : 'warning'}
+                size="sm"
+              />
             </View>
-          ) : !resident ? (
-            <View style={styles.errorBanner}>
-              <Text style={styles.errorIcon}>⚠️</Text>
-              <Text style={styles.errorText}>
-                {errorMessage || 'Resident record could not be found.'}
-              </Text>
+
+            {isLinked ? (
+              <View style={styles.linkedInfoBox}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.linkedAccountName}>
+                    {resident?.profile?.full_name || 'Linked Student Account'}
+                  </Text>
+                  <Text style={styles.linkedAccountSub}>
+                    Account is active and linked to this resident profile.
+                  </Text>
+                </View>
+                <SecondaryButton
+                  label="Unlink"
+                  onPress={handleConfirmUnlink}
+                  loading={unlinking}
+                  style={styles.unlinkBtn}
+                  textStyle={{ color: OwnerTheme.colors.danger, fontSize: 13 }}
+                />
+              </View>
+            ) : (
+              <View>
+                <Text style={styles.portalExplanation}>
+                  Link this resident to a registered student account email so
+                  they can access their personal PG app.
+                </Text>
+                <View style={styles.fieldGroup}>
+                  <Text style={styles.label}>Student Login Email</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={studentEmail}
+                    onChangeText={(val) => {
+                      setStudentEmail(val);
+                      setErrorMessage(null);
+                    }}
+                    placeholder="student@example.com"
+                    placeholderTextColor={OwnerTheme.colors.textMuted}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                  />
+                </View>
+                <SecondaryButton
+                  label="Link Student Account"
+                  onPress={handleLinkStudent}
+                  loading={linking}
+                />
+              </View>
+            )}
+          </View>
+
+          {/* Section C: Danger Zone */}
+          <View style={styles.dangerZoneCard}>
+            <View style={styles.dangerHeader}>
+              <AlertTriangle size={18} color={OwnerTheme.colors.danger} />
+              <Text style={styles.dangerTitle}>Danger Zone</Text>
             </View>
-          ) : (
-            <>
-              {/* Inactive Status Banner if already deactivated */}
-              {!resident.is_active && (
-                <View style={styles.inactiveStatusBanner}>
-                  <Text style={styles.inactiveStatusIcon}>ℹ️</Text>
-                  <View style={styles.inactiveStatusTextWrapper}>
-                    <Text style={styles.inactiveStatusTitle}>Deactivated Resident</Text>
-                    <Text style={styles.inactiveStatusSubtitle}>
-                      This resident is inactive and does not appear in active gate attendance.
-                    </Text>
-                  </View>
-                </View>
-              )}
+            <Text style={styles.dangerExplanation}>
+              Deactivating will remove the resident from the active roster. All
+              historical payments, receipts, and attendance logs are strictly
+              preserved.
+            </Text>
+            <DestructiveButton
+              label={
+                resident?.is_active
+                  ? 'Deactivate Resident'
+                  : 'Resident Already Inactive'
+              }
+              onPress={handleConfirmDeactivate}
+              loading={deactivating}
+              disabled={!resident?.is_active || deactivating}
+            />
+          </View>
 
-              {/* Success Banner */}
-              {successMessage && (
-                <View style={styles.successBanner}>
-                  <Text style={styles.successIcon}>✓</Text>
-                  <Text style={styles.successText}>{successMessage}</Text>
-                  <Pressable hitSlop={8} onPress={() => setSuccessMessage(null)}>
-                    <Text style={styles.bannerDismiss}>✕</Text>
-                  </Pressable>
-                </View>
-              )}
-
-              {/* Error Banner */}
-              {errorMessage && (
-                <View style={styles.errorBanner}>
-                  <Text style={styles.errorIcon}>⚠️</Text>
-                  <Text style={styles.errorText}>{errorMessage}</Text>
-                  <Pressable hitSlop={8} onPress={() => setErrorMessage(null)}>
-                    <Text style={styles.bannerDismiss}>✕</Text>
-                  </Pressable>
-                </View>
-              )}
-
-              {/* Edit Details Card */}
-              <View style={styles.card}>
-                <Text style={styles.cardHeaderTitle}>Resident Information</Text>
-
-                {/* Full Name */}
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>
-                    Full Name <Text style={styles.requiredAsterisk}>*</Text>
-                  </Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="e.g. Rahul Sharma"
-                    placeholderTextColor="#94A3B8"
-                    value={fullName}
-                    onChangeText={(val) => {
-                      setFullName(val);
-                      if (errorMessage) setErrorMessage(null);
-                    }}
-                    autoCapitalize="words"
-                    autoCorrect={false}
-                    editable={!saving && !deactivating}
-                  />
-                </View>
-
-                {/* Room Number */}
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>
-                    Room Number <Text style={styles.requiredAsterisk}>*</Text>
-                  </Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="e.g. 101, A-204"
-                    placeholderTextColor="#94A3B8"
-                    value={roomNumber}
-                    onChangeText={(val) => {
-                      setRoomNumber(val);
-                      if (errorMessage) setErrorMessage(null);
-                    }}
-                    autoCapitalize="characters"
-                    autoCorrect={false}
-                    editable={!saving && !deactivating}
-                  />
-                </View>
-
-                {/* Phone Number */}
-                <View style={styles.inputGroup}>
-                  <Text style={styles.label}>
-                    Phone Number <Text style={styles.optionalText}>(Optional)</Text>
-                  </Text>
-                  <TextInput
-                    style={styles.input}
-                    placeholder="e.g. 9876543210"
-                    placeholderTextColor="#94A3B8"
-                    value={phoneNumber}
-                    onChangeText={(val) => {
-                      setPhoneNumber(val);
-                      if (errorMessage) setErrorMessage(null);
-                    }}
-                    keyboardType="phone-pad"
-                    maxLength={15}
-                    editable={!saving && !deactivating}
-                  />
-                </View>
-
-                {/* Save Changes Button */}
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={saving || deactivating || linking || unlinking}
-                  style={({ pressed }) => [
-                    styles.submitBtn,
-                    (saving || deactivating || linking || unlinking) && styles.submitBtnDisabled,
-                    pressed && styles.submitBtnPressed,
-                  ]}
-                  onPress={handleSave}>
-                  {saving ? (
-                    <View style={styles.btnRow}>
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                      <Text style={styles.submitBtnText}>Saving Changes...</Text>
-                    </View>
-                  ) : (
-                    <Text style={styles.submitBtnText}>Save Changes</Text>
-                  )}
-                </Pressable>
-              </View>
-
-              {/* Student Portal Access Card (Owner-Only Account Linking) */}
-              <View style={styles.card}>
-                <View style={styles.cardHeaderRow}>
-                  <Text style={styles.cardHeaderTitle}>Student Portal Access</Text>
-                  <View
-                    style={[
-                      styles.linkStatusBadge,
-                      resident.profile_id
-                        ? styles.linkStatusBadgeLinked
-                        : styles.linkStatusBadgeUnlinked,
-                    ]}>
-                    <View
-                      style={[
-                        styles.linkStatusDot,
-                        {
-                          backgroundColor: resident.profile_id ? '#16A34A' : '#94A3B8',
-                        },
-                      ]}
-                    />
-                    <Text
-                      style={[
-                        styles.linkStatusText,
-                        {
-                          color: resident.profile_id ? '#15803D' : '#64748B',
-                        },
-                      ]}>
-                      {resident.profile_id ? 'App Linked' : 'Not Linked'}
-                    </Text>
-                  </View>
-                </View>
-
-                {resident.profile_id ? (
-                  /* State A: Currently Linked */
-                  <View style={styles.linkedBox}>
-                    <View style={styles.linkedInfoRow}>
-                      <Text style={styles.linkedIcon}>📱</Text>
-                      <View style={styles.linkedTextWrap}>
-                        <Text style={styles.linkedStudentName}>
-                          {resident.profile?.full_name || 'Linked Student Account'}
-                        </Text>
-                        <Text style={styles.linkedDesc}>
-                          This student can sign in to the PGwala Student Portal to view room allocation, check gate status, and view daily food menus.
-                        </Text>
-                      </View>
-                    </View>
-
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={saving || deactivating || unlinking || linking}
-                      style={({ pressed }) => [
-                        styles.unlinkBtn,
-                        (saving || deactivating || unlinking || linking) && styles.unlinkBtnDisabled,
-                        pressed && styles.unlinkBtnPressed,
-                      ]}
-                      onPress={handleConfirmUnlink}>
-                      {unlinking ? (
-                        <View style={styles.btnRow}>
-                          <ActivityIndicator size="small" color="#DC2626" />
-                          <Text style={styles.unlinkBtnText}>Unlinking Account...</Text>
-                        </View>
-                      ) : (
-                        <Text style={styles.unlinkBtnText}>Unlink Student Account</Text>
-                      )}
-                    </Pressable>
-                  </View>
-                ) : !resident.is_active ? (
-                  /* State B: Inactive resident */
-                  <Text style={styles.unlinkedHelpText}>
-                    Student accounts cannot be linked to deactivated resident records.
-                  </Text>
-                ) : (
-                  /* State C: Not Linked (Form to Link) */
-                  <View>
-                    <Text style={styles.unlinkedHelpText}>
-                      Link this room to the student's registered PGwala account so they can view accommodation details in their student app.
-                    </Text>
-
-                    <View style={styles.inputGroup}>
-                      <Text style={styles.label}>
-                        Student Account Email <Text style={styles.requiredAsterisk}>*</Text>
-                      </Text>
-                      <TextInput
-                        style={styles.input}
-                        placeholder="student@example.com"
-                        placeholderTextColor="#94A3B8"
-                        value={studentEmail}
-                        onChangeText={(val) => {
-                          setStudentEmail(val);
-                          if (errorMessage) setErrorMessage(null);
-                        }}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        keyboardType="email-address"
-                        editable={!saving && !deactivating && !linking && !unlinking}
-                      />
-                    </View>
-
-                    <Pressable
-                      accessibilityRole="button"
-                      disabled={saving || deactivating || linking || unlinking}
-                      style={({ pressed }) => [
-                        styles.linkBtn,
-                        (saving || deactivating || linking || unlinking) && styles.linkBtnDisabled,
-                        pressed && styles.linkBtnPressed,
-                      ]}
-                      onPress={handleLinkStudent}>
-                      {linking ? (
-                        <View style={styles.btnRow}>
-                          <ActivityIndicator size="small" color="#FFFFFF" />
-                          <Text style={styles.linkBtnText}>Linking Account...</Text>
-                        </View>
-                      ) : (
-                        <Text style={styles.linkBtnText}>Link Student Account</Text>
-                      )}
-                    </Pressable>
-                  </View>
-                )}
-              </View>
-
-              {/* Danger Zone: Deactivate Resident */}
-              {resident.is_active && (
-                <View style={styles.dangerCard}>
-                  <Text style={styles.dangerTitle}>Deactivate Resident</Text>
-                  <Text style={styles.dangerSubtitle}>
-                    Mark this student as moved out. They will no longer appear in active attendance lists, but their historical movement records are safely preserved.
-                  </Text>
-
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={saving || deactivating}
-                    style={({ pressed }) => [
-                      styles.deactivateBtn,
-                      (saving || deactivating) && styles.deactivateBtnDisabled,
-                      pressed && styles.deactivateBtnPressed,
-                    ]}
-                    onPress={handleConfirmDeactivate}>
-                    {deactivating ? (
-                      <View style={styles.btnRow}>
-                        <ActivityIndicator size="small" color="#DC2626" />
-                        <Text style={styles.deactivateBtnText}>Deactivating...</Text>
-                      </View>
-                    ) : (
-                      <Text style={styles.deactivateBtnText}>Deactivate Resident</Text>
-                    )}
-                  </Pressable>
-                </View>
-              )}
-            </>
-          )}
+          <View style={{ height: 40 }} />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -797,373 +597,131 @@ export default function EditResidentScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
-  },
-  keyboardContainer: {
-    flex: 1,
+    backgroundColor: OwnerTheme.colors.background,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
-    paddingBottom: 40,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    maxWidth: 640,
+    width: '100%',
+    alignSelf: 'center',
+    gap: 16,
   },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  backButton: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginRight: 12,
-    minHeight: 40,
-    justifyContent: 'center',
-  },
-  backButtonPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  backButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  titleWrapper: {
+  loadingContainer: {
     flex: 1,
-  },
-  screenTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#0F172A',
-    letterSpacing: -0.3,
-  },
-  screenSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
-    marginTop: 1,
-  },
-  loadingBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 24,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
     justifyContent: 'center',
-    gap: 10,
-    marginTop: 20,
+    alignItems: 'center',
+    padding: 24,
   },
   loadingText: {
+    marginTop: 12,
     fontSize: 14,
-    color: '#64748B',
-    fontWeight: '500',
-  },
-  inactiveStatusBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-    gap: 10,
-  },
-  inactiveStatusIcon: {
-    fontSize: 18,
-  },
-  inactiveStatusTextWrapper: {
-    flex: 1,
-  },
-  inactiveStatusTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#475569',
-  },
-  inactiveStatusSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
+    color: OwnerTheme.colors.textSecondary,
   },
   successBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#ECFDF5',
+    gap: 8,
+    backgroundColor: OwnerTheme.colors.successLight,
     borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 16,
-  },
-  successIcon: {
-    fontSize: 14,
-    color: '#059669',
-    fontWeight: '800',
-    marginRight: 8,
-  },
-  successText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#065F46',
-    fontWeight: '600',
-  },
-  errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 10,
+    borderColor: '#BBF7D0',
+    borderRadius: OwnerTheme.radius.md,
     padding: 12,
-    marginBottom: 16,
   },
-  errorIcon: {
-    fontSize: 16,
-    marginRight: 8,
-  },
-  errorText: {
-    flex: 1,
+  successBannerText: {
     fontSize: 13,
-    color: '#DC2626',
     fontWeight: '500',
+    color: OwnerTheme.colors.success,
   },
-  bannerDismiss: {
-    fontSize: 14,
-    color: '#64748B',
-    fontWeight: '700',
-    paddingHorizontal: 4,
-  },
-  card: {
+  sectionCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 18,
+    borderRadius: OwnerTheme.radius.card,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 16,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.05,
-        shadowRadius: 3,
-      },
-      android: {
-        elevation: 1,
-      },
-    }),
+    borderColor: OwnerTheme.colors.border,
+    padding: 18,
   },
-  cardHeaderTitle: {
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  sectionTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 16,
+    color: OwnerTheme.colors.textPrimary,
   },
-  cardHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  fieldGroup: {
     marginBottom: 14,
-  },
-  linkStatusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-    gap: 6,
-  },
-  linkStatusBadgeLinked: {
-    backgroundColor: '#DCFCE7',
-  },
-  linkStatusBadgeUnlinked: {
-    backgroundColor: '#F1F5F9',
-  },
-  linkStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  linkStatusText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  linkedBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  linkedInfoRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    marginBottom: 14,
-  },
-  linkedIcon: {
-    fontSize: 24,
-    marginTop: 2,
-  },
-  linkedTextWrap: {
-    flex: 1,
-  },
-  linkedStudentName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  linkedDesc: {
-    fontSize: 12,
-    color: '#64748B',
-    lineHeight: 18,
-    marginTop: 2,
-  },
-  unlinkBtn: {
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 44,
-  },
-  unlinkBtnDisabled: {
-    opacity: 0.6,
-  },
-  unlinkBtnPressed: {
-    backgroundColor: '#FEF2F2',
-  },
-  unlinkBtnText: {
-    color: '#DC2626',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  unlinkedHelpText: {
-    fontSize: 13,
-    color: '#64748B',
-    lineHeight: 18,
-    marginBottom: 14,
-  },
-  linkBtn: {
-    backgroundColor: '#0284C7',
-    borderRadius: 8,
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 4,
-    minHeight: 46,
-  },
-  linkBtnDisabled: {
-    backgroundColor: '#94A3B8',
-  },
-  linkBtnPressed: {
-    backgroundColor: '#0369A1',
-  },
-  linkBtnText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  inputGroup: {
-    marginBottom: 16,
   },
   label: {
     fontSize: 13,
-    fontWeight: '700',
-    color: '#334155',
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
     marginBottom: 6,
   },
-  requiredAsterisk: {
-    color: '#EF4444',
-  },
-  optionalText: {
-    fontSize: 12,
-    fontWeight: '400',
-    color: '#94A3B8',
-  },
-  input: {
-    backgroundColor: '#F8FAFC',
+  textInput: {
+    height: 50,
+    borderRadius: OwnerTheme.radius.md,
     borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
+    borderColor: OwnerTheme.colors.border,
     paddingHorizontal: 14,
-    paddingVertical: 10,
     fontSize: 15,
-    color: '#0F172A',
-    minHeight: 46,
+    color: OwnerTheme.colors.textPrimary,
+    backgroundColor: '#FFFFFF',
   },
-  submitBtn: {
-    backgroundColor: '#0284C7',
-    borderRadius: 10,
-    paddingVertical: 14,
+  portalExplanation: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+    marginBottom: 14,
+    lineHeight: 18,
+  },
+  linkedInfoBox: {
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 8,
-    minHeight: 48,
+    backgroundColor: '#F8FAFC',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 14,
+    gap: 12,
   },
-  submitBtnDisabled: {
-    backgroundColor: '#94A3B8',
+  linkedAccountName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
   },
-  submitBtnPressed: {
-    backgroundColor: '#0369A1',
+  linkedAccountSub: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 2,
   },
-  submitBtnText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
+  unlinkBtn: {
+    height: 38,
+    paddingHorizontal: 14,
+    borderColor: '#FECACA',
+    backgroundColor: '#FFF5F5',
   },
-  btnRow: {
+  dangerZoneCard: {
+    backgroundColor: '#FFF5F5',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: '#FEE2E2',
+    padding: 18,
+  },
+  dangerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-  },
-  dangerCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 14,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderLeftWidth: 4,
-    borderLeftColor: '#EF4444',
+    marginBottom: 8,
   },
   dangerTitle: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
-    color: '#B91C1C',
+    color: OwnerTheme.colors.danger,
   },
-  dangerSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
+  dangerExplanation: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+    marginBottom: 16,
     lineHeight: 18,
-    marginTop: 4,
-    marginBottom: 14,
-  },
-  deactivateBtn: {
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-    backgroundColor: '#FEF2F2',
-    borderRadius: 10,
-    paddingVertical: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 46,
-  },
-  deactivateBtnDisabled: {
-    opacity: 0.6,
-  },
-  deactivateBtnPressed: {
-    backgroundColor: '#FEE2E2',
-  },
-  deactivateBtnText: {
-    color: '#DC2626',
-    fontSize: 14,
-    fontWeight: '700',
   },
 });

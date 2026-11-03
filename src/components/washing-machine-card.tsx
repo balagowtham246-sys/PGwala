@@ -26,6 +26,8 @@ interface WashingMachineCardProps {
   propertyId: string | null;
   userRole: 'owner' | 'student';
   currentResidentId?: string | null; // Logged-in resident's resident.id (if student)
+  compact?: boolean;
+  style?: any;
 }
 
 let wmChannelSequence = 0;
@@ -50,6 +52,8 @@ export function WashingMachineCard({
   propertyId,
   userRole,
   currentResidentId,
+  compact = false,
+  style,
 }: WashingMachineCardProps) {
   const [data, setData] = useState<WashingMachineStatusData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -265,6 +269,80 @@ export function WashingMachineCard({
   const isCurrentSessionOwner =
     userRole === 'student' &&
     Boolean(currentResidentId && data?.current_resident_id === currentResidentId);
+
+  if (compact) {
+    return (
+      <View style={[styles.compactCard, style]}>
+        <View style={styles.compactHeaderRow}>
+          <View style={[styles.compactIconWrap, isFree ? styles.iconWrapFree : styles.iconWrapInUse]}>
+            <Text style={{ fontSize: 18 }}>🫧</Text>
+          </View>
+          <View style={[styles.compactPill, isFree ? styles.pillFree : styles.pillInUse]}>
+            <Text style={[styles.compactPillText, isFree ? styles.textFree : styles.textInUse]}>
+              {loading ? '...' : isFree ? 'FREE' : 'IN USE'}
+            </Text>
+          </View>
+        </View>
+
+        <Text style={styles.compactCardTitle}>Washing Machine</Text>
+        <Text style={styles.compactCardSubtitle} numberOfLines={1}>
+          {loading
+            ? 'Checking...'
+            : isFree
+            ? 'Available to use'
+            : isCurrentSessionOwner
+            ? 'Used by you'
+            : data?.current_resident_name
+            ? `${data.current_resident_name}`
+            : 'In use'}
+        </Text>
+
+        <View style={styles.compactActionArea}>
+          {loading ? (
+            <ActivityIndicator size="small" color="#0284C7" />
+          ) : isFree && userRole === 'student' ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.compactBtn,
+                styles.startBtn,
+                pressed && styles.btnPressed,
+                actionLoading && styles.btnDisabled,
+              ]}
+              disabled={actionLoading}
+              onPress={handleStartUsing}>
+              {actionLoading ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.compactBtnText}>Start Using</Text>
+              )}
+            </Pressable>
+          ) : isCurrentSessionOwner ? (
+            <Pressable
+              style={({ pressed }) => [
+                styles.compactBtn,
+                styles.releaseBtn,
+                pressed && styles.btnPressed,
+                actionLoading && styles.btnDisabled,
+              ]}
+              disabled={actionLoading}
+              onPress={handleMarkFree}>
+              {actionLoading ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.compactBtnText}>Mark Free</Text>
+              )}
+            </Pressable>
+          ) : (
+            <View style={styles.compactOccupiedWrap}>
+              <Text style={styles.compactOccupiedText} numberOfLines={1}>
+                {data?.started_at ? formatDuration(data.started_at) : 'Occupied'}
+              </Text>
+            </View>
+          )}
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.card}>
@@ -591,6 +669,75 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#DC2626',
     marginTop: 8,
+  },
+  compactCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    justifyContent: 'space-between',
+    minHeight: 140,
+  },
+  compactHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  compactIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  compactPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 3,
+    borderRadius: 9999,
+  },
+  compactPillText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+  compactCardTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginTop: 6,
+  },
+  compactCardSubtitle: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 1,
+  },
+  compactActionArea: {
+    marginTop: 10,
+  },
+  compactBtn: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  compactBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  compactOccupiedWrap: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    alignItems: 'center',
+  },
+  compactOccupiedText: {
+    fontSize: 11,
+    color: '#64748B',
+    fontWeight: '600',
   },
 });
 

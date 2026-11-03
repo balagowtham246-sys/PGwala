@@ -1,8 +1,7 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useState, useMemo } from 'react';
 import {
   ActivityIndicator,
-  Alert,
-  Platform,
+  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -12,10 +11,26 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
+import {
+  LogIn,
+  LogOut,
+  UserPlus,
+  Utensils,
+  X,
+} from 'lucide-react-native';
 
-import { BottomTabInset } from '@/constants/theme';
+import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
+import {
+  OwnerHeader,
+  StatisticCard,
+  StatusBadge,
+  SegmentedFilter,
+  EmptyState,
+  ErrorState,
+} from '@/components/ui/owner';
 
 // --- Types ---
 export type ResidentStatus = 'IN' | 'OUT' | 'UNKNOWN';
@@ -42,7 +57,6 @@ export interface MovementLogRecord {
   recorded_by: string;
 }
 
-// Helper to format event time
 function formatEventTime(isoString: string): string {
   try {
     const d = new Date(isoString);
@@ -56,91 +70,115 @@ function formatEventTime(isoString: string): string {
   }
 }
 
+function formatEventDate(isoString: string): string {
+  try {
+    const d = new Date(isoString);
+    return d.toLocaleDateString('en-IN', {
+      day: 'numeric',
+      month: 'short',
+    });
+  } catch {
+    return '';
+  }
+}
+
 export default function StudentInOutScreen() {
   const { user } = useAuth();
+  const { selectedProperty, selectedPropertyId } = useProperty();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [savingResidentId, setSavingResidentId] = useState<string | null>(null);
+  const [propertyName, setPropertyName] = useState('Shalom Residency');
 
   const [residents, setResidents] = useState<ResidentRecord[]>([]);
   const [allResidents, setAllResidents] = useState<ResidentRecord[]>([]);
   const [logs, setLogs] = useState<MovementLogRecord[]>([]);
-  const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  /**
-   * Fetch active property, its residents (active for gate attendance, all for history),
-   * and all recent movement logs.
-   * Completely live from Supabase (ZERO hardcoded fallback residents).
-   */
+  // Filter Tabs
+  type FilterTab = 'ALL' | 'OUT' | 'IN';
+  const [activeTab, setActiveTab] = useState<FilterTab>('ALL');
+
+  // Full History Modal state
+  const [fullHistoryVisible, setFullHistoryVisible] = useState(false);
+  const [historyDirectionFilter, setHistoryDirectionFilter] = useState<
+    'ALL' | 'IN' | 'OUT'
+  >('ALL');
+  const [historyResidentFilter, setHistoryResidentFilter] = useState<string>('ALL');
+  const [historyDateFilter, setHistoryDateFilter] = useState<
+    'ALL' | 'TODAY' | 'WEEK'
+  >('ALL');
+
   const loadData = useCallback(async () => {
     try {
       setErrorMessage(null);
 
-      // 1. Fetch active property belonging to authenticated owner
-      let query = supabase
-        .from('properties')
-        .select('id, name')
-        .eq('is_active', true);
+      // 1. Resolve active property ID & name
+      let activePropId = selectedPropertyId;
+      let activePropName = selectedProperty?.name;
 
-      if (user?.id) {
-        query = query.eq('owner_id', user.id);
+      if (!activePropId) {
+        let query = supabase
+          .from('properties')
+          .select('id, name')
+          .eq('is_active', true);
+
+        if (user?.id) {
+          query = query.eq('owner_id', user.id);
+        }
+
+        const { data: properties, error: propError } = await query.limit(1);
+        if (propError) throw propError;
+
+        if (!properties || properties.length === 0) {
+          setResidents([]);
+          setAllResidents([]);
+          setLogs([]);
+          setLoading(false);
+          return;
+        }
+
+        activePropId = properties[0].id;
+        activePropName = properties[0].name;
       }
 
-      const { data: properties, error: propError } = await query.limit(1);
+      setPropertyName(activePropName || 'Shalom Residency');
 
-      if (propError) {
-        throw new Error(`Property query failed: ${propError.message}`);
-      }
-
-      if (!properties || properties.length === 0) {
-        setResidents([]);
-        setAllResidents([]);
-        setLogs([]);
-        setLoading(false);
-        return;
-      }
-
-      const activeProp = properties[0];
-
-      // 2. Fetch all residents for this property (active & inactive)
+      // 2. Fetch all residents
       const { data: residentsData, error: resError } = await supabase
         .from('residents')
-        .select('id, property_id, profile_id, full_name, phone_number, room_number, is_active')
-        .eq('property_id', activeProp.id)
+        .select(
+          'id, property_id, profile_id, full_name, phone_number, room_number, is_active'
+        )
+        .eq('property_id', activePropId)
         .order('room_number', { ascending: true });
 
-      if (resError) {
-        throw new Error(`Residents query failed: ${resError.message}`);
-      }
+      if (resError) throw resError;
 
       const loadedAll: ResidentRecord[] = residentsData ?? [];
       setAllResidents(loadedAll);
 
-      // Active residents for live gate attendance & inside/outside count derivation
       const activeResidents = loadedAll.filter((r) => r.is_active);
       setResidents(activeResidents);
 
       const allResidentIds = loadedAll.map((r) => r.id);
-
       if (allResidentIds.length === 0) {
         setLogs([]);
         setLoading(false);
         return;
       }
 
-      // 3. Fetch movement logs for all property residents (preserving historical records)
+      // 3. Fetch movement logs
       const { data: logsData, error: logsError } = await supabase
         .from('movement_logs')
-        .select('id, resident_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by')
+        .select(
+          'id, resident_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
+        )
         .in('resident_id', allResidentIds)
         .order('event_time', { ascending: false })
         .limit(100);
 
-      if (logsError) {
-        throw new Error(`Movement logs query failed: ${logsError.message}`);
-      }
+      if (logsError) throw logsError;
 
       setLogs(logsData ?? []);
     } catch (err: unknown) {
@@ -151,12 +189,8 @@ export default function StudentInOutScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id]);
+  }, [user?.id, selectedPropertyId, selectedProperty?.name]);
 
-  /**
-   * useFocusEffect: Refetches live Supabase data EVERY TIME the screen comes into focus.
-   * Guarantees newly recorded movements or navigation between Dashboard <-> In/Out are synced.
-   */
   useFocusEffect(
     useCallback(() => {
       loadData();
@@ -168,13 +202,9 @@ export default function StudentInOutScreen() {
     loadData();
   };
 
-  /**
-   * DERIVED STATUS:
-   * Finds the resident's newest movement log in `logs` (which is sorted event_time DESC).
-   * - If found: status is log.direction ('IN' or 'OUT')
-   * - If not found: status is 'UNKNOWN'
-   */
-  const getLatestResidentLog = (residentId: string): MovementLogRecord | undefined => {
+  const getLatestResidentLog = (
+    residentId: string
+  ): MovementLogRecord | undefined => {
     return logs.find((l) => l.resident_id === residentId);
   };
 
@@ -195,13 +225,6 @@ export default function StudentInOutScreen() {
     { inside: 0, outside: 0, unknown: 0 }
   );
 
-  // Filter Tabs
-  type FilterTab = 'ALL' | 'OUT' | 'IN';
-  const [activeTab, setActiveTab] = useState<FilterTab>('ALL');
-
-  // Count meals to prepare:
-  // 1. All residents Inside PG always require food.
-  // 2. Residents who are Outside PG only require food if they explicitly confirmed food_required: true.
   const outsideMealsCount = residents.reduce((acc, r) => {
     const status = getResidentCurrentStatus(r.id);
     const latest = getLatestResidentLog(r.id);
@@ -211,7 +234,6 @@ export default function StudentInOutScreen() {
     return acc;
   }, 0);
 
-  // Total meals needed = (Inside residents) + (Outside residents returning for food)
   const mealsRequiredCount = counts.inside + outsideMealsCount;
 
   const filteredResidents = residents.filter((r) => {
@@ -221,14 +243,63 @@ export default function StudentInOutScreen() {
     return true;
   });
 
-  // Build fast resident lookup map for recent history (includes deactivated residents)
-  const residentMap = new Map<string, ResidentRecord>();
-  for (const r of allResidents) {
-    residentMap.set(r.id, r);
-  }
+  const residentMap = useMemo(() => {
+    const map = new Map<string, ResidentRecord>();
+    for (const r of allResidents) {
+      map.set(r.id, r);
+    }
+    return map;
+  }, [allResidents]);
+
+  // Full history filtered list
+  const filteredHistoryLogs = useMemo(() => {
+    return logs.filter((log) => {
+      if (
+        historyDirectionFilter !== 'ALL' &&
+        log.direction !== historyDirectionFilter
+      ) {
+        return false;
+      }
+      if (
+        historyResidentFilter !== 'ALL' &&
+        log.resident_id !== historyResidentFilter
+      ) {
+        return false;
+      }
+      if (historyDateFilter === 'TODAY') {
+        const logDate = new Date(log.event_time).toDateString();
+        const today = new Date().toDateString();
+        if (logDate !== today) return false;
+      } else if (historyDateFilter === 'WEEK') {
+        const logTime = new Date(log.event_time).getTime();
+        const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        if (logTime < oneWeekAgo) return false;
+      }
+      return true;
+    });
+  }, [logs, historyDirectionFilter, historyResidentFilter, historyDateFilter]);
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <OwnerHeader
+        title="Gate Attendance"
+        subtitle={propertyName}
+        showBack
+        rightAction={
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Add Resident"
+            style={({ pressed }) => [
+              styles.headerAddBtn,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => router.push('/add-resident')}>
+            <UserPlus size={16} color={OwnerTheme.colors.primary} />
+            <Text style={styles.headerAddBtnText}>Add</Text>
+          </Pressable>
+        }
+      />
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -236,947 +307,677 @@ export default function StudentInOutScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            colors={['#0284C7']}
+            colors={[OwnerTheme.colors.primary]}
           />
         }>
-
-        {/* Top Navigation Bar with Back Button */}
-        <View style={styles.topBar}>
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.backButton,
-              pressed && styles.backButtonPressed,
-            ]}
-            onPress={() => router.back()}>
-            <Text style={styles.backButtonText}>‹ Back</Text>
-          </Pressable>
-          <View style={styles.titleWrapper}>
-            <Text style={styles.screenTitle}>Student In / Out</Text>
-            <Text style={styles.screenSubtitle}>Gate Attendance & Logs</Text>
-          </View>
-        </View>
-
-        {/* Transient Feedback Banner */}
-        {feedbackMessage && (
-          <View style={styles.feedbackBanner}>
-            <Text style={styles.feedbackIcon}>✓</Text>
-            <Text style={styles.feedbackText}>{feedbackMessage}</Text>
-            <Pressable hitSlop={8} onPress={() => setFeedbackMessage(null)}>
-              <Text style={styles.feedbackDismiss}>✕</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {/* Error Banner */}
         {errorMessage && (
-          <View style={styles.errorBanner}>
-            <Text style={styles.errorIcon}>⚠️</Text>
-            <Text style={styles.errorText}>{errorMessage}</Text>
-            <Pressable hitSlop={8} onPress={loadData}>
-              <Text style={styles.retryText}>Retry</Text>
-            </Pressable>
-          </View>
+          <ErrorState message={errorMessage} onRetry={loadData} />
         )}
 
-        {/* Real-time Summary Cards derived from latest status */}
-        <View style={styles.summaryRow}>
-          <View style={[styles.summaryCard, styles.insideBorder]}>
-            <Text style={[styles.summaryNumber, { color: '#16A34A' }]}>
-              {counts.inside}
-            </Text>
-            <Text style={styles.summaryLabel}>Inside PG</Text>
-          </View>
-          <View style={[styles.summaryCard, styles.outsideBorder]}>
-            <Text style={[styles.summaryNumber, { color: '#EA580C' }]}>
-              {counts.outside}
-            </Text>
-            <Text style={styles.summaryLabel}>Outside PG</Text>
-          </View>
-          <View style={[styles.summaryCard, styles.mealsBorder]}>
-            <Text style={[styles.summaryNumber, { color: '#0284C7' }]}>
-              {mealsRequiredCount}
-            </Text>
-            <Text style={styles.summaryLabel}>Meals Needed</Text>
-            <Text style={styles.summarySubNote}>
-              {counts.inside} in + {outsideMealsCount} out
-            </Text>
-          </View>
+        {/* Top 3 Real-Time Statistics */}
+        <View style={styles.statsRow}>
+          <StatisticCard
+            label="Inside PG"
+            value={counts.inside}
+            accentColor={OwnerTheme.colors.success}
+            icon={LogIn}
+            sublabel="Checked in"
+            onPress={() => setActiveTab('IN')}
+          />
+          <StatisticCard
+            label="Outside PG"
+            value={counts.outside}
+            accentColor={OwnerTheme.colors.warning}
+            icon={LogOut}
+            sublabel="Checked out"
+            onPress={() => setActiveTab('OUT')}
+          />
+          <StatisticCard
+            label="Meals Needed"
+            value={mealsRequiredCount}
+            accentColor={OwnerTheme.colors.primary}
+            icon={Utensils}
+            sublabel={`${counts.inside} in + ${outsideMealsCount} out`}
+          />
         </View>
 
-        {/* View-Only Information Banner */}
-        <View style={styles.infoBanner}>
-          <Text style={styles.infoBannerIcon}>ℹ️</Text>
-          <Text style={styles.infoBannerText}>
-            Live Roster: Residents mark their movement, purpose, and dinner requirements from their student app.
-          </Text>
-        </View>
+        {/* Filter Segmented Control */}
+        <SegmentedFilter
+          options={[
+            { key: 'ALL', label: 'All', count: residents.length },
+            { key: 'OUT', label: 'Outside', count: counts.outside },
+            { key: 'IN', label: 'Inside', count: counts.inside },
+          ]}
+          activeKey={activeTab}
+          onSelect={(key) => setActiveTab(key as FilterTab)}
+          style={{ marginVertical: 14 }}
+        />
 
-        {/* Filter Tabs */}
-        <View style={styles.filterTabsRow}>
-          <Pressable
-            style={[styles.filterTab, activeTab === 'ALL' && styles.filterTabActive]}
-            onPress={() => setActiveTab('ALL')}>
-            <Text style={[styles.filterTabText, activeTab === 'ALL' && styles.filterTabTextActive]}>
-              All ({residents.length})
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[styles.filterTab, activeTab === 'OUT' && styles.filterTabActive]}
-            onPress={() => setActiveTab('OUT')}>
-            <Text style={[styles.filterTabText, activeTab === 'OUT' && styles.filterTabTextActive]}>
-              Outside ({counts.outside})
-            </Text>
-          </Pressable>
-          <Pressable
-            style={[styles.filterTab, activeTab === 'IN' && styles.filterTabActive]}
-            onPress={() => setActiveTab('IN')}>
-            <Text style={[styles.filterTabText, activeTab === 'IN' && styles.filterTabTextActive]}>
-              Inside ({counts.inside})
-            </Text>
-          </Pressable>
-        </View>
-
-        {/* Section: Residents List */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>
-            {activeTab === 'ALL'
-              ? 'All Residents'
-              : activeTab === 'OUT'
-              ? 'Currently Outside PG'
-              : 'Currently Inside PG'}
-          </Text>
-          <View style={styles.sectionHeaderRight}>
-            <Text style={styles.sectionMeta}>{filteredResidents.length} Listed</Text>
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.addResidentPill,
-                pressed && styles.addResidentPillPressed,
-              ]}
-              onPress={() => router.push('/add-resident')}>
-              <Text style={styles.addResidentPillText}>+ Add</Text>
-            </Pressable>
-          </View>
-        </View>
-
+        {/* Residents Roster */}
         {loading ? (
           <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
-            <Text style={styles.loadingText}>Loading attendance roster & logs...</Text>
+            <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+            <Text style={styles.loadingText}>Loading attendance roster...</Text>
           </View>
         ) : filteredResidents.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>No Residents in this Filter</Text>
-            <Text style={styles.emptySubtitle}>
-              {activeTab === 'OUT'
+          <EmptyState
+            title="No residents found"
+            description={
+              activeTab === 'OUT'
                 ? 'No residents are currently marked outside.'
                 : activeTab === 'IN'
                 ? 'No residents are currently marked inside.'
-                : 'No active resident records exist for your PG property in Supabase.'}
-            </Text>
-          </View>
+                : 'No active residents registered in this property.'
+            }
+          />
         ) : (
-          <View style={styles.residentList}>
+          <View style={styles.residentsList}>
             {filteredResidents.map((resident) => {
               const currentStatus = getResidentCurrentStatus(resident.id);
               const latestLog = getLatestResidentLog(resident.id);
               const isInside = currentStatus === 'IN';
               const isOutside = currentStatus === 'OUT';
-              const isUnknown = currentStatus === 'UNKNOWN';
 
               return (
-                <View key={resident.id} style={styles.residentCard}>
-                  <View style={styles.residentHeaderRow}>
-                    <View style={styles.residentInfo}>
-                      <View style={styles.residentNameRow}>
-                        <Text style={styles.residentName}>{resident.full_name}</Text>
-                        <Pressable
-                          accessibilityRole="button"
-                          hitSlop={8}
-                          style={({ pressed }) => [
-                            styles.editBadgeBtn,
-                            pressed && styles.editBadgeBtnPressed,
-                          ]}
-                          onPress={() =>
-                            router.push({
-                              pathname: '/edit-resident',
-                              params: { id: resident.id },
-                            })
-                          }>
-                          <Text style={styles.editBadgeBtnText}>Edit</Text>
-                        </Pressable>
-                      </View>
-                      <View style={styles.roomTagRow}>
-                        <Text style={styles.residentRoom}>Room {resident.room_number}</Text>
-                        {resident.profile_id ? (
-                          <View style={styles.appLinkedPill}>
-                            <Text style={styles.appLinkedPillText}>App Linked</Text>
-                          </View>
-                        ) : null}
-                      </View>
-                    </View>
-
-                    {/* Status Pill Badge */}
-                    <View
-                      style={[
-                        styles.statusBadge,
-                        isInside && styles.statusBadgeIn,
-                        isOutside && styles.statusBadgeOut,
-                        isUnknown && styles.statusBadgeUnknown,
-                      ]}>
-                      <View
-                        style={[
-                          styles.statusDot,
-                          {
-                            backgroundColor: isInside
-                              ? '#16A34A'
-                              : isOutside
-                              ? '#EA580C'
-                              : '#94A3B8',
-                          },
-                        ]}
-                      />
-                      <Text
-                        style={[
-                          styles.statusText,
-                          {
-                            color: isInside
-                              ? '#15803D'
-                              : isOutside
-                              ? '#C2410C'
-                              : '#475569',
-                          },
-                        ]}>
-                        {isInside ? 'INSIDE' : isOutside ? 'OUTSIDE' : 'UNKNOWN'}
+                <Pressable
+                  key={resident.id}
+                  accessibilityRole="button"
+                  style={({ pressed }) => [
+                    styles.residentCard,
+                    pressed && styles.cardPressed,
+                  ]}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/edit-resident',
+                      params: { id: resident.id },
+                    })
+                  }>
+                  <View style={styles.residentCardHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.residentName}>
+                        {resident.full_name}
+                      </Text>
+                      <Text style={styles.residentRoom}>
+                        Room {resident.room_number}
                       </Text>
                     </View>
+                    <StatusBadge
+                      label={
+                        isInside ? 'INSIDE' : isOutside ? 'OUTSIDE' : 'UNKNOWN'
+                      }
+                      variant={
+                        isInside
+                          ? 'success'
+                          : isOutside
+                          ? 'warning'
+                          : 'neutral'
+                      }
+                      size="sm"
+                    />
                   </View>
 
-                  {/* Conveyed Student Information & Movement Details */}
+                  {/* Clean information rows */}
                   {isOutside && latestLog ? (
-                    <View style={styles.conveyedDetailsBox}>
-                      <View style={styles.conveyedRow}>
-                        <Text style={styles.conveyedLabel}>Left at:</Text>
-                        <Text style={styles.conveyedValue}>
+                    <View style={styles.detailsBox}>
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailLabel}>Left at:</Text>
+                        <Text style={styles.detailValue}>
                           {formatEventTime(latestLog.event_time)}
                         </Text>
                       </View>
                       {latestLog.purpose ? (
-                        <View style={styles.conveyedRow}>
-                          <Text style={styles.conveyedLabel}>Purpose:</Text>
-                          <Text style={styles.conveyedValueHighlight}>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Purpose:</Text>
+                          <Text style={styles.detailValueBold}>
                             {latestLog.purpose}
                           </Text>
                         </View>
                       ) : null}
                       {latestLog.expected_return_time ? (
-                        <View style={styles.conveyedRow}>
-                          <Text style={styles.conveyedLabel}>Expected Return:</Text>
-                          <Text style={styles.conveyedValue}>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>
+                            Expected return:
+                          </Text>
+                          <Text style={styles.detailValue}>
                             {latestLog.expected_return_time}
                           </Text>
                         </View>
                       ) : null}
-                      <View style={styles.conveyedRow}>
-                        <Text style={styles.conveyedLabel}>Dinner / Meal:</Text>
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailLabel}>Dinner:</Text>
                         <Text
                           style={[
-                            styles.foodStatusBadge,
+                            styles.dinnerText,
                             latestLog.food_required
-                              ? styles.foodNeededBadge
-                              : styles.foodNotNeededBadge,
+                              ? { color: OwnerTheme.colors.success }
+                              : { color: OwnerTheme.colors.textMuted },
                           ]}>
-                          {latestLog.food_required
-                            ? '🍽️ Dinner Required'
-                            : '❌ No Dinner Needed'}
+                          {latestLog.food_required ? 'Required' : 'Not required'}
                         </Text>
                       </View>
                     </View>
                   ) : (
-                    <View style={styles.insideStatusBox}>
-                      <View style={styles.insideCheckInRow}>
-                        <Text style={styles.insideStatusText}>
+                    <View style={styles.detailsBox}>
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailLabel}>Checked in:</Text>
+                        <Text style={styles.detailValue}>
                           {latestLog
-                            ? `Checked in at ${formatEventTime(latestLog.event_time)}`
-                            : 'Currently inside accommodation'}
+                            ? formatEventTime(latestLog.event_time)
+                            : 'Inside PG'}
                         </Text>
-                        <Text style={[styles.foodStatusBadge, styles.foodIncludedBadge]}>
-                          🍽️ Food Included (Inside PG)
+                      </View>
+                      <View style={styles.detailRow}>
+                        <Text style={styles.detailLabel}>Dinner:</Text>
+                        <Text
+                          style={[
+                            styles.dinnerText,
+                            { color: OwnerTheme.colors.success },
+                          ]}>
+                          Included (Inside PG)
                         </Text>
                       </View>
                     </View>
                   )}
-                </View>
+                </Pressable>
               );
             })}
           </View>
         )}
 
-        {/* Section: Recent Event History */}
-        <View style={styles.sectionHeaderRow}>
-          <Text style={styles.sectionTitle}>Recent Event History</Text>
-          <Text style={styles.sectionMeta}>{logs.length} records</Text>
+        {/* Recent Event History Section (Latest 3 events) */}
+        <View style={styles.historySectionHeader}>
+          <Text style={styles.historySectionTitle}>Recent Event History</Text>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setFullHistoryVisible(true)}>
+            <Text style={styles.viewAllText}>View All ›</Text>
+          </Pressable>
         </View>
 
-        <View style={styles.historyContainer}>
+        <View style={styles.historyCard}>
           {loading ? (
-            <View style={styles.emptyHistoryBox}>
-              <ActivityIndicator size="small" color="#0284C7" />
+            <View style={{ padding: 16, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
             </View>
           ) : logs.length === 0 ? (
-            <View style={styles.emptyHistoryBox}>
-              <Text style={styles.emptyHistoryTitle}>No movement records</Text>
-              <Text style={styles.emptyHistorySub}>
-                When students enter or exit, recorded events will display here in real time.
-              </Text>
-            </View>
+            <EmptyState
+              title="No movement records"
+              description="When students check in or out, records will appear here."
+            />
           ) : (
-            logs.slice(0, 10).map((item, index) => {
+            logs.slice(0, 3).map((item, index) => {
               const resident = residentMap.get(item.resident_id);
               const isEntry = item.direction === 'IN';
-
               return (
                 <View
                   key={item.id}
                   style={[
-                    styles.historyRow,
-                    index === Math.min(logs.length, 10) - 1 && styles.historyRowLast,
+                    styles.historyItemRow,
+                    index === Math.min(logs.length, 3) - 1 && {
+                      borderBottomWidth: 0,
+                    },
                   ]}>
-                  <View style={styles.historyLeft}>
-                    <View
-                      style={[
-                        styles.historyIconBox,
-                        { backgroundColor: isEntry ? '#DCFCE7' : '#FFEDD5' },
-                      ]}>
-                      <Text style={styles.historyIcon}>
-                        {isEntry ? '↓' : '↑'}
-                      </Text>
-                    </View>
-                    <View style={styles.historyDetails}>
-                      <Text style={styles.historyName}>
-                        {resident ? resident.full_name : 'Resident'}
-                      </Text>
-                      <Text style={styles.historySub}>
-                        {resident
-                          ? resident.is_active
-                            ? `Room ${resident.room_number}`
-                            : `Room ${resident.room_number} (Inactive)`
-                          : ''}
-                        {item.note ? ` • ${item.note}` : ''}
-                      </Text>
-                    </View>
+                  <View
+                    style={[
+                      styles.historyItemIcon,
+                      {
+                        backgroundColor: isEntry
+                          ? OwnerTheme.colors.successLight
+                          : OwnerTheme.colors.warningLight,
+                      },
+                    ]}>
+                    {isEntry ? (
+                      <LogIn size={15} color={OwnerTheme.colors.success} />
+                    ) : (
+                      <LogOut size={15} color={OwnerTheme.colors.warning} />
+                    )}
                   </View>
-
-                  <View style={styles.historyRight}>
-                    <View
-                      style={[
-                        styles.miniBadge,
-                        { backgroundColor: isEntry ? '#DCFCE7' : '#FFEDD5' },
-                      ]}>
-                      <Text
-                        style={[
-                          styles.miniBadgeText,
-                          { color: isEntry ? '#15803D' : '#C2410C' },
-                        ]}>
-                        {item.direction}
-                      </Text>
-                    </View>
-                    <Text style={styles.historyTime}>
-                      {formatEventTime(item.event_time)}
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.historyItemName}>
+                      {resident ? resident.full_name : 'Resident'}{' '}
+                      {resident ? `(Room ${resident.room_number})` : ''}
+                    </Text>
+                    <Text style={styles.historyItemSub}>
+                      marked {item.direction}
+                      {item.purpose ? ` • ${item.purpose}` : ''}
                     </Text>
                   </View>
+                  <Text style={styles.historyItemTime}>
+                    {formatEventTime(item.event_time)}
+                  </Text>
                 </View>
               );
             })
           )}
         </View>
 
-        {/* Spacing for bottom tab bar */}
-        <View style={{ height: BottomTabInset + 30 }} />
+        <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* Full History Modal */}
+      <Modal
+        visible={fullHistoryVisible}
+        animationType="slide"
+        onRequestClose={() => setFullHistoryVisible(false)}>
+        <SafeAreaView style={styles.fullModalSafe}>
+          <View style={styles.modalHeaderRow}>
+            <Text style={styles.modalTitle}>Gate Event History</Text>
+            <Pressable
+              hitSlop={8}
+              onPress={() => setFullHistoryVisible(false)}
+              style={styles.modalCloseBtn}>
+              <X size={20} color={OwnerTheme.colors.textPrimary} />
+            </Pressable>
+          </View>
+
+          {/* Filters Bar in Modal */}
+          <View style={styles.modalFiltersBox}>
+            <View style={styles.modalFilterRow}>
+              <Text style={styles.filterGroupLabel}>Direction:</Text>
+              {(['ALL', 'IN', 'OUT'] as const).map((dir) => (
+                <Pressable
+                  key={dir}
+                  style={[
+                    styles.filterChip,
+                    historyDirectionFilter === dir && styles.filterChipActive,
+                  ]}
+                  onPress={() => setHistoryDirectionFilter(dir)}>
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      historyDirectionFilter === dir &&
+                        styles.filterChipTextActive,
+                    ]}>
+                    {dir}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+
+            <View style={styles.modalFilterRow}>
+              <Text style={styles.filterGroupLabel}>Timeframe:</Text>
+              {(['ALL', 'TODAY', 'WEEK'] as const).map((timeOpt) => (
+                <Pressable
+                  key={timeOpt}
+                  style={[
+                    styles.filterChip,
+                    historyDateFilter === timeOpt && styles.filterChipActive,
+                  ]}
+                  onPress={() => setHistoryDateFilter(timeOpt)}>
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      historyDateFilter === timeOpt &&
+                        styles.filterChipTextActive,
+                    ]}>
+                    {timeOpt === 'ALL'
+                      ? 'All'
+                      : timeOpt === 'TODAY'
+                      ? 'Today'
+                      : 'Past 7 Days'}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          {/* History Records List */}
+          <ScrollView
+            contentContainerStyle={styles.historyModalScroll}
+            showsVerticalScrollIndicator={false}>
+            {filteredHistoryLogs.length === 0 ? (
+              <EmptyState
+                title="No events match this filter"
+                description="Try clearing filters to view more gate logs."
+              />
+            ) : (
+              filteredHistoryLogs.map((item, idx) => {
+                const resident = residentMap.get(item.resident_id);
+                const isEntry = item.direction === 'IN';
+                return (
+                  <View key={item.id} style={styles.modalHistoryCard}>
+                    <View style={styles.modalHistoryHeader}>
+                      <View
+                        style={[
+                          styles.historyItemIcon,
+                          {
+                            backgroundColor: isEntry
+                              ? OwnerTheme.colors.successLight
+                              : OwnerTheme.colors.warningLight,
+                          },
+                        ]}>
+                        {isEntry ? (
+                          <LogIn size={14} color={OwnerTheme.colors.success} />
+                        ) : (
+                          <LogOut
+                            size={14}
+                            color={OwnerTheme.colors.warning}
+                          />
+                        )}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.modalHistName}>
+                          {resident ? resident.full_name : 'Resident'}
+                        </Text>
+                        <Text style={styles.modalHistRoom}>
+                          Room {resident?.room_number || '-'}
+                        </Text>
+                      </View>
+                      <View style={{ alignItems: 'flex-end' }}>
+                        <StatusBadge
+                          label={isEntry ? 'IN' : 'OUT'}
+                          variant={isEntry ? 'success' : 'warning'}
+                          size="sm"
+                        />
+                        <Text style={styles.modalHistTime}>
+                          {formatEventDate(item.event_time)} •{' '}
+                          {formatEventTime(item.event_time)}
+                        </Text>
+                      </View>
+                    </View>
+
+                    {item.purpose ? (
+                      <View style={styles.modalDetailSubRow}>
+                        <Text style={styles.modalDetailSubLabel}>Purpose: </Text>
+                        <Text style={styles.modalDetailSubVal}>
+                          {item.purpose}
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    {item.expected_return_time ? (
+                      <View style={styles.modalDetailSubRow}>
+                        <Text style={styles.modalDetailSubLabel}>
+                          Expected return:{' '}
+                        </Text>
+                        <Text style={styles.modalDetailSubVal}>
+                          {item.expected_return_time}
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    {!isEntry && (
+                      <View style={styles.modalDetailSubRow}>
+                        <Text style={styles.modalDetailSubLabel}>Dinner: </Text>
+                        <Text
+                          style={[
+                            styles.modalDetailSubVal,
+                            item.food_required
+                              ? { color: OwnerTheme.colors.success }
+                              : { color: OwnerTheme.colors.textMuted },
+                          ]}>
+                          {item.food_required ? 'Required' : 'Not required'}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                );
+              })
+            )}
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }
 
-// --- Styles ---
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC', // Slate 50
+    backgroundColor: OwnerTheme.colors.background,
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 10,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    maxWidth: 960,
+    width: '100%',
+    alignSelf: 'center',
   },
-  topBar: {
+  headerAddBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
-  },
-  backButton: {
-    paddingVertical: 8,
+    gap: 4,
+    paddingVertical: 6,
     paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.full,
     backgroundColor: '#FFFFFF',
-    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginRight: 12,
-    minHeight: 40,
-    justifyContent: 'center',
+    borderColor: OwnerTheme.colors.border,
   },
-  backButtonPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  backButtonText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  titleWrapper: {
-    flex: 1,
-  },
-  screenTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#0F172A',
-    letterSpacing: -0.3,
-  },
-  screenSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
-    marginTop: 1,
-  },
-  feedbackBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#ECFDF5',
-    borderWidth: 1,
-    borderColor: '#A7F3D0',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginBottom: 16,
-  },
-  feedbackIcon: {
-    fontSize: 14,
-    color: '#059669',
-    fontWeight: '800',
-    marginRight: 8,
-  },
-  feedbackText: {
-    flex: 1,
+  headerAddBtnText: {
     fontSize: 13,
-    color: '#065F46',
     fontWeight: '600',
+    color: OwnerTheme.colors.primary,
   },
-  feedbackDismiss: {
-    fontSize: 14,
-    color: '#059669',
-    fontWeight: '700',
-    paddingHorizontal: 4,
-  },
-  errorBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-  },
-  errorIcon: {
-    fontSize: 16,
-    marginRight: 8,
-  },
-  errorText: {
-    flex: 1,
-    fontSize: 13,
-    color: '#DC2626',
-    fontWeight: '500',
-  },
-  retryText: {
-    color: '#0284C7',
-    fontSize: 13,
-    fontWeight: '700',
-    paddingHorizontal: 6,
-  },
-  summaryRow: {
+  statsRow: {
     flexDirection: 'row',
     gap: 10,
-    marginBottom: 20,
   },
-  summaryCard: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderLeftWidth: 4,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 1 },
-        shadowOpacity: 0.05,
-        shadowRadius: 2,
-      },
-      android: {
-        elevation: 1,
-      },
-    }),
-  },
-  insideBorder: {
-    borderLeftColor: '#16A34A',
-  },
-  outsideBorder: {
-    borderLeftColor: '#EA580C',
-  },
-  mealsBorder: {
-    borderLeftColor: '#0284C7',
-  },
-  unknownBorder: {
-    borderLeftColor: '#94A3B8',
-  },
-  summaryNumber: {
-    fontSize: 24,
-    fontWeight: '800',
-  },
-  summaryLabel: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  summarySubNote: {
-    fontSize: 10,
-    color: '#0284C7',
-    fontWeight: '500',
-    marginTop: 2,
-  },
-  infoBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F0F9FF',
-    borderWidth: 1,
-    borderColor: '#BAE6FD',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-    gap: 8,
-  },
-  infoBannerIcon: {
-    fontSize: 16,
-  },
-  infoBannerText: {
-    flex: 1,
-    fontSize: 12,
-    color: '#0369A1',
-    fontWeight: '500',
-    lineHeight: 17,
-  },
-  filterTabsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  filterTab: {
-    flex: 1,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-  },
-  filterTabActive: {
-    backgroundColor: '#0284C7',
-    borderColor: '#0284C7',
-  },
-  filterTabText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#64748B',
-  },
-  filterTabTextActive: {
-    color: '#FFFFFF',
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  sectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  sectionHeaderRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  residentsList: {
     gap: 10,
-  },
-  sectionMeta: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
-  },
-  addResidentPill: {
-    backgroundColor: '#0284C7',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 6,
-  },
-  addResidentPillPressed: {
-    backgroundColor: '#0369A1',
-  },
-  addResidentPillText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  loadingBox: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    padding: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
     marginBottom: 20,
-    gap: 8,
-  },
-  loadingText: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  emptyCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    padding: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-  },
-  emptyTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  emptySubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    textAlign: 'center',
-    marginTop: 4,
-    lineHeight: 18,
-  },
-  emptyAddBtn: {
-    marginTop: 14,
-    backgroundColor: '#0284C7',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-  },
-  emptyAddBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  residentList: {
-    gap: 12,
-    marginBottom: 24,
   },
   residentCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
+    borderRadius: OwnerTheme.radius.card,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: OwnerTheme.colors.border,
+    padding: 14,
   },
-  residentHeaderRow: {
+  cardPressed: {
+    opacity: 0.88,
+  },
+  residentCardHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-  },
-  residentInfo: {
-    flex: 1,
-  },
-  residentNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    marginBottom: 8,
   },
   residentName: {
     fontSize: 16,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  editBadgeBtn: {
-    backgroundColor: '#F1F5F9',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  editBadgeBtnPressed: {
-    backgroundColor: '#E2E8F0',
-  },
-  editBadgeBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#0369A1',
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
   },
   residentRoom: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  roomTagRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
     marginTop: 2,
   },
-  appLinkedPill: {
-    backgroundColor: '#DCFCE7',
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-  },
-  appLinkedPillText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#15803D',
-  },
-  statusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  statusBadgeIn: {
-    backgroundColor: '#DCFCE7',
-  },
-  statusBadgeOut: {
-    backgroundColor: '#FFEDD5',
-  },
-  statusBadgeUnknown: {
-    backgroundColor: '#F1F5F9',
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    marginRight: 6,
-  },
-  statusText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  eventMetaRow: {
-    marginTop: 10,
-    marginBottom: 12,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  eventMetaText: {
-    fontSize: 12,
-    color: '#64748B',
-  },
-  eventMetaHighlight: {
-    color: '#0F172A',
-    fontWeight: '600',
-  },
-  conveyedDetailsBox: {
+  detailsBox: {
     backgroundColor: '#F8FAFC',
-    borderRadius: 8,
+    borderRadius: OwnerTheme.radius.sm,
     padding: 10,
-    marginTop: 10,
-    gap: 5,
-    borderWidth: 1,
-    borderColor: '#F1F5F9',
+    gap: 6,
   },
-  conveyedRow: {
+  detailRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  conveyedLabel: {
-    fontSize: 12,
-    color: '#64748B',
-    fontWeight: '500',
-  },
-  conveyedValue: {
-    fontSize: 12,
-    color: '#0F172A',
-    fontWeight: '600',
-  },
-  conveyedValueHighlight: {
-    fontSize: 12,
-    color: '#1D4ED8',
-    fontWeight: '700',
-    backgroundColor: '#EFF6FF',
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 4,
-  },
-  foodStatusBadge: {
-    fontSize: 11,
-    fontWeight: '700',
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  foodNeededBadge: {
-    backgroundColor: '#DCFCE7',
-    color: '#15803D',
-  },
-  foodIncludedBadge: {
-    backgroundColor: '#DCFCE7',
-    color: '#15803D',
-  },
-  foodNotNeededBadge: {
-    backgroundColor: '#FEF3C7',
-    color: '#B45309',
-  },
-  insideStatusBox: {
-    marginTop: 10,
-    paddingTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  insideCheckInRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-    flexWrap: 'wrap',
-  },
-  insideStatusText: {
-    fontSize: 12,
-    color: '#64748B',
-    fontStyle: 'italic',
-  },
-  actionButtonGroup: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  actionBtn: {
-    flex: 1,
-    borderRadius: 8,
-    paddingVertical: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 44, // Accessible touch target
-  },
-  actionBtnIn: {
-    backgroundColor: '#16A34A', // Green
-  },
-  actionBtnOut: {
-    backgroundColor: '#EA580C', // Orange
-  },
-  actionBtnDisabled: {
-    opacity: 0.45,
-  },
-  actionBtnPressed: {
-    opacity: 0.85,
-  },
-  actionBtnText: {
+  detailLabel: {
     fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
+    color: OwnerTheme.colors.textSecondary,
   },
-  historyContainer: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    paddingHorizontal: 14,
+  detailValue: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textPrimary,
   },
-  emptyHistoryBox: {
-    paddingVertical: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyHistoryTitle: {
-    fontSize: 14,
+  detailValueBold: {
+    fontSize: 13,
     fontWeight: '600',
-    color: '#334155',
+    color: OwnerTheme.colors.textPrimary,
   },
-  emptyHistorySub: {
-    fontSize: 12,
-    color: '#94A3B8',
-    marginTop: 4,
-    textAlign: 'center',
+  dinnerText: {
+    fontSize: 13,
+    fontWeight: '600',
   },
-  historyRow: {
+  historySectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 10,
+  },
+  historySectionTitle: {
+    ...OwnerTheme.typography.sectionHeading,
+  },
+  viewAllText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
+  },
+  historyCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+  },
+  historyItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
+    borderBottomColor: OwnerTheme.colors.borderLight,
   },
-  historyRowLast: {
-    borderBottomWidth: 0,
-  },
-  historyLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  historyIconBox: {
+  historyItemIcon: {
     width: 32,
     height: 32,
-    borderRadius: 8,
-    alignItems: 'center',
+    borderRadius: 16,
     justifyContent: 'center',
+    alignItems: 'center',
     marginRight: 10,
   },
-  historyIcon: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  historyDetails: {
-    flex: 1,
-  },
-  historyName: {
+  historyItemName: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#0F172A',
+    color: OwnerTheme.colors.textPrimary,
   },
-  historySub: {
+  historyItemSub: {
     fontSize: 12,
-    color: '#64748B',
+    color: OwnerTheme.colors.textSecondary,
     marginTop: 2,
   },
-  historyRight: {
-    alignItems: 'flex-end',
-    marginLeft: 8,
+  historyItemTime: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textMuted,
   },
-  miniBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-    marginBottom: 2,
+  loadingBox: {
+    paddingVertical: 24,
+    alignItems: 'center',
   },
-  miniBadgeText: {
-    fontSize: 10,
+  loadingText: {
+    marginTop: 8,
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  // Full History Modal
+  fullModalSafe: {
+    flex: 1,
+    backgroundColor: OwnerTheme.colors.background,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: OwnerTheme.colors.border,
+    backgroundColor: '#FFFFFF',
+  },
+  modalTitle: {
+    fontSize: 18,
     fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
   },
-  historyTime: {
+  modalCloseBtn: {
+    padding: 6,
+  },
+  modalFiltersBox: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: OwnerTheme.colors.border,
+    gap: 8,
+  },
+  modalFilterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  filterGroupLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+    minWidth: 70,
+  },
+  filterChip: {
+    paddingVertical: 5,
+    paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.full,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#F8FAFC',
+  },
+  filterChipActive: {
+    backgroundColor: OwnerTheme.colors.primary,
+    borderColor: OwnerTheme.colors.primary,
+  },
+  filterChipText: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+    fontWeight: '500',
+  },
+  filterChipTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '600',
+  },
+  historyModalScroll: {
+    padding: 16,
+    gap: 10,
+  },
+  modalHistoryCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 12,
+  },
+  modalHistoryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  modalHistName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  modalHistRoom: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  modalHistTime: {
     fontSize: 11,
-    color: '#94A3B8',
+    color: OwnerTheme.colors.textMuted,
+    marginTop: 2,
+  },
+  modalDetailSubRow: {
+    flexDirection: 'row',
+    marginTop: 6,
+    paddingTop: 6,
+    borderTopWidth: 1,
+    borderTopColor: OwnerTheme.colors.borderLight,
+  },
+  modalDetailSubLabel: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  modalDetailSubVal: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: OwnerTheme.colors.textPrimary,
   },
 });

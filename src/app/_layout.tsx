@@ -6,6 +6,7 @@ import * as SplashScreen from 'expo-splash-screen';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { AuthProvider, useAuth } from '@/context/auth-context';
+import { PropertyProvider } from '@/context/property-context';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -37,6 +38,8 @@ function RootNavigationLayout() {
         'student-complaints',
         'student-gate-history',
         'student-settings',
+        'student-profile-edit',
+        'student-accommodation',
       ];
       if (
         inAuthGroup ||
@@ -56,6 +59,9 @@ function RootNavigationLayout() {
         'eb-billing',
         'owner-complaints',
         'owner-settings',
+        'owner-profile-edit',
+        'owner-properties',
+        'owner-notifications',
       ];
       if (
         inAuthGroup ||
@@ -97,7 +103,12 @@ function RootNavigationLayout() {
       <Stack.Screen name="student-complaints" />
       <Stack.Screen name="student-gate-history" />
       <Stack.Screen name="student-settings" />
+      <Stack.Screen name="student-profile-edit" />
+      <Stack.Screen name="student-accommodation" />
       <Stack.Screen name="owner-settings" />
+      <Stack.Screen name="owner-profile-edit" />
+      <Stack.Screen name="owner-properties" />
+      <Stack.Screen name="owner-notifications" />
     </Stack>
   );
 }
@@ -108,8 +119,10 @@ export default function RootLayout() {
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
       <AuthProvider>
-        <AnimatedSplashOverlay />
-        <RootNavigationLayout />
+        <PropertyProvider>
+          <AnimatedSplashOverlay />
+          <RootNavigationLayout />
+        </PropertyProvider>
       </AuthProvider>
     </ThemeProvider>
   );

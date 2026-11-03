@@ -16,7 +16,10 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
+import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
+import { OwnerHeader } from '@/components/ui/owner';
+import { OwnerTheme } from '@/constants/theme';
 
 export type ComplaintCategory =
   | 'plumbing'
@@ -83,6 +86,7 @@ const STATUS_CONFIG: Record<
 
 export default function OwnerComplaintsScreen() {
   const { user } = useAuth();
+  const { selectedProperty, selectedPropertyId } = useProperty();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -105,26 +109,33 @@ export default function OwnerComplaintsScreen() {
     try {
       setLoading(true);
 
-      // 1. Fetch active property owned by authenticated user
-      const { data: propData, error: propError } = await supabase
-        .from('properties')
-        .select('id, name')
-        .eq('owner_id', user.id)
-        .eq('is_active', true)
-        .order('created_at', { ascending: true })
-        .limit(1);
+      // 1. Resolve active property ID and name
+      let activePropId = selectedPropertyId;
+      let activePropName = selectedProperty?.name;
 
-      if (propError) throw propError;
-      if (!propData || propData.length === 0) {
-        setPropertyId(null);
-        setComplaints([]);
-        setLoading(false);
-        return;
+      if (!activePropId) {
+        const { data: propData, error: propError } = await supabase
+          .from('properties')
+          .select('id, name')
+          .eq('owner_id', user.id)
+          .eq('is_active', true)
+          .order('created_at', { ascending: true })
+          .limit(1);
+
+        if (propError) throw propError;
+        if (!propData || propData.length === 0) {
+          setPropertyId(null);
+          setComplaints([]);
+          setLoading(false);
+          return;
+        }
+
+        activePropId = propData[0].id;
+        activePropName = propData[0].name;
       }
 
-      const activeProp = propData[0];
-      setPropertyId(activeProp.id);
-      setPropertyName(activeProp.name);
+      setPropertyId(activePropId);
+      setPropertyName(activePropName || 'My PG');
 
       // 2. Fetch complaints for this property
       const { data: compData, error: compError } = await supabase
@@ -148,7 +159,7 @@ export default function OwnerComplaintsScreen() {
             phone_number
           )
         `)
-        .eq('property_id', activeProp.id)
+        .eq('property_id', activePropId)
         .order('created_at', { ascending: false });
 
       if (compError) {
@@ -165,7 +176,7 @@ export default function OwnerComplaintsScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id]);
+  }, [user?.id, selectedPropertyId, selectedProperty?.name]);
 
   useEffect(() => {
     loadData();
@@ -224,6 +235,11 @@ export default function OwnerComplaintsScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea}>
+      <OwnerHeader
+        title="Maintenance & Issues"
+        subtitle={`${propertyName} • Complaints`}
+        showBack
+      />
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={
@@ -233,22 +249,9 @@ export default function OwnerComplaintsScreen() {
               setRefreshing(true);
               loadData();
             }}
-            colors={['#0284C7']}
+            colors={[OwnerTheme.colors.primary]}
           />
         }>
-        {/* Top Bar */}
-        <View style={styles.topBar}>
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-            onPress={() => router.back()}>
-            <Text style={styles.backButtonText}>‹ Back</Text>
-          </Pressable>
-          <View style={styles.headerTitleWrap}>
-            <Text style={styles.screenTitle}>Maintenance & Issues</Text>
-            <Text style={styles.screenSubtitle}>{propertyName} • Complaints Board</Text>
-          </View>
-        </View>
 
         {loading ? (
           <View style={styles.loadingBox}>
