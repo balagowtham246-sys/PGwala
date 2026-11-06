@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -17,7 +18,7 @@ import { router } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
-import { supabase } from '@/lib/supabase';
+import { supabase, getSignedComplaintPhotoUrl } from '@/lib/supabase';
 import { OwnerHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 
@@ -103,6 +104,23 @@ export default function OwnerComplaintsScreen() {
   const [newStatus, setNewStatus] = useState<ComplaintStatus>('open');
   const [notes, setNotes] = useState('');
   const [updating, setUpdating] = useState(false);
+
+  // Full-Screen Image Viewer
+  const [fullImageUrl, setFullImageUrl] = useState<string | null>(null);
+  const [loadingFullImage, setLoadingFullImage] = useState(false);
+
+  const handleViewPhoto = async (rawUrlOrPath: string) => {
+    try {
+      setLoadingFullImage(true);
+      const signed = await getSignedComplaintPhotoUrl(rawUrlOrPath);
+      setFullImageUrl(signed || rawUrlOrPath);
+    } catch (err) {
+      console.warn('[OwnerComplaints] Signed photo error:', err);
+      setFullImageUrl(rawUrlOrPath);
+    } finally {
+      setLoadingFullImage(false);
+    }
+  };
 
   const loadData = useCallback(async () => {
     if (!user?.id) return;
@@ -416,6 +434,15 @@ export default function OwnerComplaintsScreen() {
                     <Text style={styles.complaintTitle}>{item.title}</Text>
                     <Text style={styles.complaintDesc}>{item.description}</Text>
 
+                    {/* Resident Photo Attachment */}
+                    {item.photo_url && (
+                      <Pressable
+                        style={styles.photoViewBtn}
+                        onPress={() => handleViewPhoto(item.photo_url!)}>
+                        <Text style={styles.photoViewBtnText}>📷 View Resident Photo Attachment</Text>
+                      </Pressable>
+                    )}
+
                     {/* Owner Resolution Box */}
                     {item.owner_notes && (
                       <View style={styles.ownerNotesBox}>
@@ -523,6 +550,30 @@ export default function OwnerComplaintsScreen() {
               </Pressable>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      {/* Full-Screen Image Viewer Modal */}
+      <Modal
+        visible={Boolean(fullImageUrl || loadingFullImage)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFullImageUrl(null)}>
+        <View style={styles.fullImageOverlay}>
+          <Pressable
+            style={styles.fullImageCloseBtn}
+            onPress={() => setFullImageUrl(null)}>
+            <Text style={styles.fullImageCloseText}>Close ✕</Text>
+          </Pressable>
+          {loadingFullImage ? (
+            <ActivityIndicator size="large" color="#FFFFFF" />
+          ) : fullImageUrl ? (
+            <Image
+              source={{ uri: fullImageUrl }}
+              style={styles.fullImageView}
+              resizeMode="contain"
+            />
+          ) : null}
         </View>
       </Modal>
     </SafeAreaView>
@@ -893,6 +944,46 @@ const styles = StyleSheet.create({
   },
   btnDisabled: {
     opacity: 0.6,
+  },
+  photoViewBtn: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  photoViewBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  fullImageOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullImageCloseBtn: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    zIndex: 10,
+  },
+  fullImageCloseText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  fullImageView: {
+    width: '92%',
+    height: '80%',
   },
 });
 

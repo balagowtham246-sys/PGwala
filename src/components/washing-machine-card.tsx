@@ -112,18 +112,12 @@ export function WashingMachineCard({
     }
   }, [propertyId]);
 
-  const fetchStatusRef = useRef(fetchStatus);
-  fetchStatusRef.current = fetchStatus;
-
   // Set up Realtime subscription scoped to this property
   useEffect(() => {
     isMountedRef.current = true;
     let isEffectActive = true;
 
     if (!propertyId) {
-      setData(null);
-      setLoading(false);
-      setIsSubscribed(false);
       return () => {
         isMountedRef.current = false;
         isEffectActive = false;
@@ -131,7 +125,7 @@ export function WashingMachineCard({
     }
 
     // Initial fetch
-    fetchStatusRef.current(true);
+    fetchStatus(true);
 
     // Clean up any prior channel ref before creating a fresh channel
     if (channelRef.current) {
@@ -158,7 +152,7 @@ export function WashingMachineCard({
         async () => {
           if (!isEffectActive || !isMountedRef.current) return;
           // Refetch authoritative status (including resolved resident display name)
-          await fetchStatusRef.current(false);
+          await fetchStatus(false);
         }
       )
       .subscribe((status) => {
@@ -178,7 +172,7 @@ export function WashingMachineCard({
       }
       void supabase.removeChannel(channel);
     };
-  }, [propertyId]);
+  }, [propertyId, fetchStatus]);
 
   // Action: Start washing machine session
   const handleStartUsing = async () => {

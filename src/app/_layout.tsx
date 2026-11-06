@@ -7,6 +7,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { PropertyProvider } from '@/context/property-context';
+import { evaluateNavigationRedirect } from '@/lib/navigation-guards';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -18,63 +19,14 @@ function RootNavigationLayout() {
     if (isLoading) return;
 
     const currentSegment = segments[0] as string | undefined;
-    const inAuthGroup = currentSegment === 'login';
-    const isOwner = session && profile?.role === 'owner';
-    const isStudent = session && profile?.role === 'student';
+    const redirectTarget = evaluateNavigationRedirect({
+      hasSession: Boolean(session),
+      role: profile?.role,
+      currentSegment,
+    });
 
-    if (!session || !profile) {
-      // User is not logged in -> redirect to /login
-      if (!inAuthGroup) {
-        router.replace('/login');
-      }
-      return;
-    }
-
-    if (isOwner) {
-      // Owner should not be on /login or student-specific screens
-      const studentRoutes = [
-        'student-dashboard',
-        'student-billing',
-        'student-complaints',
-        'student-gate-history',
-        'student-settings',
-        'student-profile-edit',
-        'student-accommodation',
-      ];
-      if (
-        inAuthGroup ||
-        (currentSegment && studentRoutes.includes(currentSegment))
-      ) {
-        router.replace('/(tabs)');
-      }
-    } else if (isStudent) {
-      // Student should not be on /login or any owner route
-      const ownerRoutes = [
-        '(tabs)',
-        'student-in-out',
-        'add-resident',
-        'edit-resident',
-        'food-menu',
-        'billing-management',
-        'eb-billing',
-        'owner-complaints',
-        'owner-settings',
-        'owner-profile-edit',
-        'owner-properties',
-        'owner-notifications',
-      ];
-      if (
-        inAuthGroup ||
-        (currentSegment && ownerRoutes.includes(currentSegment)) ||
-        !currentSegment
-      ) {
-        router.replace('/student-dashboard');
-      }
-    } else {
-      // Unknown role or invalid state -> redirect to /login
-      if (!inAuthGroup) {
-        router.replace('/login');
-      }
+    if (redirectTarget) {
+      router.replace(redirectTarget as any);
     }
   }, [session, profile, isLoading, segments]);
 

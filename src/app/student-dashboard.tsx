@@ -30,6 +30,7 @@ import {
   Check,
   ArrowRight,
   AlertCircle,
+  MessageCircle,
   X,
 } from 'lucide-react-native';
 
@@ -542,7 +543,7 @@ export default function ResidentDashboardScreen() {
               <View style={styles.menuHeader}>
                 <View style={styles.menuHeaderLeft}>
                   <Utensils size={16} color={OwnerTheme.colors.primary} />
-                  <Text style={styles.menuTitle}>Today's Food Menu</Text>
+                  <Text style={styles.menuTitle}>Today&apos;s Food Menu</Text>
                 </View>
                 <Text style={styles.menuPublishedHint}>Published Daily</Text>
               </View>
@@ -847,6 +848,17 @@ export default function ResidentDashboardScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Floating Action Button: PG Community Chat */}
+      {resident && (
+        <Pressable
+          style={styles.chatFab}
+          onPress={() => router.push('/student-chat')}
+          accessibilityLabel="Open Resident Community Chat">
+          <MessageCircle size={20} color="#FFFFFF" />
+          <Text style={styles.chatFabText}>PG Chat</Text>
+        </Pressable>
+      )}
     </SafeAreaView>
   );
 }
@@ -1466,6 +1478,29 @@ const styles = StyleSheet.create({
   },
   modalConfirmText: {
     fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  chatFab: {
+    position: 'absolute',
+    bottom: BottomTabInset + 20,
+    right: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0284C7',
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    borderRadius: 28,
+    gap: 8,
+    shadowColor: '#0284C7',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
+    elevation: 6,
+    zIndex: 99,
+  },
+  chatFabText: {
+    fontSize: 13,
     fontWeight: '700',
     color: '#FFFFFF',
   },

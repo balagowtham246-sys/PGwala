@@ -59,7 +59,6 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     }
 
     try {
-      setLoadingProperties(true);
       const { data, error } = await supabase
         .from('properties')
         .select('id, name, address, owner_id, is_active')
@@ -93,7 +92,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoadingProperties(false);
     }
-  }, [user?.id, profile?.role]);
+  }, [user, profile?.role]);
 
   useEffect(() => {
     fetchProperties();

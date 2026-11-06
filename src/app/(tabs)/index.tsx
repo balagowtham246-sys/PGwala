@@ -33,6 +33,7 @@ import {
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '@/context/auth-context';
 import { useProperty, PropertyItem } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
@@ -56,6 +57,7 @@ interface ResidentRecord {
 interface MovementLogRecord {
   id: string;
   resident_id: string;
+  property_id?: string;
   direction: 'IN' | 'OUT';
   event_time: string;
   note: string | null;
@@ -165,15 +167,35 @@ export default function OwnerDashboard() {
         return;
       }
 
-      // 2. Fetch recent movement logs
-      const { data: logsData, error: logsError } = await supabase
+      // 2. Fetch recent movement logs (optimized via direct property_id index)
+      let { data: logsData, error: logsError } = await supabase
         .from('movement_logs')
         .select(
-          'id, resident_id, direction, event_time, note, purpose, expected_return_time, food_required'
+          'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required'
         )
-        .in('resident_id', allResidentIds)
+        .eq('property_id', selectedPropertyId)
         .order('event_time', { ascending: false })
         .limit(60);
+
+      // Backwards-compatibility fallback if property_id was not yet backfilled
+      if (
+        !logsError &&
+        (!logsData || logsData.length === 0) &&
+        allResidentIds.length > 0
+      ) {
+        const { data: fallbackData } = await supabase
+          .from('movement_logs')
+          .select(
+            'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required'
+          )
+          .in('resident_id', allResidentIds)
+          .order('event_time', { ascending: false })
+          .limit(60);
+
+        if (fallbackData && fallbackData.length > 0) {
+          logsData = fallbackData;
+        }
+      }
 
       if (logsError) throw logsError;
       const logs: MovementLogRecord[] = logsData ?? [];
@@ -314,6 +336,7 @@ export default function OwnerDashboard() {
           event: 'INSERT',
           schema: 'public',
           table: 'movement_logs',
+          filter: `property_id=eq.${selectedPropertyId}`,
         },
         async (payload) => {
           const newLog = payload.new as MovementLogRecord;
@@ -326,25 +349,70 @@ export default function OwnerDashboard() {
 
             // Non-college departure detected
             if (!isCollege) {
-              const now = Date.now();
-              const lastAlertTime =
-                alertThrottleRef.current.get(newLog.resident_id) || 0;
-
-              // Anti-flooding throttle: Skip if alerted within 15 minutes for this resident
-              if (now - lastAlertTime < 15 * 60 * 1000) {
-                return;
-              }
-              alertThrottleRef.current.set(newLog.resident_id, now);
-
-              // Fetch resident details for readable notification
+              // 1. Fetch resident details and strictly enforce property isolation
               const { data: res } = await supabase
                 .from('residents')
-                .select('full_name, room_number')
+                .select('id, full_name, room_number, property_id')
                 .eq('id', newLog.resident_id)
                 .single();
 
-              const resName = res?.full_name || 'Resident';
-              const resRoom = res?.room_number || '';
+              // Ignore alerts for residents belonging to other properties
+              if (!res || res.property_id !== selectedPropertyId) {
+                return;
+              }
+
+              // 2. Read owner notification preferences from storage
+              let nonCollegeEnabled = true;
+              let eveningOnly = true;
+              let rateLimitEnabled = true;
+
+              try {
+                const prefsStr = await AsyncStorage.getItem(
+                  '@pgwala_owner_notif_prefs'
+                );
+                if (prefsStr) {
+                  const prefs = JSON.parse(prefsStr);
+                  if (typeof prefs.nonCollegeAlerts === 'boolean')
+                    nonCollegeEnabled = prefs.nonCollegeAlerts;
+                  if (typeof prefs.eveningOnly === 'boolean')
+                    eveningOnly = prefs.eveningOnly;
+                  if (typeof prefs.rateLimitEnabled === 'boolean')
+                    rateLimitEnabled = prefs.rateLimitEnabled;
+                }
+              } catch {
+                // Keep defaults if prefs failed to load
+              }
+
+              // If non-college alerts disabled by owner, refresh stats silently without showing alert banner
+              if (!nonCollegeEnabled) {
+                loadDashboardData();
+                return;
+              }
+
+              // If evening only is enabled, only alert after 6:00 PM (18:00) or before 6:00 AM
+              if (eveningOnly) {
+                const currentHour = new Date().getHours();
+                const isEveningOrNight = currentHour >= 18 || currentHour < 6;
+                if (!isEveningOrNight) {
+                  loadDashboardData();
+                  return;
+                }
+              }
+
+              // Anti-flooding throttle: Skip if alerted within 15 minutes for this resident
+              const now = Date.now();
+              if (rateLimitEnabled) {
+                const lastAlertTime =
+                  alertThrottleRef.current.get(newLog.resident_id) || 0;
+                if (now - lastAlertTime < 15 * 60 * 1000) {
+                  loadDashboardData();
+                  return;
+                }
+              }
+              alertThrottleRef.current.set(newLog.resident_id, now);
+
+              const resName = res.full_name || 'Resident';
+              const resRoom = res.room_number || '';
               const eventDate = new Date(newLog.event_time);
               const formattedTime = eventDate.toLocaleTimeString('en-IN', {
                 hour: '2-digit',
@@ -515,7 +583,7 @@ export default function OwnerDashboard() {
             <View style={styles.menuQuickTitleCol}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                 <Utensils size={15} color={OwnerTheme.colors.primary} />
-                <Text style={styles.menuQuickTitle}>Today's Food Menu</Text>
+                <Text style={styles.menuQuickTitle}>Today&apos;s Food Menu</Text>
               </View>
               <Text style={styles.menuQuickSubtitle}>
                 Breakfast, lunch & dinner status

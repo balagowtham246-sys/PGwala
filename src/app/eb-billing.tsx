@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
+import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
 import { OwnerHeader } from '@/components/ui/owner';
 
@@ -34,10 +35,11 @@ interface SplitPreviewItem {
 
 export default function EbBillingScreen() {
   const { user } = useAuth();
+  const { selectedProperty, selectedPropertyId } = useProperty();
 
   const [loading, setLoading] = useState(true);
-  const [propertyId, setPropertyId] = useState<string | null>(null);
-  const [propertyName, setPropertyName] = useState('My PG');
+  const [propertyId, setPropertyId] = useState<string | null>(selectedPropertyId);
+  const [propertyName, setPropertyName] = useState(selectedProperty?.name || 'My PG');
 
   // Available rooms and residents in the property
   const [allResidents, setAllResidents] = useState<RoomResident[]>([]);
@@ -59,36 +61,48 @@ export default function EbBillingScreen() {
   const [showReview, setShowReview] = useState(false);
   const [splitPreview, setSplitPreview] = useState<SplitPreviewItem[]>([]);
 
-  // Load property and residents
+  // Load property and residents scoped strictly to active property context
   const loadData = useCallback(async () => {
     if (!user?.id) return;
 
     try {
       setLoading(true);
 
-      const { data: properties, error: propError } = await supabase
-        .from('properties')
-        .select('id, name')
-        .eq('owner_id', user.id)
-        .eq('is_active', true)
-        .order('created_at', { ascending: true })
-        .limit(1);
+      let activePropId = selectedPropertyId;
+      let activePropName = selectedProperty?.name;
 
-      if (propError) throw propError;
-      if (!properties || properties.length === 0) {
-        setLoading(false);
-        return;
+      if (!activePropId) {
+        const { data: properties, error: propError } = await supabase
+          .from('properties')
+          .select('id, name')
+          .eq('owner_id', user.id)
+          .eq('is_active', true)
+          .order('created_at', { ascending: true })
+          .limit(1);
+
+        if (propError) throw propError;
+        if (!properties || properties.length === 0) {
+          setPropertyId(null);
+          setPropertyName('My PG');
+          setAllResidents([]);
+          setAvailableRooms([]);
+          setSelectedRoom('');
+          setLoading(false);
+          return;
+        }
+
+        activePropId = properties[0].id;
+        activePropName = properties[0].name;
       }
 
-      const activeProp = properties[0];
-      setPropertyId(activeProp.id);
-      setPropertyName(activeProp.name);
+      setPropertyId(activePropId);
+      setPropertyName(activePropName || 'My PG');
 
-      // Fetch active residents
+      // Fetch active residents for this specific active property
       const { data: resData, error: resError } = await supabase
         .from('residents')
         .select('id, full_name, room_number, is_active')
-        .eq('property_id', activeProp.id)
+        .eq('property_id', activePropId)
         .eq('is_active', true)
         .order('room_number', { ascending: true });
 
@@ -107,6 +121,8 @@ export default function EbBillingScreen() {
 
       if (roomsList.length > 0) {
         setSelectedRoom(roomsList[0]);
+      } else {
+        setSelectedRoom('');
       }
 
       // Default dates
@@ -136,7 +152,7 @@ export default function EbBillingScreen() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [user?.id, selectedPropertyId, selectedProperty?.name]);
 
   useEffect(() => {
     if (user?.id) {

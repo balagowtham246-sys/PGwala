@@ -239,7 +239,7 @@ export default function OwnerPropertiesScreen() {
             <View style={styles.card}>
               <View style={styles.cardHeader}>
                 <Text style={styles.cardTitle}>
-                  Edit "{selectedProperty.name}" Details
+                  Edit &ldquo;{selectedProperty.name}&rdquo; Details
                 </Text>
               </View>
 

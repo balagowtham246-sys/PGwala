@@ -48,6 +48,7 @@ export interface ResidentRecord {
 export interface MovementLogRecord {
   id: string;
   resident_id: string;
+  property_id?: string;
   direction: 'IN' | 'OUT';
   event_time: string;
   note: string | null;
@@ -168,15 +169,35 @@ export default function StudentInOutScreen() {
         return;
       }
 
-      // 3. Fetch movement logs
-      const { data: logsData, error: logsError } = await supabase
+      // 3. Fetch movement logs directly scoped by property_id
+      let { data: logsData, error: logsError } = await supabase
         .from('movement_logs')
         .select(
-          'id, resident_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
+          'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
         )
-        .in('resident_id', allResidentIds)
+        .eq('property_id', activePropId)
         .order('event_time', { ascending: false })
         .limit(100);
+
+      // Backwards-compatibility fallback if property_id was not yet backfilled
+      if (
+        !logsError &&
+        (!logsData || logsData.length === 0) &&
+        allResidentIds.length > 0
+      ) {
+        const { data: fallbackData } = await supabase
+          .from('movement_logs')
+          .select(
+            'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
+          )
+          .in('resident_id', allResidentIds)
+          .order('event_time', { ascending: false })
+          .limit(100);
+
+        if (fallbackData && fallbackData.length > 0) {
+          logsData = fallbackData;
+        }
+      }
 
       if (logsError) throw logsError;
 
@@ -253,6 +274,9 @@ export default function StudentInOutScreen() {
 
   // Full history filtered list
   const filteredHistoryLogs = useMemo(() => {
+    const today = new Date().toDateString();
+    const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+
     return logs.filter((log) => {
       if (
         historyDirectionFilter !== 'ALL' &&
@@ -268,11 +292,9 @@ export default function StudentInOutScreen() {
       }
       if (historyDateFilter === 'TODAY') {
         const logDate = new Date(log.event_time).toDateString();
-        const today = new Date().toDateString();
         if (logDate !== today) return false;
       } else if (historyDateFilter === 'WEEK') {
         const logTime = new Date(log.event_time).getTime();
-        const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
         if (logTime < oneWeekAgo) return false;
       }
       return true;

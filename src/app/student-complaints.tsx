@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Image,
   Modal,
   Platform,
   Pressable,
@@ -14,9 +15,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import * as ImagePicker from 'expo-image-picker';
 
 import { useAuth } from '@/context/auth-context';
-import { supabase } from '@/lib/supabase';
+import { supabase, decodeBase64ToBytes, getSignedComplaintPhotoUrl } from '@/lib/supabase';
 
 export type ComplaintCategory =
   | 'plumbing'
@@ -103,7 +105,95 @@ export default function StudentComplaintsScreen() {
   const [priority, setPriority] = useState<ComplaintPriority>('medium');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [selectedPhoto, setSelectedPhoto] = useState<{
+    uri: string;
+    base64?: string | null;
+  } | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  // Full Screen Image Viewer Modal
+  const [fullImageUrl, setFullImageUrl] = useState<string | null>(null);
+  const [loadingFullImage, setLoadingFullImage] = useState(false);
+
+  const handlePickImage = async () => {
+    Alert.alert('Attach Issue Photo', 'Choose how you want to add a photo of the maintenance issue:', [
+      {
+        text: 'Take Photo (Camera)',
+        onPress: handleLaunchCamera,
+      },
+      {
+        text: 'Choose from Gallery',
+        onPress: handleLaunchGallery,
+      },
+      {
+        text: 'Cancel',
+        style: 'cancel',
+      },
+    ]);
+  };
+
+  const handleLaunchCamera = async () => {
+    try {
+      const perm = await ImagePicker.requestCameraPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission Required', 'Camera permission is needed to photograph the issue.');
+        return;
+      }
+      const res = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        quality: 0.7,
+        base64: true,
+      });
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        setSelectedPhoto({
+          uri: res.assets[0].uri,
+          base64: res.assets[0].base64,
+        });
+      }
+    } catch (err) {
+      console.warn('[StudentComplaints] Camera launch error:', err);
+      Alert.alert('Camera Error', 'Could not access the camera.');
+    }
+  };
+
+  const handleLaunchGallery = async () => {
+    try {
+      const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!perm.granted) {
+        Alert.alert('Permission Required', 'Photo library permission is needed to choose an image.');
+        return;
+      }
+      const res = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        quality: 0.7,
+        base64: true,
+      });
+      if (!res.canceled && res.assets && res.assets.length > 0) {
+        setSelectedPhoto({
+          uri: res.assets[0].uri,
+          base64: res.assets[0].base64,
+        });
+      }
+    } catch (err) {
+      console.warn('[StudentComplaints] Gallery launch error:', err);
+      Alert.alert('Gallery Error', 'Could not open photo gallery.');
+    }
+  };
+
+  const handleViewPhoto = async (rawUrlOrPath: string) => {
+    try {
+      setLoadingFullImage(true);
+      const signed = await getSignedComplaintPhotoUrl(rawUrlOrPath);
+      setFullImageUrl(signed || rawUrlOrPath);
+    } catch (err) {
+      console.warn('[StudentComplaints] Signed photo error:', err);
+      setFullImageUrl(rawUrlOrPath);
+    } finally {
+      setLoadingFullImage(false);
+    }
+  };
 
   const loadData = useCallback(async () => {
     if (!user?.id) return;
@@ -191,7 +281,36 @@ export default function StudentComplaintsScreen() {
 
     setSubmitting(true);
     try {
-      // Omit status so database default 'open' is applied, strictly adhering to INSERT column permissions
+      let uploadedPhotoPath: string | null = null;
+
+      // 1. Upload photo if selected
+      if (selectedPhoto?.base64) {
+        try {
+          const fileExt =
+            selectedPhoto.uri.split('.').pop()?.toLowerCase() || 'jpg';
+          const fileName = `${resident.id}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${fileExt}`;
+          const bytes = decodeBase64ToBytes(selectedPhoto.base64);
+
+          const { error: uploadError } = await supabase.storage
+            .from('complaint-photos')
+            .upload(fileName, bytes, {
+              contentType: `image/${fileExt === 'png' ? 'png' : 'jpeg'}`,
+              upsert: false,
+            });
+
+          if (uploadError) {
+            throw new Error(`Photo upload failed: ${uploadError.message}`);
+          }
+          uploadedPhotoPath = fileName;
+        } catch (photoErr: unknown) {
+          const pMsg = photoErr instanceof Error ? photoErr.message : String(photoErr);
+          Alert.alert('Photo Upload Error', pMsg || 'Could not upload attachment.');
+          setSubmitting(false);
+          return;
+        }
+      }
+
+      // 2. Insert complaint record
       const { error } = await supabase.from('complaints').insert({
         property_id: resident.property_id,
         resident_id: resident.id,
@@ -199,6 +318,7 @@ export default function StudentComplaintsScreen() {
         priority,
         title: trimmedTitle,
         description: trimmedDesc,
+        photo_url: uploadedPhotoPath,
       });
 
       if (error) throw error;
@@ -211,6 +331,7 @@ export default function StudentComplaintsScreen() {
       setShowModal(false);
       setTitle('');
       setDescription('');
+      setSelectedPhoto(null);
       setCategory('plumbing');
       setPriority('medium');
       setFilter('active');
@@ -397,6 +518,15 @@ export default function StudentComplaintsScreen() {
 
                     <Text style={styles.cardDate}>Reported on {formattedDate}</Text>
 
+                    {/* Attached Photo View */}
+                    {item.photo_url && (
+                      <Pressable
+                        style={styles.cardPhotoBtn}
+                        onPress={() => handleViewPhoto(item.photo_url!)}>
+                        <Text style={styles.cardPhotoBtnText}>📷 View Attached Photo</Text>
+                      </Pressable>
+                    )}
+
                     {/* Owner Resolution Box */}
                     {item.owner_notes && (
                       <View style={styles.ownerResponseBox}>
@@ -520,6 +650,28 @@ export default function StudentComplaintsScreen() {
                 multiline
                 numberOfLines={4}
               />
+
+              {/* Photo Attachment Section */}
+              <Text style={[styles.inputLabel, { marginTop: 14 }]}>Photo of Issue (Optional)</Text>
+              {selectedPhoto ? (
+                <View style={styles.photoPreviewCard}>
+                  <Image source={{ uri: selectedPhoto.uri }} style={styles.photoPreviewImg} />
+                  <View style={styles.photoPreviewMeta}>
+                    <Text style={styles.photoAttachedText}>✓ Photo Attached</Text>
+                    <Pressable
+                      style={styles.photoRemoveBtn}
+                      onPress={() => setSelectedPhoto(null)}>
+                      <Text style={styles.photoRemoveBtnText}>Remove Photo</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              ) : (
+                <Pressable style={styles.photoUploadBtn} onPress={handlePickImage}>
+                  <Text style={styles.photoUploadIcon}>📷</Text>
+                  <Text style={styles.photoUploadTitle}>Attach Photo</Text>
+                  <Text style={styles.photoUploadSub}>Take a photo or choose from gallery</Text>
+                </Pressable>
+              )}
             </ScrollView>
 
             {/* Modal Buttons */}
@@ -542,6 +694,30 @@ export default function StudentComplaintsScreen() {
               </Pressable>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      {/* Full-Screen Image Viewer Modal */}
+      <Modal
+        visible={Boolean(fullImageUrl || loadingFullImage)}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setFullImageUrl(null)}>
+        <View style={styles.fullImageOverlay}>
+          <Pressable
+            style={styles.fullImageCloseBtn}
+            onPress={() => setFullImageUrl(null)}>
+            <Text style={styles.fullImageCloseText}>Close ✕</Text>
+          </Pressable>
+          {loadingFullImage ? (
+            <ActivityIndicator size="large" color="#FFFFFF" />
+          ) : fullImageUrl ? (
+            <Image
+              source={{ uri: fullImageUrl }}
+              style={styles.fullImageView}
+              resizeMode="contain"
+            />
+          ) : null}
         </View>
       </Modal>
     </SafeAreaView>
@@ -917,6 +1093,102 @@ const styles = StyleSheet.create({
   },
   btnDisabled: {
     opacity: 0.6,
+  },
+  cardPhotoBtn: {
+    marginTop: 8,
+    alignSelf: 'flex-start',
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+  },
+  cardPhotoBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  photoUploadBtn: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#BAE6FD',
+    borderStyle: 'dashed',
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  photoUploadIcon: {
+    fontSize: 26,
+  },
+  photoUploadTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0284C7',
+    marginTop: 3,
+  },
+  photoUploadSub: {
+    fontSize: 11,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  photoPreviewCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: 8,
+    padding: 10,
+    marginTop: 6,
+    gap: 12,
+  },
+  photoPreviewImg: {
+    width: 56,
+    height: 56,
+    borderRadius: 6,
+  },
+  photoPreviewMeta: {
+    flex: 1,
+  },
+  photoAttachedText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#15803D',
+  },
+  photoRemoveBtn: {
+    marginTop: 4,
+  },
+  photoRemoveBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#DC2626',
+  },
+  fullImageOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullImageCloseBtn: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    zIndex: 10,
+  },
+  fullImageCloseText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  fullImageView: {
+    width: '92%',
+    height: '80%',
   },
 });
 

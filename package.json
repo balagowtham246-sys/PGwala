@@ -20,6 +20,8 @@
     "expo-symbols": "~58.0.4",
     "expo-system-ui": "~58.0.7",
     "expo-web-browser": "~58.0.7",
+    "jest": "~30.5.2",
+    "jest-expo": "~58.0.14",
     "lucide-react-native": "^1.67.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
@@ -35,6 +37,7 @@
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.14",
+    "@types/jest": "^30.0.0",
     "@types/react": "~19.3.0",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~58.0.4",
@@ -46,7 +49,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "test": "jest"
   },
   "private": true
 }
