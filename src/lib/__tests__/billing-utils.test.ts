@@ -4,6 +4,8 @@ import {
   calculateEbSplit,
   isNonCollegeDeparture,
   isEveningOrNightWindow,
+  getBillReportState,
+  PRESET_REJECTION_REASONS,
 } from '../billing-utils';
 
 describe('billing-utils', () => {
@@ -135,6 +137,81 @@ describe('billing-utils', () => {
 
       const afternoon5pm = new Date(2026, 10, 7, 17, 59, 0);
       expect(isEveningOrNightWindow(afternoon5pm)).toBe(false);
+    });
+  });
+
+  describe('getBillReportState', () => {
+    it('returns none state when report is null or undefined', () => {
+      expect(getBillReportState(null)).toEqual({
+        status: 'none',
+        isPending: false,
+        isRejected: false,
+        isApproved: false,
+        rejectionReason: null,
+      });
+      expect(getBillReportState(undefined)).toEqual({
+        status: 'none',
+        isPending: false,
+        isRejected: false,
+        isApproved: false,
+        rejectionReason: null,
+      });
+      expect(getBillReportState({ status: '' })).toEqual({
+        status: 'none',
+        isPending: false,
+        isRejected: false,
+        isApproved: false,
+        rejectionReason: null,
+      });
+    });
+
+    it('identifies pending report submissions', () => {
+      const res = getBillReportState({ status: 'pending' });
+      expect(res.status).toBe('pending');
+      expect(res.isPending).toBe(true);
+      expect(res.isRejected).toBe(false);
+      expect(res.isApproved).toBe(false);
+      expect(res.rejectionReason).toBeNull();
+    });
+
+    it('identifies rejected report submissions with specific owner reason', () => {
+      const res = getBillReportState({
+        status: 'rejected',
+        rejection_reason: 'Amount does not match bill total',
+      });
+      expect(res.status).toBe('rejected');
+      expect(res.isPending).toBe(false);
+      expect(res.isRejected).toBe(true);
+      expect(res.isApproved).toBe(false);
+      expect(res.rejectionReason).toBe('Amount does not match bill total');
+    });
+
+    it('provides fallback reason when rejection reason is omitted or empty', () => {
+      const res = getBillReportState({ status: 'rejected', rejection_reason: '' });
+      expect(res.isRejected).toBe(true);
+      expect(res.rejectionReason).toBe('Payment proof could not be verified by owner.');
+    });
+
+    it('identifies approved report submissions', () => {
+      const res = getBillReportState({ status: 'approved' });
+      expect(res.status).toBe('approved');
+      expect(res.isApproved).toBe(true);
+      expect(res.isPending).toBe(false);
+      expect(res.isRejected).toBe(false);
+    });
+
+    it('handles unexpected statuses gracefully', () => {
+      const res = getBillReportState({ status: 'cancelled' });
+      expect(res.status).toBe('none');
+      expect(res.isPending).toBe(false);
+      expect(res.isRejected).toBe(false);
+      expect(res.isApproved).toBe(false);
+    });
+
+    it('exports preset rejection reasons array', () => {
+      expect(PRESET_REJECTION_REASONS.length).toBeGreaterThan(0);
+      expect(PRESET_REJECTION_REASONS).toContain('Screenshot blurred or unreadable');
+      expect(PRESET_REJECTION_REASONS).toContain('Amount does not match bill total');
     });
   });
 });

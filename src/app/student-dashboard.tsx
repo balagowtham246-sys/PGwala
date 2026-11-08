@@ -15,7 +15,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import {
   Building2,
   DoorOpen,
@@ -35,6 +35,7 @@ import {
 } from 'lucide-react-native';
 
 import { BottomTabInset, OwnerTheme } from '@/constants/theme';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
 import { WashingMachineCard } from '@/components/washing-machine-card';
@@ -124,7 +125,7 @@ function formatMovementTime(isoString: string): string {
 }
 
 export default function ResidentDashboardScreen() {
-  const { user, profile } = useAuth();
+  const { user, profile, refreshProfile } = useAuth();
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -210,6 +211,12 @@ export default function ResidentDashboardScreen() {
 
       // 2. Fetch today's published food menus
       const todayIso = getTodayIsoDate();
+      let resolvedMenus: Record<MealType, ResidentFoodMenu | null> = {
+        breakfast: null,
+        lunch: null,
+        dinner: null,
+      };
+
       const { data: menuData, error: menuError } = await supabase
         .from('food_menus')
         .select('id, meal_type, items, notes, is_published')
@@ -219,25 +226,20 @@ export default function ResidentDashboardScreen() {
 
       if (menuError) {
         console.warn('[ResidentDashboard] Could not fetch food menus:', menuError.message);
-        setMenus({ breakfast: null, lunch: null, dinner: null });
+        setMenus(resolvedMenus);
       } else {
-        const menuMap: Record<MealType, ResidentFoodMenu | null> = {
-          breakfast: null,
-          lunch: null,
-          dinner: null,
-        };
-
         if (menuData && menuData.length > 0) {
           for (const item of menuData as ResidentFoodMenu[]) {
             if (['breakfast', 'lunch', 'dinner'].includes(item.meal_type)) {
-              menuMap[item.meal_type] = item;
+              resolvedMenus[item.meal_type] = item;
             }
           }
         }
-        setMenus(menuMap);
+        setMenus(resolvedMenus);
       }
 
       // 3. Query outstanding dues for quick badge
+      let totalOut = 0;
       try {
         const { data: chargesData } = await supabase
           .from('charges')
@@ -245,7 +247,6 @@ export default function ResidentDashboardScreen() {
           .eq('resident_id', residentInfo.id)
           .eq('status', 'outstanding');
 
-        let totalOut = 0;
         if (chargesData && chargesData.length > 0) {
           for (const ch of chargesData) {
             totalOut += ch.amount_paise || 0;
@@ -268,6 +269,17 @@ export default function ResidentDashboardScreen() {
           .maybeSingle();
 
         setLatestMovement((movementData as ResidentMovementRecord) || null);
+
+        // Cache dashboard state for 0ms loads on slow mobile networks
+        void AsyncStorage.setItem(
+          `student_dash_cache_${user?.id}`,
+          JSON.stringify({
+            resident: residentInfo,
+            menus: resolvedMenus,
+            pendingDuesPaise: totalOut,
+            latestMovement: movementData || null,
+          })
+        );
       } catch (movErr) {
         console.warn('[ResidentDashboard] Error fetching movement log:', movErr);
       }
@@ -285,8 +297,36 @@ export default function ResidentDashboardScreen() {
     loadResidentData();
   }, [loadResidentData]);
 
+  // Instant 0ms cache restore on slow connections
+  useEffect(() => {
+    if (!user?.id) return;
+    void (async () => {
+      try {
+        const cached = await AsyncStorage.getItem(`student_dash_cache_${user.id}`);
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed.resident) setResident(parsed.resident);
+          if (parsed.menus) setMenus(parsed.menus);
+          if (typeof parsed.pendingDuesPaise === 'number') setPendingDuesPaise(parsed.pendingDuesPaise);
+          if (parsed.latestMovement) setLatestMovement(parsed.latestMovement);
+          setLoading(false);
+        }
+      } catch {
+        // Cache miss
+      }
+    })();
+  }, [user?.id]);
+
+  // Refresh profile & credentials when screen gains focus
+  useFocusEffect(
+    useCallback(() => {
+      refreshProfile();
+    }, [refreshProfile])
+  );
+
   const handleRefresh = () => {
     setRefreshing(true);
+    refreshProfile();
     loadResidentData();
   };
 
@@ -391,7 +431,11 @@ export default function ResidentDashboardScreen() {
           />
         }>
         {/* Temporary Password Alert Banner */}
-        {user?.user_metadata?.must_change_password && (
+        {Boolean(
+          profile?.must_change_password ||
+            user?.user_metadata?.must_change_password ||
+            user?.user_metadata?.is_temporary_password
+        ) && (
           <Pressable
             style={({ pressed }) => [
               styles.tempPasswordBanner,

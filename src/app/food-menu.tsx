@@ -268,7 +268,8 @@ export default function FoodMenuScreen() {
     setEditingMeal(mealType);
     setFormItems(existing ? existing.items : '');
     setFormNotes(existing?.notes ? existing.notes : '');
-    setFormPublished(existing ? existing.is_published : true);
+    // Default to published (green) so saving immediately reflects on student portal & dashboard
+    setFormPublished(true);
     setErrorMessage(null);
   };
 
@@ -431,11 +432,13 @@ export default function FoodMenuScreen() {
       />
       <KeyboardAvoidingView
         style={styles.keyboardContainer}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}>
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: 140 }]}
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           refreshControl={
             <RefreshControl
               refreshing={refreshing}
@@ -716,7 +719,9 @@ export default function FoodMenuScreen() {
                             </View>
                           ) : (
                             <Text style={styles.saveBtnText}>
-                              {menu ? 'Save Changes' : '+ Save Menu'}
+                              {formPublished
+                                ? (menu ? '✓ Save & Publish' : '+ Publish Menu')
+                                : 'Save as Draft'}
                             </Text>
                           )}
                         </Pressable>

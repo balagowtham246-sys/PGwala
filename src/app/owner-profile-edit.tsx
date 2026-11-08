@@ -15,6 +15,7 @@ import { Lock, User, CheckCircle2 } from 'lucide-react-native';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader, PrimaryButton, ErrorState } from '@/components/ui/owner';
 
 export default function OwnerProfileEditScreen() {
@@ -70,8 +71,17 @@ export default function OwnerProfileEditScreen() {
       if (newPassword) {
         const { error: authError } = await supabase.auth.updateUser({
           password: newPassword,
+          data: {
+            must_change_password: false,
+            is_temporary_password: false,
+          },
         });
         if (authError) throw authError;
+
+        await supabase
+          .from('profiles')
+          .update({ must_change_password: false })
+          .eq('id', user.id);
 
         setNewPassword('');
         setConfirmPassword('');
@@ -81,8 +91,7 @@ export default function OwnerProfileEditScreen() {
       setSuccessMessage('Profile and credentials updated successfully.');
       Alert.alert('Saved', 'Your profile details have been updated.');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMessage(msg || 'Failed to update profile.');
+      setErrorMessage(extractErrorMessage(err, 'Failed to update profile.'));
     } finally {
       setSaving(false);
     }
@@ -98,10 +107,12 @@ export default function OwnerProfileEditScreen() {
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}>
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: 140 }]}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}>
           {errorMessage && (
             <ErrorState

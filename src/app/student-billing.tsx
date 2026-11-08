@@ -44,6 +44,8 @@ interface StudentBillCardItem {
     screenshot_url: string | null;
     notes: string | null;
     created_at: string;
+    status: 'pending' | 'rejected' | 'approved';
+    rejection_reason?: string | null;
   } | null;
 }
 
@@ -154,12 +156,15 @@ export default function SimplifiedStudentBillingScreen() {
 
       if (chgErr) throw chgErr;
 
-      // 3. Fetch all pending payment reports for this resident
+      // 3. Fetch all active/recent payment reports for this resident (both pending and rejected)
       const { data: reports } = await supabase
         .from('student_payment_reports')
-        .select('id, charge_id, amount_paise, claimed_method, reference_number, screenshot_url, notes, status, created_at')
+        .select(
+          'id, charge_id, amount_paise, claimed_method, reference_number, screenshot_url, notes, status, rejection_reason, created_at'
+        )
         .eq('resident_id', resData.id)
-        .eq('status', 'pending');
+        .in('status', ['pending', 'rejected'])
+        .order('created_at', { ascending: false });
 
       const pendingReportMap = new Map<string, any>();
       if (reports) {
@@ -448,9 +453,13 @@ export default function SimplifiedStudentBillingScreen() {
                     <View style={[styles.statusBadge, styles.badgePaid]}>
                       <Text style={styles.badgePaidText}>✓ PAID</Text>
                     </View>
-                  ) : currentRentBill.pending_report ? (
+                  ) : currentRentBill.pending_report?.status === 'pending' ? (
                     <View style={[styles.statusBadge, styles.badgeReview]}>
                       <Text style={styles.badgeReviewText}>🕒 UNDER REVIEW</Text>
+                    </View>
+                  ) : currentRentBill.pending_report?.status === 'rejected' ? (
+                    <View style={[styles.statusBadge, styles.badgeRejected]}>
+                      <Text style={styles.badgeRejectedText}>⚠️ REJECTED</Text>
                     </View>
                   ) : (
                     <View style={[styles.statusBadge, styles.badgeUnpaid]}>
@@ -506,7 +515,7 @@ export default function SimplifiedStudentBillingScreen() {
                       </Pressable>
                     )}
                   </View>
-                ) : currentRentBill.pending_report ? (
+                ) : currentRentBill.pending_report?.status === 'pending' ? (
                   <View style={styles.pendingReportBox}>
                     <Text style={styles.pendingReportTitle}>Payment Sent — Awaiting Owner Confirmation</Text>
                     <Text style={styles.pendingReportSub}>
@@ -526,6 +535,25 @@ export default function SimplifiedStudentBillingScreen() {
                         <Text style={styles.previewScreenshotText}>🔍 View Uploaded Screenshot</Text>
                       </Pressable>
                     )}
+                  </View>
+                ) : currentRentBill.pending_report?.status === 'rejected' ? (
+                  <View style={styles.rejectedReportBox}>
+                    <View style={styles.rejectedHeaderRow}>
+                      <Text style={styles.rejectedReportTitle}>⚠️ Payment Proof Rejected</Text>
+                    </View>
+                    <Text style={styles.rejectedReasonText}>
+                      Owner Feedback: {currentRentBill.pending_report.rejection_reason || 'Payment proof could not be verified by owner.'}
+                    </Text>
+                    <Text style={styles.rejectedHelpText}>
+                      Please review your transaction details, take a clearer screenshot, or enter the correct reference number and resubmit.
+                    </Text>
+                    <Pressable
+                      style={({ pressed }) => [styles.resubmitBtn, pressed && styles.pressed]}
+                      onPress={() => handleOpenPaymentModal(currentRentBill)}>
+                      <Text style={styles.resubmitBtnText}>
+                        🔄 Resubmit Payment Proof ›
+                      </Text>
+                    </Pressable>
                   </View>
                 ) : (
                   <Pressable
@@ -560,9 +588,13 @@ export default function SimplifiedStudentBillingScreen() {
                     <View style={[styles.statusBadge, styles.badgePaid]}>
                       <Text style={styles.badgePaidText}>✓ PAID</Text>
                     </View>
-                  ) : currentEbBill.pending_report ? (
+                  ) : currentEbBill.pending_report?.status === 'pending' ? (
                     <View style={[styles.statusBadge, styles.badgeReview]}>
                       <Text style={styles.badgeReviewText}>🕒 UNDER REVIEW</Text>
+                    </View>
+                  ) : currentEbBill.pending_report?.status === 'rejected' ? (
+                    <View style={[styles.statusBadge, styles.badgeRejected]}>
+                      <Text style={styles.badgeRejectedText}>⚠️ REJECTED</Text>
                     </View>
                   ) : (
                     <View style={[styles.statusBadge, styles.badgeUnpaid]}>
@@ -602,7 +634,7 @@ export default function SimplifiedStudentBillingScreen() {
                       </Pressable>
                     )}
                   </View>
-                ) : currentEbBill.pending_report ? (
+                ) : currentEbBill.pending_report?.status === 'pending' ? (
                   <View style={styles.pendingReportBox}>
                     <Text style={styles.pendingReportTitle}>EB Payment Sent — Awaiting Confirmation</Text>
                     <Text style={styles.pendingReportSub}>
@@ -622,6 +654,29 @@ export default function SimplifiedStudentBillingScreen() {
                         <Text style={styles.previewScreenshotText}>🔍 View Uploaded Screenshot</Text>
                       </Pressable>
                     )}
+                  </View>
+                ) : currentEbBill.pending_report?.status === 'rejected' ? (
+                  <View style={styles.rejectedReportBox}>
+                    <View style={styles.rejectedHeaderRow}>
+                      <Text style={styles.rejectedReportTitle}>⚠️ Payment Proof Rejected</Text>
+                    </View>
+                    <Text style={styles.rejectedReasonText}>
+                      Owner Feedback: {currentEbBill.pending_report.rejection_reason || 'Payment proof could not be verified by owner.'}
+                    </Text>
+                    <Text style={styles.rejectedHelpText}>
+                      Please review your transaction details, take a clearer screenshot, or enter the correct reference number and resubmit.
+                    </Text>
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.resubmitBtn,
+                        { backgroundColor: '#C2410C' },
+                        pressed && styles.pressed,
+                      ]}
+                      onPress={() => handleOpenPaymentModal(currentEbBill)}>
+                      <Text style={styles.resubmitBtnText}>
+                        🔄 Resubmit EB Proof ›
+                      </Text>
+                    </Pressable>
                   </View>
                 ) : (
                   <Pressable
@@ -682,6 +737,14 @@ export default function SimplifiedStudentBillingScreen() {
                         <View style={[styles.statusBadge, styles.badgePaid]}>
                           <Text style={styles.badgePaidText}>✓ PAID</Text>
                         </View>
+                      ) : bill.pending_report?.status === 'pending' ? (
+                        <View style={[styles.statusBadge, styles.badgeReview]}>
+                          <Text style={styles.badgeReviewText}>🕒 REVIEW</Text>
+                        </View>
+                      ) : bill.pending_report?.status === 'rejected' ? (
+                        <View style={[styles.statusBadge, styles.badgeRejected]}>
+                          <Text style={styles.badgeRejectedText}>⚠️ REJECTED</Text>
+                        </View>
                       ) : (
                         <View style={[styles.statusBadge, styles.badgeUnpaid]}>
                           <Text style={styles.badgeUnpaidText}>UNPAID</Text>
@@ -730,6 +793,21 @@ export default function SimplifiedStudentBillingScreen() {
                   Amount to Pay: {formatPaiseToRupees(selectedBillForPayment?.total_paise || 0)}
                 </Text>
               </View>
+
+              {/* Previous Rejection Alert (if resubmitting) */}
+              {selectedBillForPayment?.pending_report?.status === 'rejected' && (
+                <View style={[styles.rejectedReportBox, { marginBottom: 14 }]}>
+                  <Text style={styles.rejectedReportTitle}>
+                    Previous Submission Rejected
+                  </Text>
+                  <Text style={styles.rejectedReasonText}>
+                    Feedback: {selectedBillForPayment.pending_report.rejection_reason || 'Verification failed.'}
+                  </Text>
+                  <Text style={styles.rejectedHelpText}>
+                    Please upload an updated screenshot or enter a valid reference number below.
+                  </Text>
+                </View>
+              )}
 
               {/* Method Selector: UPI vs Cash */}
               <Text style={styles.inputLabel}>How did you pay?</Text>
@@ -990,6 +1068,57 @@ const styles = StyleSheet.create({
     color: '#DC2626',
     fontSize: 11,
     fontWeight: '800',
+  },
+  badgeRejected: {
+    backgroundColor: '#FEE2E2',
+  },
+  badgeRejectedText: {
+    color: '#B91C1C',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  rejectedReportBox: {
+    marginTop: 14,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 12,
+    padding: 12,
+    gap: 6,
+  },
+  rejectedHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  rejectedReportTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#B91C1C',
+  },
+  rejectedReasonText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#991B1B',
+    lineHeight: 18,
+  },
+  rejectedHelpText: {
+    fontSize: 12,
+    color: '#7F1D1D',
+    lineHeight: 16,
+  },
+  resubmitBtn: {
+    backgroundColor: '#DC2626',
+    borderRadius: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  resubmitBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
   },
   breakdownBox: {
     backgroundColor: '#F8FAFC',

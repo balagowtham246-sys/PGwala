@@ -82,3 +82,85 @@ export function isEveningOrNightWindow(date = new Date()): boolean {
   return hour >= 18 || hour < 6;
 }
 
+export type BillPaymentReportStatus = 'pending' | 'rejected' | 'approved' | 'none';
+
+export interface BillReportInfo {
+  status: string;
+  rejection_reason?: string | null;
+}
+
+export interface BillReportState {
+  status: BillPaymentReportStatus;
+  isPending: boolean;
+  isRejected: boolean;
+  isApproved: boolean;
+  rejectionReason: string | null;
+}
+
+export const PRESET_REJECTION_REASONS = [
+  'Screenshot blurred or unreadable',
+  'Amount does not match bill total',
+  'Transaction reference not found',
+  'Payment not credited to PG account',
+  'Duplicate or older screenshot attached',
+] as const;
+
+/**
+ * Resolves the verification state of a student's payment report submission.
+ */
+export function getBillReportState(
+  report?: BillReportInfo | null
+): BillReportState {
+  if (!report || !report.status) {
+    return {
+      status: 'none',
+      isPending: false,
+      isRejected: false,
+      isApproved: false,
+      rejectionReason: null,
+    };
+  }
+
+  const rawStatus = report.status.toLowerCase().trim();
+  if (rawStatus === 'pending') {
+    return {
+      status: 'pending',
+      isPending: true,
+      isRejected: false,
+      isApproved: false,
+      rejectionReason: null,
+    };
+  }
+
+  if (rawStatus === 'rejected') {
+    return {
+      status: 'rejected',
+      isPending: false,
+      isRejected: true,
+      isApproved: false,
+      rejectionReason:
+        report.rejection_reason && report.rejection_reason.trim()
+          ? report.rejection_reason.trim()
+          : 'Payment proof could not be verified by owner.',
+    };
+  }
+
+  if (rawStatus === 'approved') {
+    return {
+      status: 'approved',
+      isPending: false,
+      isRejected: false,
+      isApproved: true,
+      rejectionReason: null,
+    };
+  }
+
+  return {
+    status: 'none',
+    isPending: false,
+    isRejected: false,
+    isApproved: false,
+    rejectionReason: null,
+  };
+}
+

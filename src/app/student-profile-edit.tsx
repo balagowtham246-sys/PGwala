@@ -10,11 +10,12 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Lock, User, Phone, CheckCircle2, AlertCircle } from 'lucide-react-native';
+import { Lock, User, CheckCircle2, AlertCircle } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader, PrimaryButton, ErrorState } from '@/components/ui/owner';
 
 export default function ResidentProfileEditScreen() {
@@ -64,7 +65,6 @@ export default function ResidentProfileEditScreen() {
         .from('profiles')
         .update({
           phone_number: trimmedPhone || null,
-          updated_at: new Date().toISOString(),
         })
         .eq('id', user.id);
 
@@ -74,7 +74,6 @@ export default function ResidentProfileEditScreen() {
         .from('residents')
         .update({
           phone_number: trimmedPhone || null,
-          updated_at: new Date().toISOString(),
         })
         .eq('profile_id', user.id);
 
@@ -82,10 +81,14 @@ export default function ResidentProfileEditScreen() {
       if (newPassword) {
         const { error: authError } = await supabase.auth.updateUser({
           password: newPassword,
+          data: {
+            must_change_password: false,
+            is_temporary_password: false,
+          },
         });
         if (authError) throw authError;
 
-        // Clear must_change_password flag
+        // Clear must_change_password flag in public.profiles
         await supabase
           .from('profiles')
           .update({ must_change_password: false })
@@ -99,8 +102,7 @@ export default function ResidentProfileEditScreen() {
       setSuccessMessage('Profile details and credentials updated successfully.');
       Alert.alert('Saved', 'Your resident profile has been updated.');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMessage(msg || 'Failed to update profile.');
+      setErrorMessage(extractErrorMessage(err, 'Failed to update profile.'));
     } finally {
       setSaving(false);
     }
@@ -116,10 +118,12 @@ export default function ResidentProfileEditScreen() {
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}>
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[styles.scrollContent, { paddingBottom: 140 }]}
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}>
           {isTemporaryPassword && (
             <View style={styles.warningBanner}>

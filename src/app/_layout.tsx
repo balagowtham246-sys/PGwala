@@ -57,6 +57,7 @@ function RootNavigationLayout() {
       <Stack.Screen name="student-settings" />
       <Stack.Screen name="student-profile-edit" />
       <Stack.Screen name="student-accommodation" />
+      <Stack.Screen name="student-chat" />
       <Stack.Screen name="owner-settings" />
       <Stack.Screen name="owner-profile-edit" />
       <Stack.Screen name="owner-properties" />

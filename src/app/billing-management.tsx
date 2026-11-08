@@ -33,6 +33,7 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { supabase, getSignedPaymentProofUrl } from '@/lib/supabase';
+import { PRESET_REJECTION_REASONS } from '@/lib/billing-utils';
 import {
   OwnerHeader,
   StatisticCard,
@@ -48,6 +49,7 @@ interface ResidentRentBillItem {
   room_number: string;
   phone_number: string | null;
   opt_in_wm: boolean;
+  wm_request_pending?: boolean;
   monthly_rent_paise: number;
   charge_id: string | null;
   rent_paise: number;
@@ -63,6 +65,10 @@ interface ResidentRentBillItem {
     reference_number: string | null;
     screenshot_url: string | null;
     notes: string | null;
+  } | null;
+  rejected_report?: {
+    id: string;
+    rejection_reason: string | null;
   } | null;
   receipt_number?: string | null;
   paid_date?: string | null;
@@ -86,6 +92,10 @@ interface ResidentEbBillItem {
     reference_number: string | null;
     screenshot_url: string | null;
     notes: string | null;
+  } | null;
+  rejected_report?: {
+    id: string;
+    rejection_reason: string | null;
   } | null;
   receipt_number?: string | null;
   paid_date?: string | null;
@@ -158,6 +168,9 @@ export default function SimplifiedBillingManagementScreen() {
   const [confirmingPayment, setConfirmingPayment] = useState(false);
   const [reviewSignedUrl, setReviewSignedUrl] = useState<string | null>(null);
   const [loadingReviewUrl, setLoadingReviewUrl] = useState(false);
+  const [showRejectForm, setShowRejectForm] = useState(false);
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [rejectingPayment, setRejectingPayment] = useState(false);
 
   // Helper to open review modal and securely resolve signed screenshot URL
   const openReviewModal = async (item: {
@@ -169,6 +182,8 @@ export default function SimplifiedBillingManagementScreen() {
   }) => {
     setSelectedReviewItem(item);
     setReviewSignedUrl(null);
+    setShowRejectForm(false);
+    setRejectionReason('');
     setReviewModalVisible(true);
 
     if (item.report?.screenshot_url) {
@@ -292,6 +307,23 @@ export default function SimplifiedBillingManagementScreen() {
         }
       }
 
+      // 3b. Fetch pending washing machine requests
+      const wmPendingRequestSet = new Set<string>();
+      try {
+        const { data: wmReqData } = await supabase
+          .from('washing_machine_requests')
+          .select('resident_id')
+          .eq('property_id', activePropId)
+          .eq('status', 'pending');
+        if (wmReqData) {
+          for (const req of wmReqData) {
+            wmPendingRequestSet.add(req.resident_id);
+          }
+        }
+      } catch {
+        // Fallback gracefully if table not yet created
+      }
+
       // 4. Fetch all charges for this property and month
       const { data: chargeData, error: chgErr } = await supabase
         .from('charges')
@@ -316,14 +348,14 @@ export default function SimplifiedBillingManagementScreen() {
         }
       }
 
-      // 5. Fetch pending student payment reports
+      // 5. Fetch student payment reports (both pending and rejected)
       const { data: reportData } = await supabase
         .from('student_payment_reports')
         .select(
-          'id, resident_id, charge_id, amount_paise, claimed_method, payment_date, reference_number, screenshot_url, notes, status'
+          'id, resident_id, charge_id, amount_paise, claimed_method, payment_date, reference_number, screenshot_url, notes, status, rejection_reason'
         )
         .eq('property_id', activePropId)
-        .eq('status', 'pending')
+        .in('status', ['pending', 'rejected'])
         .order('created_at', { ascending: false });
 
       const reportByChargeMap = new Map<string, any>();
@@ -378,6 +410,8 @@ export default function SimplifiedBillingManagementScreen() {
         const defaultRent = r.monthly_rent_paise || 800000;
         const chg = rentChargeMap.get(r.id);
         const rep = chg ? reportByChargeMap.get(chg.id) : null;
+        const isPendingReport = rep?.status === 'pending';
+        const isRejectedReport = rep?.status === 'rejected';
 
         if (chg) {
           const isSettled = chg.status === 'settled';
@@ -389,14 +423,18 @@ export default function SimplifiedBillingManagementScreen() {
             room_number: r.room_number,
             phone_number: r.phone_number,
             opt_in_wm: optWm,
+            wm_request_pending: wmPendingRequestSet.has(r.id),
             monthly_rent_paise: defaultRent,
             charge_id: chg.id,
             rent_paise: chg.rent_amount_paise || defaultRent,
             wm_paise: chg.wm_amount_paise || (optWm ? 50000 : 0),
             total_paise: chg.amount_paise,
             status: isSettled ? 'paid' : 'unpaid',
-            has_pending_report: Boolean(rep),
-            pending_report: rep || null,
+            has_pending_report: isPendingReport,
+            pending_report: isPendingReport ? rep : null,
+            rejected_report: isRejectedReport
+              ? { id: rep.id, rejection_reason: rep.rejection_reason }
+              : null,
             receipt_number: pInfo?.receipt || null,
             paid_date: pInfo?.date || null,
             paid_method: pInfo?.method || null,
@@ -409,6 +447,7 @@ export default function SimplifiedBillingManagementScreen() {
           room_number: r.room_number,
           phone_number: r.phone_number,
           opt_in_wm: optWm,
+          wm_request_pending: wmPendingRequestSet.has(r.id),
           monthly_rent_paise: defaultRent,
           charge_id: null,
           rent_paise: defaultRent,
@@ -417,6 +456,7 @@ export default function SimplifiedBillingManagementScreen() {
           status: 'not_generated',
           has_pending_report: false,
           pending_report: null,
+          rejected_report: null,
           receipt_number: null,
           paid_date: null,
           paid_method: null,
@@ -427,6 +467,8 @@ export default function SimplifiedBillingManagementScreen() {
       const ebItems: ResidentEbBillItem[] = residents.map((r) => {
         const chg = ebChargeMap.get(r.id);
         const rep = chg ? reportByChargeMap.get(chg.id) : null;
+        const isPendingReport = rep?.status === 'pending';
+        const isRejectedReport = rep?.status === 'rejected';
 
         if (chg) {
           const isSettled = chg.status === 'settled';
@@ -440,8 +482,11 @@ export default function SimplifiedBillingManagementScreen() {
             charge_id: chg.id,
             amount_paise: chg.amount_paise,
             status: isSettled ? 'paid' : 'unpaid',
-            has_pending_report: Boolean(rep),
-            pending_report: rep || null,
+            has_pending_report: isPendingReport,
+            pending_report: isPendingReport ? rep : null,
+            rejected_report: isRejectedReport
+              ? { id: rep.id, rejection_reason: rep.rejection_reason }
+              : null,
             receipt_number: pInfo?.receipt || null,
             paid_date: pInfo?.date || null,
             paid_method: pInfo?.method || null,
@@ -458,6 +503,7 @@ export default function SimplifiedBillingManagementScreen() {
           status: 'not_generated',
           has_pending_report: false,
           pending_report: null,
+          rejected_report: null,
           receipt_number: null,
           paid_date: null,
           paid_method: null,
@@ -705,6 +751,46 @@ export default function SimplifiedBillingManagementScreen() {
       Alert.alert('Confirmation Failed', err.message || 'Could not confirm payment.');
     } finally {
       setConfirmingPayment(false);
+    }
+  };
+
+  // Reject payment proof with reason
+  const handleRejectPayment = async () => {
+    if (!selectedReviewItem?.report?.id || rejectingPayment) return;
+    const trimmedReason = rejectionReason.trim();
+    if (!trimmedReason) {
+      Alert.alert(
+        'Reason Required',
+        'Please select a quick reason or provide details for rejecting this payment proof.'
+      );
+      return;
+    }
+
+    try {
+      setRejectingPayment(true);
+      const { data, error } = await supabase.rpc('reject_student_payment_report', {
+        p_report_id: selectedReviewItem.report.id,
+        p_rejection_reason: trimmedReason,
+      });
+
+      if (error) throw error;
+      if (!data?.success) {
+        throw new Error(data?.error || 'Failed to reject payment proof.');
+      }
+
+      setReviewModalVisible(false);
+      setSelectedReviewItem(null);
+      setShowRejectForm(false);
+      setRejectionReason('');
+      Alert.alert(
+        'Payment Proof Rejected',
+        'The resident can view the rejection feedback and resubmit their payment proof.'
+      );
+      await loadBillingData();
+    } catch (err: any) {
+      Alert.alert('Rejection Failed', err.message || 'Could not reject payment report.');
+    } finally {
+      setRejectingPayment(false);
     }
   };
 
@@ -1050,9 +1136,16 @@ export default function SimplifiedBillingManagementScreen() {
 
                       <View style={styles.breakdownRow}>
                         <View style={styles.wmRow}>
-                          <Text style={styles.breakdownLabel}>
-                            Washing Machine
-                          </Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                            <Text style={styles.breakdownLabel}>
+                              Washing Machine
+                            </Text>
+                            {res.wm_request_pending && !res.opt_in_wm ? (
+                              <View style={styles.wmPendingBadge}>
+                                <Text style={styles.wmPendingBadgeText}>🔔 Requested</Text>
+                              </View>
+                            ) : null}
+                          </View>
                           <Switch
                             value={res.opt_in_wm}
                             onValueChange={() =>
@@ -1121,44 +1214,58 @@ export default function SimplifiedBillingManagementScreen() {
                         </Pressable>
                       </View>
                     ) : (
-                      <View style={styles.actionRow}>
-                        <Pressable
-                          style={styles.cashActionBtn}
-                          onPress={() => {
-                            if (!res.charge_id) {
+                      <>
+                        {res.rejected_report && (
+                          <View style={styles.rejectedBannerWrap}>
+                            <Text style={styles.rejectedBannerTitle}>
+                              ⚠️ Payment Proof Rejected
+                            </Text>
+                            <Text
+                              style={styles.rejectedBannerSub}
+                              numberOfLines={2}>
+                              Reason: {res.rejected_report.rejection_reason || 'Verification failed'}
+                            </Text>
+                          </View>
+                        )}
+                        <View style={styles.actionRow}>
+                          <Pressable
+                            style={styles.cashActionBtn}
+                            onPress={() => {
+                              if (!res.charge_id) {
+                                Alert.alert(
+                                  'Notice',
+                                  'Please generate monthly rent bills first.'
+                                );
+                                return;
+                              }
                               Alert.alert(
-                                'Notice',
-                                'Please generate monthly rent bills first.'
+                                'Confirm In-Person Cash Payment',
+                                `Confirm cash payment of ${formatPaiseToRupees(
+                                  res.total_paise
+                                )} received from ${res.full_name} for Room ${
+                                  res.room_number
+                                }?`,
+                                [
+                                  { text: 'Cancel', style: 'cancel' },
+                                  {
+                                    text: 'Confirm Cash Payment',
+                                    style: 'default',
+                                    onPress: () =>
+                                      handleConfirmPayment(
+                                        res.charge_id!,
+                                        null,
+                                        'cash'
+                                      ),
+                                  },
+                                ]
                               );
-                              return;
-                            }
-                            Alert.alert(
-                              'Confirm In-Person Cash Payment',
-                              `Confirm cash payment of ${formatPaiseToRupees(
-                                res.total_paise
-                              )} received from ${res.full_name} for Room ${
-                                res.room_number
-                              }?`,
-                              [
-                                { text: 'Cancel', style: 'cancel' },
-                                {
-                                  text: 'Confirm Cash Payment',
-                                  style: 'default',
-                                  onPress: () =>
-                                    handleConfirmPayment(
-                                      res.charge_id!,
-                                      null,
-                                      'cash'
-                                    ),
-                                },
-                              ]
-                            );
-                          }}>
-                          <Text style={styles.cashActionBtnText}>
-                            Mark as Paid (Cash)
-                          </Text>
-                        </Pressable>
-                      </View>
+                            }}>
+                            <Text style={styles.cashActionBtnText}>
+                              Mark as Paid (Cash)
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </>
                     )}
                   </View>
                 );
@@ -1245,34 +1352,48 @@ export default function SimplifiedBillingManagementScreen() {
                         </Pressable>
                       </View>
                     ) : (
-                      <View style={styles.actionRow}>
-                        <Pressable
-                          style={styles.cashActionBtn}
-                          onPress={() => {
-                            Alert.alert(
-                              'Confirm In-Person Cash Payment',
-                              `Confirm cash payment of ${formatPaiseToRupees(
-                                res.amount_paise
-                              )} received from ${res.full_name} for electricity?`,
-                              [
-                                { text: 'Cancel', style: 'cancel' },
-                                {
-                                  text: 'Confirm Cash Payment',
-                                  onPress: () =>
-                                    handleConfirmPayment(
-                                      res.charge_id!,
-                                      null,
-                                      'cash'
-                                    ),
-                                },
-                              ]
-                            );
-                          }}>
-                          <Text style={styles.cashActionBtnText}>
-                            Mark as Paid (Cash)
-                          </Text>
-                        </Pressable>
-                      </View>
+                      <>
+                        {res.rejected_report && (
+                          <View style={styles.rejectedBannerWrap}>
+                            <Text style={styles.rejectedBannerTitle}>
+                              ⚠️ Payment Proof Rejected
+                            </Text>
+                            <Text
+                              style={styles.rejectedBannerSub}
+                              numberOfLines={2}>
+                              Reason: {res.rejected_report.rejection_reason || 'Verification failed'}
+                            </Text>
+                          </View>
+                        )}
+                        <View style={styles.actionRow}>
+                          <Pressable
+                            style={styles.cashActionBtn}
+                            onPress={() => {
+                              Alert.alert(
+                                'Confirm In-Person Cash Payment',
+                                `Confirm cash payment of ${formatPaiseToRupees(
+                                  res.amount_paise
+                                )} received from ${res.full_name} for electricity?`,
+                                [
+                                  { text: 'Cancel', style: 'cancel' },
+                                  {
+                                    text: 'Confirm Cash Payment',
+                                    onPress: () =>
+                                      handleConfirmPayment(
+                                        res.charge_id!,
+                                        null,
+                                        'cash'
+                                      ),
+                                  },
+                                ]
+                              );
+                            }}>
+                            <Text style={styles.cashActionBtnText}>
+                              Mark as Paid (Cash)
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </>
                     )}
                   </View>
                 );
@@ -1529,20 +1650,32 @@ export default function SimplifiedBillingManagementScreen() {
       <Modal
         visible={reviewModalVisible}
         transparent
-        animationType="fade"
-        onRequestClose={() => setReviewModalVisible(false)}>
-        <View style={styles.modalOverlay}>
+        animationType="slide"
+        onRequestClose={() => {
+          setReviewModalVisible(false);
+          setShowRejectForm(false);
+          setRejectionReason('');
+        }}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <View style={styles.modalHeaderRow}>
               <Text style={styles.modalHeading}>Review Payment Proof</Text>
-              <Pressable hitSlop={8} onPress={() => setReviewModalVisible(false)}>
+              <Pressable
+                hitSlop={8}
+                onPress={() => {
+                  setReviewModalVisible(false);
+                  setShowRejectForm(false);
+                  setRejectionReason('');
+                }}>
                 <X size={20} color={OwnerTheme.colors.textSecondary} />
               </Pressable>
             </View>
 
             {selectedReviewItem?.report && (
               <ScrollView
-                style={{ maxHeight: 420 }}
+                style={{ maxHeight: 440 }}
                 showsVerticalScrollIndicator={false}>
                 <View style={styles.reviewSummaryBox}>
                   <Text style={styles.modalResName}>
@@ -1577,6 +1710,15 @@ export default function SimplifiedBillingManagementScreen() {
                     <Text style={styles.detailLabel}>Transaction Ref</Text>
                     <Text style={styles.detailValue}>
                       {selectedReviewItem.report.reference_number}
+                    </Text>
+                  </View>
+                ) : null}
+
+                {selectedReviewItem.report.notes ? (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Resident Note</Text>
+                    <Text style={styles.detailValue}>
+                      {selectedReviewItem.report.notes}
                     </Text>
                   </View>
                 ) : null}
@@ -1624,44 +1766,121 @@ export default function SimplifiedBillingManagementScreen() {
                     </Pressable>
                   </View>
                 ) : null}
+
+                {/* Rejection Form Box */}
+                {showRejectForm && (
+                  <View style={styles.rejectionCard}>
+                    <View style={styles.rejectionHeaderRow}>
+                      <Text style={styles.rejectionHeaderTitle}>
+                        Specify Rejection Reason
+                      </Text>
+                      <Pressable
+                        hitSlop={8}
+                        onPress={() => setShowRejectForm(false)}>
+                        <Text style={styles.rejectionCancelText}>Cancel</Text>
+                      </Pressable>
+                    </View>
+                    <Text style={styles.rejectionHint}>
+                      Select a reason or type feedback for the resident:
+                    </Text>
+                    <View style={styles.presetChipsWrap}>
+                      {PRESET_REJECTION_REASONS.map((preset) => {
+                        const isSelected = rejectionReason === preset;
+                        return (
+                          <Pressable
+                            key={preset}
+                            style={[
+                              styles.presetChip,
+                              isSelected && styles.presetChipSelected,
+                            ]}
+                            onPress={() => setRejectionReason(preset)}>
+                            <Text
+                              style={[
+                                styles.presetChipText,
+                                isSelected && styles.presetChipTextSelected,
+                              ]}>
+                              {preset}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    <TextInput
+                      style={styles.rejectionInput}
+                      value={rejectionReason}
+                      onChangeText={setRejectionReason}
+                      placeholder="Type custom rejection reason..."
+                      placeholderTextColor="#94A3B8"
+                      multiline
+                      numberOfLines={3}
+                    />
+                    <Pressable
+                      style={[
+                        styles.confirmRejectBtn,
+                        (!rejectionReason.trim() || rejectingPayment) &&
+                          styles.btnDisabled,
+                      ]}
+                      disabled={!rejectionReason.trim() || rejectingPayment}
+                      onPress={handleRejectPayment}>
+                      {rejectingPayment ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.confirmRejectBtnText}>
+                          Confirm Rejection
+                        </Text>
+                      )}
+                    </Pressable>
+                  </View>
+                )}
               </ScrollView>
             )}
 
-            <View style={styles.modalActions}>
-              <Pressable
-                style={styles.modalCancelBtn}
-                onPress={() => setReviewModalVisible(false)}>
-                <Text style={styles.modalCancelBtnText}>Close</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.modalConfirmBtn,
-                  confirmingPayment && styles.btnDisabled,
-                ]}
-                disabled={confirmingPayment}
-                onPress={() => {
-                  if (
-                    selectedReviewItem?.charge_id &&
-                    selectedReviewItem.report?.id
-                  ) {
-                    handleConfirmPayment(
-                      selectedReviewItem.charge_id,
-                      selectedReviewItem.report.id,
-                      selectedReviewItem.report.claimed_method
-                    );
-                  }
-                }}>
-                {confirmingPayment ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.modalConfirmBtnText}>
-                    Confirm & Mark Paid
-                  </Text>
-                )}
-              </Pressable>
-            </View>
+            {!showRejectForm && (
+              <View style={styles.modalActions}>
+                <Pressable
+                  style={styles.modalCancelBtn}
+                  onPress={() => {
+                    setReviewModalVisible(false);
+                    setShowRejectForm(false);
+                    setRejectionReason('');
+                  }}>
+                  <Text style={styles.modalCancelBtnText}>Close</Text>
+                </Pressable>
+                <Pressable
+                  style={styles.modalRejectBtn}
+                  onPress={() => setShowRejectForm(true)}>
+                  <Text style={styles.modalRejectBtnText}>Reject Proof</Text>
+                </Pressable>
+                <Pressable
+                  style={[
+                    styles.modalConfirmBtn,
+                    confirmingPayment && styles.btnDisabled,
+                  ]}
+                  disabled={confirmingPayment}
+                  onPress={() => {
+                    if (
+                      selectedReviewItem?.charge_id &&
+                      selectedReviewItem.report?.id
+                    ) {
+                      handleConfirmPayment(
+                        selectedReviewItem.charge_id,
+                        selectedReviewItem.report.id,
+                        selectedReviewItem.report.claimed_method
+                      );
+                    }
+                  }}>
+                  {confirmingPayment ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.modalConfirmBtnText}>
+                      Confirm & Mark Paid
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+            )}
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Full Screen Image Modal */}
@@ -2196,5 +2415,134 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
+  },
+  modalRejectBtn: {
+    height: 44,
+    paddingHorizontal: 14,
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    backgroundColor: '#FEF2F2',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalRejectBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#DC2626',
+  },
+  rejectionCard: {
+    marginTop: 14,
+    padding: 12,
+    backgroundColor: '#FEF2F2',
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  rejectionHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  rejectionHeaderTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#991B1B',
+  },
+  rejectionCancelText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  rejectionHint: {
+    fontSize: 12,
+    color: '#7F1D1D',
+    marginBottom: 10,
+    lineHeight: 16,
+  },
+  presetChipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 10,
+  },
+  presetChip: {
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    borderRadius: OwnerTheme.radius.full,
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    backgroundColor: '#FFFFFF',
+  },
+  presetChipSelected: {
+    backgroundColor: '#DC2626',
+    borderColor: '#DC2626',
+  },
+  presetChipText: {
+    fontSize: 12,
+    color: '#991B1B',
+    fontWeight: '500',
+  },
+  presetChipTextSelected: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  rejectionInput: {
+    minHeight: 64,
+    borderWidth: 1,
+    borderColor: '#FCA5A5',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 10,
+    fontSize: 13,
+    color: '#0F172A',
+    backgroundColor: '#FFFFFF',
+    marginBottom: 12,
+    textAlignVertical: 'top',
+  },
+  confirmRejectBtn: {
+    height: 40,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: '#DC2626',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  confirmRejectBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  rejectedBannerWrap: {
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: OwnerTheme.radius.sm,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  rejectedBannerTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B91C1C',
+  },
+  rejectedBannerSub: {
+    fontSize: 11,
+    color: '#7F1D1D',
+    marginTop: 2,
+  },
+  wmPendingBadge: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: OwnerTheme.radius.full,
+  },
+  wmPendingBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#92400E',
   },
 });

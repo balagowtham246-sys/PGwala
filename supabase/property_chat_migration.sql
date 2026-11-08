@@ -17,6 +17,8 @@ CREATE TABLE IF NOT EXISTS public.property_chat_messages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     property_id UUID NOT NULL REFERENCES public.properties(id) ON DELETE CASCADE,
     resident_id UUID NOT NULL REFERENCES public.residents(id) ON DELETE CASCADE,
+    sender_name TEXT,
+    sender_room TEXT,
     message TEXT NOT NULL CHECK (char_length(trim(message)) >= 1 AND char_length(message) <= 2000),
     is_deleted BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -92,7 +94,45 @@ CREATE POLICY "property_chat_resident_soft_delete"
         )
     );
 
--- 5. Trigger for updated_at
+-- 5. Trigger for updated_at and sender info
+CREATE OR REPLACE FUNCTION public.set_chat_sender_info()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+    v_res RECORD;
+BEGIN
+    IF NEW.sender_name IS NULL OR pg_catalog.btrim(NEW.sender_name) = '' THEN
+        SELECT full_name, room_number
+        INTO v_res
+        FROM public.residents
+        WHERE id = NEW.resident_id;
+
+        IF FOUND THEN
+            NEW.sender_name := v_res.full_name;
+            NEW.sender_room := COALESCE(v_res.room_number, '');
+        ELSE
+            NEW.sender_name := 'Resident';
+            NEW.sender_room := '';
+        END IF;
+    END IF;
+
+    IF NEW.sender_room IS NULL THEN
+        NEW.sender_room := '';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_set_chat_sender_info ON public.property_chat_messages;
+CREATE TRIGGER trg_set_chat_sender_info
+    BEFORE INSERT ON public.property_chat_messages
+    FOR EACH ROW
+    EXECUTE FUNCTION public.set_chat_sender_info();
+
 CREATE OR REPLACE FUNCTION public.set_chat_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN

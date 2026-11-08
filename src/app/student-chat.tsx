@@ -23,6 +23,10 @@ import {
 
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
+import {
+  getChatSenderDisplayName,
+  formatSenderRoomSubtitle,
+} from '@/lib/chat-utils';
 
 export interface ChatMessage {
   id: string;
@@ -31,6 +35,8 @@ export interface ChatMessage {
   message: string;
   is_deleted: boolean;
   created_at: string;
+  sender_name?: string | null;
+  sender_room?: string | null;
   resident?: {
     full_name: string;
     room_number: string;
@@ -107,6 +113,8 @@ export default function StudentChatScreen() {
           message,
           is_deleted,
           created_at,
+          sender_name,
+          sender_room,
           resident:residents (
             full_name,
             room_number
@@ -120,15 +128,25 @@ export default function StudentChatScreen() {
         console.warn('[StudentChat] History fetch warning:', msgError.message);
         setMessages([]);
       } else {
-        const formatted: ChatMessage[] = (msgData || []).map((m: any) => ({
-          id: m.id,
-          property_id: m.property_id,
-          resident_id: m.resident_id,
-          message: m.message,
-          is_deleted: m.is_deleted,
-          created_at: m.created_at,
-          resident: Array.isArray(m.resident) ? m.resident[0] : m.resident,
-        }));
+        const formatted: ChatMessage[] = (msgData || []).map((m: any) => {
+          const resObj = Array.isArray(m.resident) ? m.resident[0] : m.resident;
+          const sName = getChatSenderDisplayName(m.sender_name, resObj?.full_name);
+          const sRoom = m.sender_room || resObj?.room_number || '';
+          return {
+            id: m.id,
+            property_id: m.property_id,
+            resident_id: m.resident_id,
+            message: m.message,
+            is_deleted: m.is_deleted,
+            created_at: m.created_at,
+            sender_name: sName,
+            sender_room: sRoom,
+            resident: {
+              full_name: sName,
+              room_number: sRoom,
+            },
+          };
+        });
         setMessages(formatted);
       }
     } catch (err: unknown) {
@@ -162,22 +180,16 @@ export default function StudentChatScreen() {
           if (payload.eventType === 'INSERT') {
             const newRow = payload.new as any;
 
-            // Fetch sender resident info
-            let senderInfo = { full_name: 'Resident', room_number: '' };
+            // Sender attribution directly from message payload (safe from RLS recursion)
+            let sName = newRow.sender_name;
+            let sRoom = newRow.sender_room;
+
             if (newRow.resident_id === resident.id) {
-              senderInfo = {
-                full_name: resident.full_name,
-                room_number: resident.room_number,
-              };
-            } else {
-              const { data: sData } = await supabase
-                .from('residents')
-                .select('full_name, room_number')
-                .eq('id', newRow.resident_id)
-                .maybeSingle();
-              if (sData) {
-                senderInfo = sData;
-              }
+              sName = resident.full_name;
+              sRoom = resident.room_number;
+            } else if (!sName) {
+              sName = 'Resident';
+              sRoom = '';
             }
 
             const incoming: ChatMessage = {
@@ -187,7 +199,12 @@ export default function StudentChatScreen() {
               message: newRow.message,
               is_deleted: newRow.is_deleted,
               created_at: newRow.created_at,
-              resident: senderInfo,
+              sender_name: sName,
+              sender_room: sRoom,
+              resident: {
+                full_name: sName,
+                room_number: sRoom || '',
+              },
             };
 
             setMessages((prev) => {
@@ -231,6 +248,8 @@ export default function StudentChatScreen() {
         property_id: resident.property_id,
         resident_id: resident.id,
         message: text,
+        sender_name: resident.full_name,
+        sender_room: resident.room_number,
       });
 
       if (error) throw error;
@@ -292,8 +311,10 @@ export default function StudentChatScreen() {
           {!isMe && (
             <View style={styles.senderHeader}>
               <Text style={styles.senderNameText}>
-                {item.resident?.full_name || 'Resident'}{' '}
-                {item.resident?.room_number ? `• Rm ${item.resident.room_number}` : ''}
+                {getChatSenderDisplayName(item.sender_name, item.resident?.full_name)}
+                {formatSenderRoomSubtitle(item.sender_room || item.resident?.room_number)
+                  ? ` • ${formatSenderRoomSubtitle(item.sender_room || item.resident?.room_number)}`
+                  : ''}
               </Text>
             </View>
           )}
@@ -386,7 +407,7 @@ export default function StudentChatScreen() {
       <KeyboardAvoidingView
         style={styles.keyboardView}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}>
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
         {/* Messages List */}
         <FlatList
           ref={flatListRef}
@@ -394,6 +415,8 @@ export default function StudentChatScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderMessageItem}
           contentContainerStyle={styles.listContent}
+          keyboardDismissMode="interactive"
+          keyboardShouldPersistTaps="handled"
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>

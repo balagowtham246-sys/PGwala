@@ -61,6 +61,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const refreshProfile = async () => {
     if (user?.id) {
       await fetchProfile(user.id);
+      try {
+        const { data: userData, error: userError } = await supabase.auth.getUser();
+        if (!userError && userData?.user) {
+          setUser(userData.user);
+        }
+      } catch (e) {
+        console.warn('[AuthContext] Failed to refresh auth user metadata:', e);
+      }
     }
   };
 
