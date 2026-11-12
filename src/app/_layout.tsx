@@ -2,12 +2,24 @@ import { useEffect } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider, router, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import * as Sentry from '@sentry/react-native';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
+import { UpdateGuard } from '@/components/update-guard';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { PropertyProvider } from '@/context/property-context';
 import { evaluateNavigationRedirect } from '@/lib/navigation-guards';
+
+// Initialize Sentry crash monitoring if DSN is provided
+const SENTRY_DSN = process.env.EXPO_PUBLIC_SENTRY_DSN;
+if (SENTRY_DSN) {
+  Sentry.init({
+    dsn: SENTRY_DSN,
+    debug: false,
+    tracesSampleRate: 0.2,
+  });
+}
 
 SplashScreen.preventAutoHideAsync();
 
@@ -66,7 +78,7 @@ function RootNavigationLayout() {
   );
 }
 
-export default function RootLayout() {
+function RootLayout() {
   const colorScheme = useColorScheme();
 
   return (
@@ -74,12 +86,15 @@ export default function RootLayout() {
       <AuthProvider>
         <PropertyProvider>
           <AnimatedSplashOverlay />
+          <UpdateGuard />
           <RootNavigationLayout />
         </PropertyProvider>
       </AuthProvider>
     </ThemeProvider>
   );
 }
+
+export default Sentry.wrap(RootLayout);
 
 const styles = StyleSheet.create({
   loadingContainer: {
