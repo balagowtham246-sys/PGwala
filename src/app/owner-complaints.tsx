@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { router } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
@@ -252,7 +253,7 @@ export default function OwnerComplaintsScreen() {
   }, [complaints, statusFilter, categoryFilter]);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
         title="Maintenance & Issues"
         subtitle={`${propertyName} • Complaints`}
@@ -576,6 +577,8 @@ export default function OwnerComplaintsScreen() {
           ) : null}
         </View>
       </Modal>
+
+      <RoleBottomNav activeTab="maintenance" roleOverride="owner" />
     </SafeAreaView>
   );
 }

@@ -60,12 +60,12 @@ function RootNavigationLayout() {
       <Stack.Screen name="edit-resident" />
       <Stack.Screen name="food-menu" />
       <Stack.Screen name="billing-management" />
-      <Stack.Screen name="eb-billing" />
       <Stack.Screen name="student-billing" />
       <Stack.Screen name="receipt-detail" />
       <Stack.Screen name="owner-complaints" />
       <Stack.Screen name="student-complaints" />
       <Stack.Screen name="student-gate-history" />
+      <Stack.Screen name="student-menu" />
       <Stack.Screen name="student-settings" />
       <Stack.Screen name="student-profile-edit" />
       <Stack.Screen name="student-accommodation" />

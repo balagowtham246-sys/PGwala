@@ -38,6 +38,9 @@ import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { formatPaiseToRupees } from '@/lib/billing-utils';
+import { triggerSelectionHaptic } from '@/lib/haptics';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import {
   StatisticCard,
   SectionHeader,
@@ -170,12 +173,15 @@ export default function OwnerDashboard() {
   const [newPropAddress, setNewPropAddress] = useState('');
   const [creatingProperty, setCreatingProperty] = useState(false);
 
-  // Key Operational State (Gate, Menu, Complaints)
+  // Key Operational State (Gate, Menu, Complaints, Rent Collections)
   const [stats, setStats] = useState({
     totalResidents: 0,
     studentsInside: 0,
     studentsOutside: 0,
     openComplaintsCount: 0,
+    rentCollectedPaise: 0,
+    rentTotalPaise: 0,
+    pendingProofsCount: 0,
   });
 
   const [todayMenu, setTodayMenu] = useState<TodayMenuSummary>({
@@ -213,9 +219,11 @@ export default function OwnerDashboard() {
 
   // Anti-flooding: Track recent alert timestamps per resident (15-min throttle)
   const alertThrottleRef = useRef<Map<string, number>>(new Map());
+  const hasFocusedOnceRef = useRef(false);
 
   // ISO string for today 'YYYY-MM-DD' (local calendar date matching food_menus)
   const todayIsoDate = toLocalIsoDate();
+  const currentMonthStartIso = `${todayIsoDate.slice(0, 7)}-01`;
 
   // Instant render from cache (stale-while-revalidate for slow networks)
   useEffect(() => {
@@ -252,17 +260,52 @@ export default function OwnerDashboard() {
     try {
       setErrorMessage(null);
 
-      // Fast Path: Single-roundtrip composite SQL RPC
-      const { data: summaryRpc, error: rpcError } = await supabase.rpc(
-        'get_owner_dashboard_summary',
-        {
+      // Fast Path: Single-roundtrip composite SQL RPC + current month rent collections in parallel
+      const [summaryResult, chargesResult, pendingReportsResult] = await Promise.all([
+        supabase.rpc('get_owner_dashboard_summary', {
           p_property_id: selectedPropertyId,
           p_date: todayIsoDate,
+        }),
+        supabase
+          .from('charges')
+          .select('amount_paise, status')
+          .eq('property_id', selectedPropertyId)
+          .eq('billing_period_start', currentMonthStartIso)
+          .eq('category', 'rent'),
+        supabase
+          .from('student_payment_reports')
+          .select('id', { count: 'exact', head: true })
+          .eq('property_id', selectedPropertyId)
+          .eq('status', 'pending'),
+      ]);
+
+      let rentCollectedPaise = 0;
+      let rentTotalPaise = 0;
+      if (!chargesResult.error && chargesResult.data) {
+        for (const ch of chargesResult.data) {
+          const amt = ch.amount_paise || 0;
+          rentTotalPaise += amt;
+          if (ch.status === 'paid') {
+            rentCollectedPaise += amt;
+          }
         }
-      );
+      }
+      const pendingProofsCount = pendingReportsResult.count ?? 0;
+
+      const { data: summaryRpc, error: rpcError } = summaryResult;
 
       if (!rpcError && summaryRpc?.success) {
-        if (summaryRpc.stats) setStats(summaryRpc.stats);
+        if (summaryRpc.stats) {
+          setStats({
+            totalResidents: summaryRpc.stats.totalResidents ?? 0,
+            studentsInside: summaryRpc.stats.studentsInside ?? 0,
+            studentsOutside: summaryRpc.stats.studentsOutside ?? 0,
+            openComplaintsCount: summaryRpc.stats.openComplaintsCount ?? 0,
+            rentCollectedPaise,
+            rentTotalPaise,
+            pendingProofsCount,
+          });
+        }
         if (summaryRpc.recentActivities) setRecentActivities(summaryRpc.recentActivities);
 
         if (summaryRpc.todayMenus) {
@@ -293,7 +336,15 @@ export default function OwnerDashboard() {
 
         void AsyncStorage.setItem(
           `owner_dash_cache_${selectedPropertyId}`,
-          JSON.stringify(summaryRpc)
+          JSON.stringify({
+            ...summaryRpc,
+            stats: {
+              ...(summaryRpc.stats || {}),
+              rentCollectedPaise,
+              rentTotalPaise,
+              pendingProofsCount,
+            },
+          })
         );
         return;
       }
@@ -317,21 +368,47 @@ export default function OwnerDashboard() {
           studentsInside: 0,
           studentsOutside: 0,
           openComplaintsCount: 0,
+          rentCollectedPaise,
+          rentTotalPaise,
+          pendingProofsCount,
         });
         setRecentActivities([]);
         setLoading(false);
         return;
       }
 
-      // 2. Fetch recent movement logs (optimized via direct property_id index)
-      let { data: logsData, error: logsError } = await supabase
-        .from('movement_logs')
-        .select(
-          'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required'
-        )
-        .eq('property_id', selectedPropertyId)
-        .order('event_time', { ascending: false })
-        .limit(60);
+      // 2. Fetch recent movement logs, menus, complaints, and washing machines in parallel
+      const [logsRes, menuRes, compRes, wmRes] = await Promise.all([
+        supabase
+          .from('movement_logs')
+          .select(
+            'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required'
+          )
+          .eq('property_id', selectedPropertyId)
+          .order('event_time', { ascending: false })
+          .limit(60),
+        supabase
+          .from('food_menus')
+          .select('id, meal_type, items, notes, is_published')
+          .eq('property_id', selectedPropertyId)
+          .eq('menu_date', todayIsoDate),
+        supabase
+          .from('complaints')
+          .select('id')
+          .eq('property_id', selectedPropertyId)
+          .eq('status', 'open'),
+        supabase
+          .from('washing_machines')
+          .select(
+            'id, property_id, machine_number, machine_name, is_active, status, current_resident_id, started_at, updated_at'
+          )
+          .eq('property_id', selectedPropertyId)
+          .eq('is_active', true)
+          .order('machine_number', { ascending: true }),
+      ]);
+
+      let logsData = logsRes.data;
+      const logsError = logsRes.error;
 
       // Backwards-compatibility fallback if property_id was not yet backfilled
       if (
@@ -378,56 +455,36 @@ export default function OwnerDashboard() {
         }
       }
 
-      // 3. Fetch today's food menu status and full item details
-      try {
-        const { data: menuData } = await supabase
-          .from('food_menus')
-          .select('id, meal_type, items, notes, is_published')
-          .eq('property_id', selectedPropertyId)
-          .eq('menu_date', todayIsoDate);
-
-        const summary: TodayMenuSummary = {
-          breakfast: false,
-          lunch: false,
-          dinner: false,
-        };
-
-        const menuMap: Record<MealType, OwnerFoodMenuRecord | null> = {
-          breakfast: null,
-          lunch: null,
-          dinner: null,
-        };
-
-        if (menuData) {
-          for (const m of menuData as OwnerFoodMenuRecord[]) {
-            if (['breakfast', 'lunch', 'dinner'].includes(m.meal_type)) {
-              menuMap[m.meal_type] = m;
-              if (m.is_published) {
-                summary[m.meal_type] = true;
-              }
+      // 3. Process today's food menu status and full item details
+      const summary: TodayMenuSummary = {
+        breakfast: false,
+        lunch: false,
+        dinner: false,
+      };
+      const menuMap: Record<MealType, OwnerFoodMenuRecord | null> = {
+        breakfast: null,
+        lunch: null,
+        dinner: null,
+      };
+      if (menuRes.error) {
+        console.warn('[OwnerDashboard] Could not fetch food menu:', menuRes.error.message);
+      } else if (menuRes.data) {
+        for (const m of menuRes.data as OwnerFoodMenuRecord[]) {
+          if (['breakfast', 'lunch', 'dinner'].includes(m.meal_type)) {
+            menuMap[m.meal_type] = m;
+            if (m.is_published) {
+              summary[m.meal_type] = true;
             }
           }
         }
-        setTodayMenu(summary);
-        setTodayMenus(menuMap);
-      } catch (menuErr) {
-        console.warn('[OwnerDashboard] Could not fetch food menu:', menuErr);
       }
+      setTodayMenu(summary);
+      setTodayMenus(menuMap);
 
-      // 4. Fetch open maintenance complaints count
-      let openComplaintsCount = 0;
-      try {
-        const { data: compData } = await supabase
-          .from('complaints')
-          .select('id')
-          .eq('property_id', selectedPropertyId)
-          .eq('status', 'open');
-
-        if (compData) {
-          openComplaintsCount = compData.length;
-        }
-      } catch (compErr) {
-        console.warn('[OwnerDashboard] Could not fetch complaints count:', compErr);
+      // 4. Open maintenance complaints count
+      const openComplaintsCount = compRes.data?.length ?? 0;
+      if (compRes.error) {
+        console.warn('[OwnerDashboard] Could not fetch complaints count:', compRes.error.message);
       }
 
       setStats({
@@ -435,6 +492,9 @@ export default function OwnerDashboard() {
         studentsInside: insideCount,
         studentsOutside: outsideCount,
         openComplaintsCount,
+        rentCollectedPaise,
+        rentTotalPaise,
+        pendingProofsCount,
       });
 
       // 5. Build recent activity feed (latest 3)
@@ -467,44 +527,32 @@ export default function OwnerDashboard() {
 
       setRecentActivities(activities);
 
-      // 6. Fetch washing machines for fallback
-      try {
-        const { data: wmList } = await supabase
-          .from('washing_machines')
-          .select(`
-            id, property_id, machine_number, machine_name, is_active, status,
-            current_resident_id, started_at, updated_at
-          `)
-          .eq('property_id', selectedPropertyId)
-          .eq('is_active', true)
-          .order('machine_number', { ascending: true });
-
-        if (wmList && wmList.length > 0) {
-          const mappedUnits: DashboardWmUnit[] = wmList.map((w: any) => {
-            const res = w.current_resident_id ? residentMap.get(w.current_resident_id) : null;
-            return {
-              id: w.id,
-              property_id: w.property_id,
-              machine_number: w.machine_number,
-              machine_name: w.machine_name,
-              is_active: w.is_active,
-              status: w.status,
-              current_resident_id: w.current_resident_id,
-              current_resident_name: res?.full_name || null,
-              current_resident_room: res?.room_number || null,
-              started_at: w.started_at,
-              updated_at: w.updated_at,
-            };
-          });
-          setWmUnits(mappedUnits);
-          setWmSummary({
-            totalCount: mappedUnits.length,
-            inUseCount: mappedUnits.filter((u) => u.status === 'in_use').length,
-            freeCount: mappedUnits.filter((u) => u.status === 'free').length,
-          });
-        }
-      } catch (wmErr) {
-        console.warn('[OwnerDashboard] Could not fetch washing machines:', wmErr);
+      // 6. Process washing machines for fallback
+      if (wmRes.error) {
+        console.warn('[OwnerDashboard] Could not fetch washing machines:', wmRes.error.message);
+      } else if (wmRes.data && wmRes.data.length > 0) {
+        const mappedUnits: DashboardWmUnit[] = wmRes.data.map((w: any) => {
+          const res = w.current_resident_id ? residentMap.get(w.current_resident_id) : null;
+          return {
+            id: w.id,
+            property_id: w.property_id,
+            machine_number: w.machine_number,
+            machine_name: w.machine_name,
+            is_active: w.is_active,
+            status: w.status,
+            current_resident_id: w.current_resident_id,
+            current_resident_name: res?.full_name || null,
+            current_resident_room: res?.room_number || null,
+            started_at: w.started_at,
+            updated_at: w.updated_at,
+          };
+        });
+        setWmUnits(mappedUnits);
+        setWmSummary({
+          totalCount: mappedUnits.length,
+          inUseCount: mappedUnits.filter((u) => u.status === 'in_use').length,
+          freeCount: mappedUnits.filter((u) => u.status === 'free').length,
+        });
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -514,7 +562,7 @@ export default function OwnerDashboard() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id, profile?.role, selectedPropertyId, todayIsoDate]);
+  }, [user?.id, profile?.role, selectedPropertyId, todayIsoDate, currentMonthStartIso]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -530,6 +578,10 @@ export default function OwnerDashboard() {
   // Refetch latest operational status and menu whenever returning to dashboard
   useFocusEffect(
     useCallback(() => {
+      if (!hasFocusedOnceRef.current) {
+        hasFocusedOnceRef.current = true;
+        return;
+      }
       if (!authLoading && user?.id && profile?.role === 'owner' && selectedPropertyId) {
         loadDashboardData();
       }
@@ -723,7 +775,7 @@ export default function OwnerDashboard() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       {/* Non-College Departure Push Alert Banner */}
       {departureAlert && (
         <View style={styles.pushAlertBanner}>
@@ -797,26 +849,60 @@ export default function OwnerDashboard() {
           <ErrorState message={errorMessage} onRetry={loadDashboardData} />
         )}
 
-        {/* Priority Area 1: Live Gate Status (Side-by-side Hero Row) */}
-        <View style={styles.gateStatsRow}>
-          <StatisticCard
-            label="Inside PG"
-            value={stats.studentsInside}
-            accentColor={OwnerTheme.colors.success}
-            icon={LogIn}
-            sublabel="Present in PG"
-            onPress={() => router.push('/student-in-out')}
-            style={styles.gateStatHalfCard}
-          />
-          <StatisticCard
-            label="Outside PG"
-            value={stats.studentsOutside}
-            accentColor={OwnerTheme.colors.warning}
-            icon={LogOut}
-            sublabel="Checked out"
-            onPress={() => router.push('/student-in-out')}
-            style={styles.gateStatHalfCard}
-          />
+        {/* Priority Area 1: 4-Card Operational KPI Grid */}
+        <View style={styles.kpiGrid}>
+          <View style={styles.gateStatsRow}>
+            <StatisticCard
+              label="Students Inside"
+              value={stats.studentsInside}
+              accentColor={OwnerTheme.colors.success}
+              icon={LogIn}
+              sublabel={`of ${stats.totalResidents} active`}
+              onPress={() => router.push('/student-in-out')}
+              style={styles.gateStatHalfCard}
+            />
+            <StatisticCard
+              label="Outside"
+              value={stats.studentsOutside}
+              accentColor={OwnerTheme.colors.warning}
+              icon={LogOut}
+              sublabel="Checked out"
+              onPress={() => router.push('/student-in-out')}
+              style={styles.gateStatHalfCard}
+            />
+          </View>
+          <View style={styles.gateStatsRow}>
+            <StatisticCard
+              label="Rent Collections"
+              value={formatPaiseToRupees(stats.rentCollectedPaise)}
+              accentColor={OwnerTheme.colors.primary}
+              icon={Receipt}
+              sublabel={
+                stats.pendingProofsCount > 0
+                  ? `${stats.pendingProofsCount} proof${stats.pendingProofsCount > 1 ? 's' : ''} to verify`
+                  : stats.rentTotalPaise > 0
+                  ? `of ${formatPaiseToRupees(stats.rentTotalPaise)}`
+                  : 'This month'
+              }
+              onPress={() => router.push('/billing-management')}
+              style={styles.gateStatHalfCard}
+            />
+            <StatisticCard
+              label="Open Maintenance"
+              value={stats.openComplaintsCount}
+              accentColor={
+                stats.openComplaintsCount > 0
+                  ? OwnerTheme.colors.danger
+                  : OwnerTheme.colors.textSecondary
+              }
+              icon={Wrench}
+              sublabel={
+                stats.openComplaintsCount > 0 ? 'Needs attention' : 'All resolved'
+              }
+              onPress={() => router.push('/owner-complaints')}
+              style={styles.gateStatHalfCard}
+            />
+          </View>
         </View>
 
         {/* Priority Area 1b: Live Washing Machine Summary Card */}
@@ -903,7 +989,10 @@ export default function OwnerDashboard() {
                     styles.mealSegmentChip,
                     isSelected && styles.mealSegmentChipSelected,
                   ]}
-                  onPress={() => setActiveMealTab(mealKey)}>
+                  onPress={() => {
+                    triggerSelectionHaptic();
+                    setActiveMealTab(mealKey);
+                  }}>
                   <Text style={styles.mealChipEmoji}>{cfg.icon}</Text>
                   <Text
                     style={[
@@ -1013,7 +1102,11 @@ export default function OwnerDashboard() {
           </View>
         </View>
 
-        {/* Priority Area 3: Handy Quick Actions Grid (2x2 Compact) */}
+        {/* Priority Area 3: Action Hub */}
+        <SectionHeader
+          title="Action Hub"
+          style={{ marginTop: 4, marginBottom: 4 }}
+        />
         <View style={styles.quickGrid}>
           <Pressable
             accessibilityRole="button"
@@ -1208,6 +1301,7 @@ export default function OwnerDashboard() {
                       isSelected && styles.propertyItemRowSelected,
                     ]}
                     onPress={async () => {
+                      triggerSelectionHaptic();
                       await selectProperty(prop.id);
                       setSwitcherVisible(false);
                     }}>
@@ -1428,6 +1522,8 @@ export default function OwnerDashboard() {
           </View>
         </View>
       </Modal>
+
+      <RoleBottomNav activeTab="home" roleOverride="owner" />
     </SafeAreaView>
   );
 }
@@ -1521,6 +1617,9 @@ const styles = StyleSheet.create({
   },
   pushAlertClose: {
     padding: 4,
+  },
+  kpiGrid: {
+    gap: 8,
   },
   gateStatsRow: {
     flexDirection: 'row',

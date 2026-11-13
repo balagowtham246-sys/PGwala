@@ -192,7 +192,7 @@ export function WashingMachineCard({
     wmChannelSequence += 1;
     const channelName = `wm_status_${propertyId}_${wmChannelSequence}`;
 
-    const channel = supabase
+    let channel = supabase
       .channel(channelName)
       .on(
         'postgres_changes',
@@ -219,24 +219,31 @@ export function WashingMachineCard({
           if (!isEffectActive || !isMountedRef.current) return;
           await fetchStatus(false);
         }
-      )
-      .on(
+      );
+
+    // Scope resident_opt_ins Realtime strictly to the active student's resident_id
+    // so changes in other PGs/residents never trigger cross-property refetches.
+    if (userRole === 'student' && currentResidentId) {
+      channel = channel.on(
         'postgres_changes',
         {
           event: '*',
           schema: 'public',
           table: 'resident_opt_ins',
+          filter: `resident_id=eq.${currentResidentId}`,
         },
         async () => {
           if (!isEffectActive || !isMountedRef.current) return;
           await fetchStatus(false);
         }
-      )
-      .subscribe((status) => {
-        if (isEffectActive && isMountedRef.current) {
-          setIsSubscribed(status === 'SUBSCRIBED');
-        }
-      });
+      );
+    }
+
+    channel = channel.subscribe((status) => {
+      if (isEffectActive && isMountedRef.current) {
+        setIsSubscribed(status === 'SUBSCRIBED');
+      }
+    });
 
     channelRef.current = channel;
 
@@ -249,7 +256,7 @@ export function WashingMachineCard({
       }
       void supabase.removeChannel(channel);
     };
-  }, [propertyId, fetchStatus]);
+  }, [propertyId, userRole, currentResidentId, fetchStatus]);
 
   // Request Access from Owner
   const handleRequestAccess = async () => {

@@ -64,8 +64,31 @@ export const Spacing = {
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;
 export const MaxContentWidth = 800;
 
+export const MotionTokens = {
+  duration: {
+    fast: 150,
+    normal: 250,
+    slow: 350,
+  },
+  spring: {
+    damping: 18,
+    stiffness: 180,
+    mass: 1,
+  },
+} as const;
+
+export const SpaceTokens = {
+  xs: 4,
+  sm: 8,
+  md: 12,
+  lg: 16,
+  xl: 20,
+  xxl: 24,
+  xxxl: 32,
+} as const;
+
 /**
- * PGwala 2.0 Modern Owner Design Tokens
+ * PGwala 2.0 Modern Design Tokens
  * Follows Airbnb Host / Stripe Dashboard / Material 3 guidelines
  */
 export const OwnerTheme = {
@@ -73,13 +96,18 @@ export const OwnerTheme = {
     primary: '#087FAF',
     primaryDark: '#075B80',
     primaryLight: '#E6F4FA',
+    primarySoft: '#F0F9FF',
     success: '#168653',
     successLight: '#DCFCE7',
     warning: '#D97706',
     warningLight: '#FEF3C7',
     danger: '#DC3545',
     dangerLight: '#FEE2E2',
+    info: '#0284C7',
+    infoLight: '#E0F2FE',
     background: '#F5F7FA',
+    surface: '#FFFFFF',
+    surfaceElevated: '#F8FAFC',
     card: '#FFFFFF',
     textPrimary: '#172033',
     textSecondary: '#697586',
@@ -87,6 +115,8 @@ export const OwnerTheme = {
     border: '#E1E6EC',
     borderLight: '#EDF1F5',
   },
+  spacing: SpaceTokens,
+  motion: MotionTokens,
   typography: {
     screenHeading: {
       fontSize: 26,
@@ -110,6 +140,27 @@ export const OwnerTheme = {
       fontWeight: '400' as const,
       color: '#172033',
     },
+    bodyMedium: {
+      fontSize: 14,
+      fontWeight: '500' as const,
+      color: '#172033',
+    },
+    label: {
+      fontSize: 12,
+      fontWeight: '600' as const,
+      color: '#697586',
+    },
+    caption: {
+      fontSize: 11,
+      fontWeight: '500' as const,
+      color: '#94A3B8',
+    },
+    metric: {
+      fontSize: 24,
+      fontWeight: '700' as const,
+      color: '#172033',
+      letterSpacing: -0.5,
+    },
     supporting: {
       fontSize: 12,
       fontWeight: '400' as const,
@@ -121,6 +172,7 @@ export const OwnerTheme = {
     md: 12,
     card: 16,
     lg: 20,
+    xl: 24,
     full: 9999,
   },
   shadow: Platform.select({
@@ -135,6 +187,20 @@ export const OwnerTheme = {
     },
     default: {
       boxShadow: '0 2px 8px rgba(15, 23, 42, 0.04)',
+    },
+  }),
+  shadowElevated: Platform.select({
+    ios: {
+      shadowColor: '#0F172A',
+      shadowOffset: { width: 0, height: 6 },
+      shadowOpacity: 0.08,
+      shadowRadius: 16,
+    },
+    android: {
+      elevation: 6,
+    },
+    default: {
+      boxShadow: '0 6px 16px rgba(15, 23, 42, 0.08)',
     },
   }),
 } as const;

@@ -8,7 +8,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { Bell, ShieldAlert, CreditCard, Wrench, CheckCircle2 } from 'lucide-react-native';
+import { ShieldAlert, CheckCircle2 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { OwnerHeader } from '@/components/ui/owner';
@@ -19,8 +19,6 @@ export default function OwnerNotificationsScreen() {
   const [nonCollegeAlerts, setNonCollegeAlerts] = useState(true);
   const [eveningOnly, setEveningOnly] = useState(true);
   const [rateLimitEnabled, setRateLimitEnabled] = useState(true);
-  const [paymentAlerts, setPaymentAlerts] = useState(true);
-  const [maintenanceAlerts, setMaintenanceAlerts] = useState(true);
   const [savedNotice, setSavedNotice] = useState(false);
 
   useEffect(() => {
@@ -35,10 +33,6 @@ export default function OwnerNotificationsScreen() {
             setEveningOnly(parsed.eveningOnly);
           if (typeof parsed.rateLimitEnabled === 'boolean')
             setRateLimitEnabled(parsed.rateLimitEnabled);
-          if (typeof parsed.paymentAlerts === 'boolean')
-            setPaymentAlerts(parsed.paymentAlerts);
-          if (typeof parsed.maintenanceAlerts === 'boolean')
-            setMaintenanceAlerts(parsed.maintenanceAlerts);
         }
       } catch (err) {
         console.warn('Failed to load notification preferences:', err);
@@ -50,16 +44,12 @@ export default function OwnerNotificationsScreen() {
     nonCollegeAlerts?: boolean;
     eveningOnly?: boolean;
     rateLimitEnabled?: boolean;
-    paymentAlerts?: boolean;
-    maintenanceAlerts?: boolean;
   }) => {
     try {
       const payload = {
         nonCollegeAlerts,
         eveningOnly,
         rateLimitEnabled,
-        paymentAlerts,
-        maintenanceAlerts,
         ...newPrefs,
       };
       await AsyncStorage.setItem(STORAGE_NOTIF_PREFS, JSON.stringify(payload));
@@ -154,65 +144,6 @@ export default function OwnerNotificationsScreen() {
               onValueChange={(val) => {
                 setRateLimitEnabled(val);
                 savePreferences({ rateLimitEnabled: val });
-              }}
-              trackColor={{
-                false: '#E2E8F0',
-                true: OwnerTheme.colors.primary,
-              }}
-              thumbColor="#FFFFFF"
-            />
-          </View>
-        </View>
-
-        {/* Operational Alerts Section */}
-        <View style={styles.card}>
-          <View style={styles.cardHeader}>
-            <Bell size={18} color={OwnerTheme.colors.primary} />
-            <Text style={styles.cardTitle}>Operational Notifications</Text>
-          </View>
-          <Text style={styles.cardDescription}>
-            Notifications for daily PG management tasks.
-          </Text>
-
-          <View style={styles.settingRow}>
-            <View style={styles.settingTextCol}>
-              <View style={styles.labelWithIcon}>
-                <CreditCard size={14} color={OwnerTheme.colors.textSecondary} />
-                <Text style={styles.settingLabel}>Payment Proof Submissions</Text>
-              </View>
-              <Text style={styles.settingHint}>
-                Notify when a student submits UPI or cash payment proof
-              </Text>
-            </View>
-            <Switch
-              value={paymentAlerts}
-              onValueChange={(val) => {
-                setPaymentAlerts(val);
-                savePreferences({ paymentAlerts: val });
-              }}
-              trackColor={{
-                false: '#E2E8F0',
-                true: OwnerTheme.colors.primary,
-              }}
-              thumbColor="#FFFFFF"
-            />
-          </View>
-
-          <View style={styles.settingRow}>
-            <View style={styles.settingTextCol}>
-              <View style={styles.labelWithIcon}>
-                <Wrench size={14} color={OwnerTheme.colors.textSecondary} />
-                <Text style={styles.settingLabel}>New Maintenance Requests</Text>
-              </View>
-              <Text style={styles.settingHint}>
-                Notify when an issue (plumbing, electrical, Wi-Fi) is submitted
-              </Text>
-            </View>
-            <Switch
-              value={maintenanceAlerts}
-              onValueChange={(val) => {
-                setMaintenanceAlerts(val);
-                savePreferences({ maintenanceAlerts: val });
               }}
               trackColor={{
                 false: '#E2E8F0',

@@ -60,7 +60,7 @@ export default function ResidentProfileEditScreen() {
       setPasswordError(null);
       setSuccessMessage(null);
 
-      // 1. Update Profile & Resident record phone
+      // 1. Update Profile phone (server-side trigger syncs to linked residents row)
       const { error: profileError } = await supabase
         .from('profiles')
         .update({
@@ -69,13 +69,6 @@ export default function ResidentProfileEditScreen() {
         .eq('id', user.id);
 
       if (profileError) throw profileError;
-
-      await supabase
-        .from('residents')
-        .update({
-          phone_number: trimmedPhone || null,
-        })
-        .eq('profile_id', user.id);
 
       // 2. Update Password if provided
       if (newPassword) {

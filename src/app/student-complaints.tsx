@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 
@@ -361,7 +362,7 @@ export default function StudentComplaintsScreen() {
   ).length;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={
@@ -720,6 +721,8 @@ export default function StudentComplaintsScreen() {
           ) : null}
         </View>
       </Modal>
+
+      <RoleBottomNav activeTab="maintenance" roleOverride="student" />
     </SafeAreaView>
   );
 }

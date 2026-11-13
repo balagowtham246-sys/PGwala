@@ -15,11 +15,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { formatPaiseToRupees } from '@/lib/billing-utils';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 
 import { useAuth } from '@/context/auth-context';
-import { supabase, getSignedPaymentProofUrl } from '@/lib/supabase';
+import { supabase, decodeBase64ToBytes, getSignedPaymentProofUrl } from '@/lib/supabase';
 
 interface StudentBillCardItem {
   charge_id: string;
@@ -49,11 +51,6 @@ interface StudentBillCardItem {
   } | null;
 }
 
-function formatPaiseToRupees(paise: number): string {
-  const rs = Math.round(paise / 100);
-  return `₹${rs.toLocaleString('en-IN')}`;
-}
-
 function formatDate(iso: string): string {
   try {
     const d = new Date(iso);
@@ -62,25 +59,6 @@ function formatDate(iso: string): string {
     }
   } catch {}
   return iso;
-}
-
-// Lightweight base64 to binary byte array converter
-const B64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-function decodeBase64ToBytes(input: string): Uint8Array {
-  const clean = input.replace(/[^A-Za-z0-9+/]/g, '');
-  const len = clean.length;
-  const bytes = new Uint8Array((len * 3) >> 2);
-  let p = 0;
-  for (let i = 0; i < len; i += 4) {
-    const a = B64_CHARS.indexOf(clean[i]);
-    const b = B64_CHARS.indexOf(clean[i + 1]);
-    const c = B64_CHARS.indexOf(clean[i + 2]);
-    const d = B64_CHARS.indexOf(clean[i + 3]);
-    bytes[p++] = (a << 2) | (b >> 4);
-    if (c !== -1) bytes[p++] = ((b & 15) << 4) | (c >> 2);
-    if (d !== -1) bytes[p++] = ((c & 3) << 6) | (d & 63);
-  }
-  return bytes.subarray(0, p);
 }
 
 export default function SimplifiedStudentBillingScreen() {
@@ -396,7 +374,7 @@ export default function SimplifiedStudentBillingScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -943,6 +921,8 @@ export default function SimplifiedStudentBillingScreen() {
           )}
         </View>
       </Modal>
+
+      <RoleBottomNav activeTab="bill" roleOverride="student" />
     </SafeAreaView>
   );
 }

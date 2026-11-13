@@ -16,6 +16,8 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { formatPaiseToRupees } from '@/lib/billing-utils';
 import { router } from 'expo-router';
 import {
   ChevronLeft,
@@ -106,11 +108,6 @@ interface RoomResidentInfo {
   id: string;
   full_name: string;
   room_number: string;
-}
-
-function formatPaiseToRupees(paise: number): string {
-  const rs = Math.round(paise / 100);
-  return `₹${rs.toLocaleString('en-IN')}`;
 }
 
 export default function SimplifiedBillingManagementScreen() {
@@ -871,7 +868,7 @@ export default function SimplifiedBillingManagementScreen() {
     billingMode === 'RENT' ? rentTotalCount : ebTotalCount;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       {/* Standardized Header */}
       <OwnerHeader
         title="Billing"
@@ -1904,6 +1901,8 @@ export default function SimplifiedBillingManagementScreen() {
           )}
         </View>
       </Modal>
+
+      <RoleBottomNav activeTab="bill" roleOverride="owner" />
     </SafeAreaView>
   );
 }

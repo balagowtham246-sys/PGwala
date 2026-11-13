@@ -113,7 +113,7 @@ BEGIN
         SELECT DISTINCT ON (resident_id)
             resident_id,
             direction
-        FROM public.student_movement_logs
+        FROM public.movement_logs
         WHERE property_id = p_property_id
         ORDER BY resident_id, event_time DESC
     ),
@@ -210,7 +210,7 @@ BEGIN
     INTO v_recent_activities
     FROM (
         SELECT id, resident_id, direction, purpose, event_time
-        FROM public.student_movement_logs
+        FROM public.movement_logs
         WHERE property_id = p_property_id
         ORDER BY event_time DESC
         LIMIT 10
@@ -325,7 +325,7 @@ BEGIN
     -- 4. Latest Gate Status
     SELECT direction, event_time, purpose, expected_return_time, food_required
     INTO v_latest_gate
-    FROM public.student_movement_logs
+    FROM public.movement_logs
     WHERE property_id = p_property_id AND resident_id = p_resident_id
     ORDER BY event_time DESC
     LIMIT 1;

@@ -1,8 +1,7 @@
 import { Stack } from 'expo-router';
 
-// Layout for the "(tabs)" route group without bottom tab bar.
-// Owner dashboard renders full-screen with top-header settings navigation,
-// identical to the student portal architecture.
+// Layout for the "(tabs)" route group.
+// Uses animation: 'none' so switching between primary RoleBottomNav tabs feels instant.
 export default function TabsLayout() {
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return <Stack screenOptions={{ headerShown: false, animation: 'none' }} />;
 }

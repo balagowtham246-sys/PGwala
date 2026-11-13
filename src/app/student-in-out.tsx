@@ -23,6 +23,7 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import {
   OwnerHeader,
   StatisticCard,
@@ -302,7 +303,7 @@ export default function StudentInOutScreen() {
   }, [logs, historyDirectionFilter, historyResidentFilter, historyDateFilter]);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
         title="Gate Attendance"
         subtitle={propertyName}
@@ -739,6 +740,8 @@ export default function StudentInOutScreen() {
           </ScrollView>
         </SafeAreaView>
       </Modal>
+
+      <RoleBottomNav activeTab="gate" roleOverride="owner" />
     </SafeAreaView>
   );
 }

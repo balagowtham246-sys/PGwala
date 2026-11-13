@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { router } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
@@ -206,7 +207,7 @@ export default function StudentGateHistoryScreen() {
   const totalOut = filteredLogs.filter((l) => l.direction === 'OUT').length;
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={
@@ -397,6 +398,8 @@ export default function StudentGateHistoryScreen() {
           </>
         )}
       </ScrollView>
+
+      <RoleBottomNav activeTab="gate" roleOverride="student" />
     </SafeAreaView>
   );
 }

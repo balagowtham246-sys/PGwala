@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -38,7 +38,9 @@ import { BottomTabInset, OwnerTheme } from '@/constants/theme';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
+import { triggerLightHaptic, triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { WashingMachineCard } from '@/components/washing-machine-card';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
 
 // --- Types ---
 interface ResidentAccommodationInfo {
@@ -156,13 +158,14 @@ export default function ResidentDashboardScreen() {
 
   // Feedback State
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const hasMountedRef = useRef(false);
 
   const loadResidentData = useCallback(async () => {
     if (!user?.id) return;
     try {
       setErrorMessage(null);
 
-      // 1. Fetch resident allocation record
+      // 1. Fetch resident allocation record (required for property_id & resident_id)
       const { data: resData, error: resError } = await supabase
         .from('residents')
         .select(`
@@ -209,80 +212,111 @@ export default function ResidentDashboardScreen() {
 
       setResident(residentInfo);
 
-      // 2. Fetch today's published food menus
       const todayIso = getTodayIsoDate();
-      let resolvedMenus: Record<MealType, ResidentFoodMenu | null> = {
+      const resolvedMenus: Record<MealType, ResidentFoodMenu | null> = {
         breakfast: null,
         lunch: null,
         dinner: null,
       };
 
-      const { data: menuData, error: menuError } = await supabase
-        .from('food_menus')
-        .select('id, meal_type, items, notes, is_published')
-        .eq('property_id', residentInfo.property_id)
-        .eq('menu_date', todayIso)
-        .eq('is_published', true);
+      // 2. Fast Path: Composite summary RPC + outstanding dues in parallel
+      const [summaryRes, chargesRes] = await Promise.all([
+        supabase.rpc('get_student_dashboard_summary', {
+          p_property_id: residentInfo.property_id,
+          p_resident_id: residentInfo.id,
+          p_date: todayIso,
+        }),
+        supabase
+          .from('charges')
+          .select('amount_paise')
+          .eq('resident_id', residentInfo.id)
+          .eq('status', 'outstanding'),
+      ]);
 
-      if (menuError) {
-        console.warn('[ResidentDashboard] Could not fetch food menus:', menuError.message);
-        setMenus(resolvedMenus);
+      let totalOut = 0;
+      if (!chargesRes.error && chargesRes.data) {
+        for (const ch of chargesRes.data) {
+          totalOut += ch.amount_paise || 0;
+        }
+        setPendingDuesPaise(totalOut);
       } else {
-        if (menuData && menuData.length > 0) {
-          for (const item of menuData as ResidentFoodMenu[]) {
+        if (chargesRes.error) {
+          console.warn('[ResidentDashboard] Dues fetch error:', chargesRes.error.message);
+        }
+        setPendingDuesPaise(null);
+      }
+
+      let latestGateRecord: ResidentMovementRecord | null = null;
+
+      if (!summaryRes.error && summaryRes.data?.success) {
+        const publishedMenus = (summaryRes.data.publishedMenus ?? []) as ResidentFoodMenu[];
+        for (const item of publishedMenus) {
+          if (['breakfast', 'lunch', 'dinner'].includes(item.meal_type)) {
+            resolvedMenus[item.meal_type] = item;
+          }
+        }
+        setMenus(resolvedMenus);
+
+        const gateStatus = summaryRes.data.gateStatus;
+        if (gateStatus?.eventTime) {
+          latestGateRecord = {
+            id: 'summary-latest',
+            direction: gateStatus.direction,
+            event_time: gateStatus.eventTime,
+            purpose: gateStatus.purpose ?? null,
+            expected_return_time: gateStatus.expectedReturnTime ?? null,
+            food_required: Boolean(gateStatus.foodRequired ?? true),
+            note: null,
+          };
+        }
+        setLatestMovement(latestGateRecord);
+      } else {
+        // Fallback: Parallel queries if composite RPC is unavailable or returns an error
+        const [menuRes, movementRes] = await Promise.all([
+          supabase
+            .from('food_menus')
+            .select('id, meal_type, items, notes, is_published')
+            .eq('property_id', residentInfo.property_id)
+            .eq('menu_date', todayIso)
+            .eq('is_published', true),
+          supabase
+            .from('movement_logs')
+            .select('id, direction, event_time, purpose, expected_return_time, food_required, note')
+            .eq('resident_id', residentInfo.id)
+            .order('event_time', { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+        ]);
+
+        if (menuRes.error) {
+          console.warn('[ResidentDashboard] Could not fetch food menus:', menuRes.error.message);
+        } else if (menuRes.data) {
+          for (const item of menuRes.data as ResidentFoodMenu[]) {
             if (['breakfast', 'lunch', 'dinner'].includes(item.meal_type)) {
               resolvedMenus[item.meal_type] = item;
             }
           }
         }
         setMenus(resolvedMenus);
-      }
 
-      // 3. Query outstanding dues for quick badge
-      let totalOut = 0;
-      try {
-        const { data: chargesData } = await supabase
-          .from('charges')
-          .select('amount_paise')
-          .eq('resident_id', residentInfo.id)
-          .eq('status', 'outstanding');
-
-        if (chargesData && chargesData.length > 0) {
-          for (const ch of chargesData) {
-            totalOut += ch.amount_paise || 0;
-          }
+        if (movementRes.error) {
+          console.warn('[ResidentDashboard] Error fetching movement log:', movementRes.error.message);
+        } else {
+          latestGateRecord = (movementRes.data as ResidentMovementRecord) || null;
+          setLatestMovement(latestGateRecord);
         }
-        setPendingDuesPaise(totalOut);
-      } catch (billingErr) {
-        console.warn('[ResidentDashboard] Dues fetch error:', billingErr);
-        setPendingDuesPaise(null);
       }
 
-      // 4. Fetch latest gate movement status
-      try {
-        const { data: movementData } = await supabase
-          .from('movement_logs')
-          .select('id, direction, event_time, purpose, expected_return_time, food_required, note')
-          .eq('resident_id', residentInfo.id)
-          .order('event_time', { ascending: false })
-          .limit(1)
-          .maybeSingle();
-
-        setLatestMovement((movementData as ResidentMovementRecord) || null);
-
-        // Cache dashboard state for 0ms loads on slow mobile networks
-        void AsyncStorage.setItem(
-          `student_dash_cache_${user?.id}`,
-          JSON.stringify({
-            resident: residentInfo,
-            menus: resolvedMenus,
-            pendingDuesPaise: totalOut,
-            latestMovement: movementData || null,
-          })
-        );
-      } catch (movErr) {
-        console.warn('[ResidentDashboard] Error fetching movement log:', movErr);
-      }
+      // Cache dashboard state for 0ms loads on slow mobile networks
+      void AsyncStorage.setItem(
+        `student_dash_cache_${user?.id}`,
+        JSON.stringify({
+          resident: residentInfo,
+          menus: resolvedMenus,
+          pendingDuesPaise: totalOut,
+          latestMovement: latestGateRecord,
+        })
+      );
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[ResidentDashboard] Error loading resident data:', err);
@@ -317,10 +351,14 @@ export default function ResidentDashboardScreen() {
     })();
   }, [user?.id]);
 
-  // Refresh profile & credentials when screen gains focus
+  // Refresh profile & credentials when returning to dashboard (skip duplicate initial mount call)
   useFocusEffect(
     useCallback(() => {
-      refreshProfile();
+      if (!hasMountedRef.current) {
+        hasMountedRef.current = true;
+        return;
+      }
+      void refreshProfile();
     }, [refreshProfile])
   );
 
@@ -395,8 +433,15 @@ export default function ResidentDashboardScreen() {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
+  const getGreeting = () => {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'Good morning';
+    if (hour < 17) return 'Good afternoon';
+    return 'Good evening';
+  };
+
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       {/* Top Header: Brand + PG Accommodation Badge + Settings Cog */}
       <View style={styles.headerRow}>
         <Text style={styles.brandTitle}>PGwala</Text>
@@ -479,6 +524,7 @@ export default function ResidentDashboardScreen() {
               </View>
 
               <View style={styles.residentTileInfo}>
+                <Text style={styles.greetingText}>{getGreeting()}</Text>
                 <View style={styles.residentNameRow}>
                   <Text style={styles.residentTileName} numberOfLines={1}>
                     {resident.full_name}
@@ -556,6 +602,7 @@ export default function ResidentDashboardScreen() {
                         pressed && styles.btnPressed,
                       ]}
                       onPress={() => {
+                        triggerLightHaptic();
                         setFoodRequired(true);
                         setGoingOutModalVisible(true);
                       }}>
@@ -570,7 +617,10 @@ export default function ResidentDashboardScreen() {
                         savingMovement && styles.btnDisabled,
                       ]}
                       disabled={savingMovement}
-                      onPress={handleMarkBackIn}>
+                      onPress={() => {
+                        triggerSuccessHaptic();
+                        handleMarkBackIn();
+                      }}>
                       {savingMovement ? (
                         <ActivityIndicator size="small" color="#FFFFFF" />
                       ) : (
@@ -589,7 +639,12 @@ export default function ResidentDashboardScreen() {
                   <Utensils size={16} color={OwnerTheme.colors.primary} />
                   <Text style={styles.menuTitle}>Today&apos;s Food Menu</Text>
                 </View>
-                <Text style={styles.menuPublishedHint}>Published Daily</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  hitSlop={8}
+                  onPress={() => router.push('/student-menu')}>
+                  <Text style={styles.menuPublishedHint}>Full Menu ›</Text>
+                </Pressable>
               </View>
 
               {/* 3-Chip Meal Selector */}
@@ -607,7 +662,10 @@ export default function ResidentDashboardScreen() {
                         styles.mealSegmentChip,
                         isSelected && styles.mealSegmentChipSelected,
                       ]}
-                      onPress={() => setActiveMealTab(mealKey)}>
+                      onPress={() => {
+                        triggerSelectionHaptic();
+                        setActiveMealTab(mealKey);
+                      }}>
                       <Text style={styles.mealChipEmoji}>{cfg.icon}</Text>
                       <Text
                         style={[
@@ -903,6 +961,8 @@ export default function ResidentDashboardScreen() {
           <Text style={styles.chatFabText}>PG Chat</Text>
         </Pressable>
       )}
+
+      <RoleBottomNav activeTab="home" roleOverride="student" />
     </SafeAreaView>
   );
 }
@@ -1040,6 +1100,14 @@ const styles = StyleSheet.create({
   },
   residentTileInfo: {
     flex: 1,
+  },
+  greetingText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    marginBottom: 1,
   },
   residentNameRow: {
     flexDirection: 'row',
@@ -1527,7 +1595,7 @@ const styles = StyleSheet.create({
   },
   chatFab: {
     position: 'absolute',
-    bottom: BottomTabInset + 20,
+    bottom: BottomTabInset + 84,
     right: 20,
     flexDirection: 'row',
     alignItems: 'center',

@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { router, useFocusEffect } from 'expo-router';
 
 import { BottomTabInset, OwnerTheme } from '@/constants/theme';
@@ -424,7 +425,7 @@ export default function FoodMenuScreen() {
   const isTomorrow = isSameDay(selectedDate, tomorrow);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
         title="Food Menu"
         subtitle={property ? property.name : 'Daily Meals Management'}
@@ -783,6 +784,8 @@ export default function FoodMenuScreen() {
           <View style={{ height: BottomTabInset + 40 }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <RoleBottomNav activeTab="menu" roleOverride="owner" />
     </SafeAreaView>
   );
 }
