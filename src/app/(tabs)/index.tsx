@@ -90,21 +90,18 @@ export interface OwnerFoodMenuRecord {
 
 const MEAL_CONFIG: Record<
   MealType,
-  { title: string; icon: string; timeHint: string }
+  { title: string; timeHint: string }
 > = {
   breakfast: {
     title: 'Breakfast',
-    icon: '🍳',
     timeHint: 'Morning (7:30 AM – 9:30 AM)',
   },
   lunch: {
     title: 'Lunch',
-    icon: '🍛',
     timeHint: 'Afternoon (12:30 PM – 2:30 PM)',
   },
   dinner: {
     title: 'Dinner',
-    icon: '🍲',
     timeHint: 'Night (8:00 PM – 10:00 PM)',
   },
 };
@@ -849,8 +846,107 @@ export default function OwnerDashboard() {
           <ErrorState message={errorMessage} onRetry={loadDashboardData} />
         )}
 
-        {/* Priority Area 1: 4-Card Operational KPI Grid */}
+        {/* Priority Area 0: Needs Attention Strip (Money & Operational Alerts First) */}
+        <View style={styles.attentionSection}>
+          <Text style={styles.attentionTitle}>Needs Attention</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.attentionStrip}>
+            {stats.rentTotalPaise - stats.rentCollectedPaise > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                style={[styles.attentionChip, styles.attentionChipDanger]}
+                onPress={() => router.push('/billing-management')}>
+                <Text style={[styles.attentionChipText, styles.attentionTextDanger]}>
+                  {formatPaiseToRupees(
+                    Math.max(0, stats.rentTotalPaise - stats.rentCollectedPaise)
+                  )}{' '}
+                  pending
+                </Text>
+              </Pressable>
+            )}
+            {stats.pendingProofsCount > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                style={[styles.attentionChip, styles.attentionChipPrimary]}
+                onPress={() => router.push('/billing-management')}>
+                <Text style={[styles.attentionChipText, styles.attentionTextPrimary]}>
+                  {stats.pendingProofsCount} proof
+                  {stats.pendingProofsCount > 1 ? 's' : ''} to verify
+                </Text>
+              </Pressable>
+            )}
+            {stats.studentsOutside > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                style={[styles.attentionChip, styles.attentionChipWarning]}
+                onPress={() => router.push('/student-in-out')}>
+                <Text style={[styles.attentionChipText, styles.attentionTextWarning]}>
+                  {stats.studentsOutside} outside PG
+                </Text>
+              </Pressable>
+            )}
+            <Pressable
+              accessibilityRole="button"
+              style={[styles.attentionChip, styles.attentionChipNeutral]}
+              onPress={() => router.push('/student-in-out')}>
+              <Text style={[styles.attentionChipText, styles.attentionTextNeutral]}>
+                Dinner: {stats.studentsInside} in PG
+              </Text>
+            </Pressable>
+            {stats.openComplaintsCount > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                style={[styles.attentionChip, styles.attentionChipWarning]}
+                onPress={() => router.push('/owner-complaints')}>
+                <Text style={[styles.attentionChipText, styles.attentionTextWarning]}>
+                  {stats.openComplaintsCount} open issue
+                  {stats.openComplaintsCount > 1 ? 's' : ''}
+                </Text>
+              </Pressable>
+            )}
+          </ScrollView>
+        </View>
+
+        {/* Priority Area 1: 4-Card Operational KPI Grid (Money & Alerts First) */}
         <View style={styles.kpiGrid}>
+          <View style={styles.gateStatsRow}>
+            <StatisticCard
+              label="Pending Rent"
+              value={formatPaiseToRupees(
+                Math.max(0, stats.rentTotalPaise - stats.rentCollectedPaise)
+              )}
+              accentColor={
+                stats.rentTotalPaise - stats.rentCollectedPaise > 0
+                  ? OwnerTheme.colors.danger
+                  : OwnerTheme.colors.success
+              }
+              icon={Receipt}
+              sublabel={
+                stats.pendingProofsCount > 0
+                  ? `${stats.pendingProofsCount} proof${stats.pendingProofsCount > 1 ? 's' : ''} pending`
+                  : `${formatPaiseToRupees(stats.rentCollectedPaise)} collected`
+              }
+              onPress={() => router.push('/billing-management')}
+              style={styles.gateStatHalfCard}
+            />
+            <StatisticCard
+              label="Open Maintenance"
+              value={stats.openComplaintsCount}
+              accentColor={
+                stats.openComplaintsCount > 0
+                  ? OwnerTheme.colors.warning
+                  : OwnerTheme.colors.textSecondary
+              }
+              icon={Wrench}
+              sublabel={
+                stats.openComplaintsCount > 0 ? 'Needs attention' : 'All resolved'
+              }
+              onPress={() => router.push('/owner-complaints')}
+              style={styles.gateStatHalfCard}
+            />
+          </View>
           <View style={styles.gateStatsRow}>
             <StatisticCard
               label="Students Inside"
@@ -871,77 +967,59 @@ export default function OwnerDashboard() {
               style={styles.gateStatHalfCard}
             />
           </View>
-          <View style={styles.gateStatsRow}>
-            <StatisticCard
-              label="Rent Collections"
-              value={formatPaiseToRupees(stats.rentCollectedPaise)}
-              accentColor={OwnerTheme.colors.primary}
-              icon={Receipt}
-              sublabel={
-                stats.pendingProofsCount > 0
-                  ? `${stats.pendingProofsCount} proof${stats.pendingProofsCount > 1 ? 's' : ''} to verify`
-                  : stats.rentTotalPaise > 0
-                  ? `of ${formatPaiseToRupees(stats.rentTotalPaise)}`
-                  : 'This month'
-              }
-              onPress={() => router.push('/billing-management')}
-              style={styles.gateStatHalfCard}
-            />
-            <StatisticCard
-              label="Open Maintenance"
-              value={stats.openComplaintsCount}
-              accentColor={
-                stats.openComplaintsCount > 0
-                  ? OwnerTheme.colors.danger
-                  : OwnerTheme.colors.textSecondary
-              }
-              icon={Wrench}
-              sublabel={
-                stats.openComplaintsCount > 0 ? 'Needs attention' : 'All resolved'
-              }
-              onPress={() => router.push('/owner-complaints')}
-              style={styles.gateStatHalfCard}
-            />
-          </View>
         </View>
 
-        {/* Priority Area 1b: Live Washing Machine Summary Card */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="View washing machine usage"
-          style={({ pressed }) => [
-            styles.wmSummaryCard,
-            pressed && styles.cardPressed,
-          ]}
-          onPress={() => setWmModalVisible(true)}>
-          <View style={styles.wmSummaryLeft}>
-            <View style={styles.wmIconBadge}>
-              <Disc3 size={18} color="#0284C7" />
-            </View>
-            <View style={{ flex: 1 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Text style={styles.wmSummaryTitle}>Washing Machines</Text>
-                {wmSummary.inUseCount > 0 ? (
+        {/* Priority Area 1b: Washing Machines (Compact Chip when All Free, Expanded when In Use) */}
+        {wmSummary.inUseCount > 0 ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="View washing machine usage"
+            style={({ pressed }) => [
+              styles.wmSummaryCard,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => setWmModalVisible(true)}>
+            <View style={styles.wmSummaryLeft}>
+              <View style={styles.wmIconBadge}>
+                <Disc3 size={18} color="#0284C7" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={styles.wmSummaryTitle}>Washing Machines</Text>
                   <View style={styles.wmActiveChip}>
                     <Text style={styles.wmActiveChipText}>{wmSummary.inUseCount} In Use</Text>
                   </View>
-                ) : (
-                  <View style={styles.wmAllFreeChip}>
-                    <Text style={styles.wmAllFreeChipText}>All Free</Text>
-                  </View>
-                )}
+                </View>
+                <Text style={styles.wmSummarySub}>
+                  {`${wmSummary.inUseCount} active • ${wmSummary.freeCount} available of ${wmSummary.totalCount} units`}
+                </Text>
               </View>
-              <Text style={styles.wmSummarySub}>
-                {wmSummary.totalCount > 0
-                  ? `${wmSummary.inUseCount} active • ${wmSummary.freeCount} available of ${wmSummary.totalCount} units`
-                  : 'Tap to view live machine usage'}
-              </Text>
             </View>
-          </View>
-          <View style={styles.wmSummaryRight}>
-            <Text style={styles.wmViewUsageBtnText}>View Usage ›</Text>
-          </View>
-        </Pressable>
+            <View style={styles.wmSummaryRight}>
+              <Text style={styles.wmViewUsageBtnText}>View Usage ›</Text>
+            </View>
+          </Pressable>
+        ) : (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Washing machines all free"
+            style={({ pressed }) => [
+              styles.wmCompactChipRow,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => setWmModalVisible(true)}>
+            <View style={styles.wmCompactLeft}>
+              <Disc3 size={15} color="#0284C7" />
+              <Text style={styles.wmCompactTitle}>Washing Machines</Text>
+              <View style={styles.wmAllFreeChip}>
+                <Text style={styles.wmAllFreeChipText}>
+                  All Free{wmSummary.totalCount > 0 ? ` (${wmSummary.totalCount})` : ''}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.wmViewUsageBtnText}>Details ›</Text>
+          </Pressable>
+        )}
 
         {/* Priority Area 2: Food Menu Today (Resident-Style In-Place Interactive Card) */}
         <View style={styles.menuCard}>
@@ -993,7 +1071,7 @@ export default function OwnerDashboard() {
                     triggerSelectionHaptic();
                     setActiveMealTab(mealKey);
                   }}>
-                  <Text style={styles.mealChipEmoji}>{cfg.icon}</Text>
+                  <Utensils size={14} color={isSelected ? '#FFFFFF' : '#475569'} />
                   <Text
                     style={[
                       styles.mealChipText,
@@ -1010,17 +1088,19 @@ export default function OwnerDashboard() {
                         ? styles.indicatorDraft
                         : styles.indicatorEmpty,
                     ]}>
-                    <Text
-                      style={[
-                        styles.indicatorText,
-                        isPublished
-                          ? styles.indicatorTextPublished
-                          : hasDraft
-                          ? styles.indicatorTextDraft
-                          : styles.indicatorTextEmpty,
-                      ]}>
-                      {isPublished ? '✓' : hasDraft ? 'Draft' : '—'}
-                    </Text>
+                    {isPublished ? (
+                      <Check size={11} color="#065F46" />
+                    ) : (
+                      <Text
+                        style={[
+                          styles.indicatorText,
+                          hasDraft
+                            ? styles.indicatorTextDraft
+                            : styles.indicatorTextEmpty,
+                        ]}>
+                        {hasDraft ? 'Draft' : '—'}
+                      </Text>
+                    )}
                   </View>
                 </Pressable>
               );
@@ -1135,17 +1215,17 @@ export default function OwnerDashboard() {
               styles.quickCard,
               pressed && styles.cardPressed,
             ]}
-            onPress={() => router.push('/food-menu')}>
+            onPress={() => router.push('/add-resident')}>
             <View
               style={[
                 styles.quickIconWrap,
                 { backgroundColor: OwnerTheme.colors.primaryLight },
               ]}>
-              <Utensils size={20} color={OwnerTheme.colors.primary} />
+              <Plus size={20} color={OwnerTheme.colors.primary} />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.quickTitle}>Food Menu</Text>
-              <Text style={styles.quickSub}>Daily meal planner</Text>
+              <Text style={styles.quickTitle}>+ Add Resident</Text>
+              <Text style={styles.quickSub}>Onboard new tenant</Text>
             </View>
             <ArrowRight size={15} color={OwnerTheme.colors.textMuted} />
           </Pressable>
@@ -1445,11 +1525,16 @@ export default function OwnerDashboard() {
                   </Pressable>
                 </View>
               ) : (
-                wmUnits.map((unit) => {
+                wmUnits.map((unit, idx) => {
                   const isInUse = unit.status === 'in_use';
                   const isReleasing = releasingMachineId === unit.id;
                   return (
-                    <View key={unit.id} style={styles.wmUnitRow}>
+                    <View
+                      key={unit.id}
+                      style={[
+                        styles.wmUnitRow,
+                        idx === wmUnits.length - 1 && { borderBottomWidth: 0 },
+                      ]}>
                       <View style={{ flex: 1 }}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                           <Text style={styles.wmUnitName}>{unit.machine_name}</Text>
@@ -1476,10 +1561,13 @@ export default function OwnerDashboard() {
 
                         {isInUse ? (
                           <View style={styles.wmInUseDetails}>
-                            <Text style={styles.wmOccupantText}>
-                              👤 {unit.current_resident_name || 'Resident'}
-                              {unit.current_resident_room ? ` (Room ${unit.current_resident_room})` : ''}
-                            </Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                              <User size={12} color="#1E293B" />
+                              <Text style={styles.wmOccupantText}>
+                                {unit.current_resident_name || 'Resident'}
+                                {unit.current_resident_room ? ` (Room ${unit.current_resident_room})` : ''}
+                              </Text>
+                            </View>
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
                               <Clock size={12} color="#64748B" />
                               <Text style={styles.wmDurationText}>
@@ -1617,6 +1705,80 @@ const styles = StyleSheet.create({
   },
   pushAlertClose: {
     padding: 4,
+  },
+  attentionSection: {
+    gap: 6,
+  },
+  attentionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+  attentionStrip: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingVertical: 2,
+  },
+  attentionChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: OwnerTheme.radius.full,
+    borderWidth: 1,
+  },
+  attentionChipDanger: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  attentionChipPrimary: {
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderColor: '#BAE6FD',
+  },
+  attentionChipWarning: {
+    backgroundColor: OwnerTheme.colors.warningLight,
+    borderColor: '#FDE68A',
+  },
+  attentionChipNeutral: {
+    backgroundColor: '#FFFFFF',
+    borderColor: OwnerTheme.colors.border,
+  },
+  attentionChipText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  attentionTextDanger: {
+    color: '#B91C1C',
+  },
+  attentionTextPrimary: {
+    color: OwnerTheme.colors.primary,
+  },
+  attentionTextWarning: {
+    color: '#B45309',
+  },
+  attentionTextNeutral: {
+    color: OwnerTheme.colors.textPrimary,
+  },
+  wmCompactChipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  wmCompactLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  wmCompactTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
   },
   kpiGrid: {
     gap: 8,

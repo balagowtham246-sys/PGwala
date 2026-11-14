@@ -4,6 +4,7 @@ import {
   Alert,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -17,7 +18,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
-import { formatPaiseToRupees } from '@/lib/billing-utils';
+import {
+  buildWhatsAppReminderUrl,
+  formatDueStatus,
+  formatPaiseToRupees,
+} from '@/lib/billing-utils';
 import { router } from 'expo-router';
 import {
   ChevronLeft,
@@ -29,6 +34,7 @@ import {
   X,
   CreditCard,
   Edit3,
+  MessageCircle,
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
@@ -75,6 +81,7 @@ interface ResidentRentBillItem {
   receipt_number?: string | null;
   paid_date?: string | null;
   paid_method?: string | null;
+  due_date?: string | null;
 }
 
 interface ResidentEbBillItem {
@@ -102,6 +109,7 @@ interface ResidentEbBillItem {
   receipt_number?: string | null;
   paid_date?: string | null;
   paid_method?: string | null;
+  due_date?: string | null;
 }
 
 interface RoomResidentInfo {
@@ -120,7 +128,7 @@ export default function SimplifiedBillingManagementScreen() {
   const [propertyName, setPropertyName] = useState('Shalom Residency');
 
   // Top Section Mode: 'RENT' | 'EB'
-  const [billingMode, setBillingMode] = useState<'RENT' | 'EB'>('RENT');
+  const [billingMode, setBillingMode] = useState<'RENT' | 'EB' | 'COMBINED'>('RENT');
 
   // Month navigation: default to current month
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -325,7 +333,7 @@ export default function SimplifiedBillingManagementScreen() {
       const { data: chargeData, error: chgErr } = await supabase
         .from('charges')
         .select(
-          'id, resident_id, category, amount_paise, rent_amount_paise, wm_amount_paise, status'
+          'id, resident_id, category, amount_paise, rent_amount_paise, wm_amount_paise, status, due_date'
         )
         .eq('property_id', activePropId)
         .eq('billing_period_start', monthIsoStart);
@@ -435,6 +443,7 @@ export default function SimplifiedBillingManagementScreen() {
             receipt_number: pInfo?.receipt || null,
             paid_date: pInfo?.date || null,
             paid_method: pInfo?.method || null,
+            due_date: chg.due_date || null,
           };
         }
 
@@ -487,6 +496,7 @@ export default function SimplifiedBillingManagementScreen() {
             receipt_number: pInfo?.receipt || null,
             paid_date: pInfo?.date || null,
             paid_method: pInfo?.method || null,
+            due_date: chg.due_date || null,
           };
         }
 
@@ -850,22 +860,114 @@ export default function SimplifiedBillingManagementScreen() {
     return true;
   });
 
+  const handleSendReminder = async (
+    residentName: string,
+    phoneNumber: string | null | undefined,
+    amountPaise: number,
+    billLabel: string,
+    dueDateIso?: string | null
+  ) => {
+    const dueInfo = formatDueStatus(dueDateIso);
+    const amountText = formatPaiseToRupees(amountPaise);
+    const message = `Hi ${residentName}, reminder from ${propertyName}: your ${billLabel} of ${amountText} is pending${
+      dueInfo ? ` (${dueInfo.label})` : ''
+    }. Please pay and upload proof in the PGwala app.`;
+    const url = buildWhatsAppReminderUrl(phoneNumber, message);
+    if (!url) {
+      Alert.alert(
+        'Phone Number Missing',
+        `${residentName} does not have a valid 10-digit phone number saved. Add it in Edit Resident to send WhatsApp reminders.`
+      );
+      return;
+    }
+    try {
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp on this device.');
+    }
+  };
+
   // Active counts for current mode
+  const combinedBills = rentBills.map((rent) => {
+    const eb = ebBills.find((e) => e.resident_id === rent.resident_id);
+    const ebAmount = eb?.charge_id ? eb.amount_paise : 0;
+    const rentAmount = rent.charge_id ? rent.total_paise : 0;
+    const totalCombined = rentAmount + ebAmount;
+    const paidCombined =
+      (rent.status === 'paid' ? rentAmount : 0) +
+      (eb?.status === 'paid' ? ebAmount : 0);
+    const remainingCombined = Math.max(0, totalCombined - paidCombined);
+    const hasPending =
+      (rent.has_pending_report && rent.status !== 'paid') ||
+      Boolean(eb?.has_pending_report && eb?.status !== 'paid');
+    const isAllPaid = totalCombined > 0 && remainingCombined === 0;
+    const earliestDue = rent.due_date || eb?.due_date || null;
+    return {
+      resident_id: rent.resident_id,
+      full_name: rent.full_name,
+      room_number: rent.room_number,
+      phone_number: rent.phone_number,
+      rent_paise: rent.charge_id ? rent.rent_paise : 0,
+      wm_paise: rent.charge_id ? rent.wm_paise : 0,
+      eb_paise: ebAmount,
+      total_paise: totalCombined,
+      paid_paise: paidCombined,
+      remaining_paise: remainingCombined,
+      has_pending_report: hasPending,
+      is_all_paid: isAllPaid,
+      due_date: earliestDue,
+    };
+  });
+
+  const filteredCombinedList = combinedBills.filter((c) => {
+    if (filterTab === 'REVIEW') return c.has_pending_report && !c.is_all_paid;
+    if (filterTab === 'UNPAID') return c.remaining_paise > 0;
+    if (filterTab === 'PAID') return c.is_all_paid;
+    return true;
+  });
+
   const currentTotalBilled =
-    billingMode === 'RENT' ? rentTotalBilledPaise : ebTotalBilledPaise;
+    billingMode === 'RENT'
+      ? rentTotalBilledPaise
+      : billingMode === 'EB'
+      ? ebTotalBilledPaise
+      : rentTotalBilledPaise + ebTotalBilledPaise;
   const currentTotalCollected =
-    billingMode === 'RENT' ? rentTotalCollectedPaise : ebTotalCollectedPaise;
+    billingMode === 'RENT'
+      ? rentTotalCollectedPaise
+      : billingMode === 'EB'
+      ? ebTotalCollectedPaise
+      : rentTotalCollectedPaise + ebTotalCollectedPaise;
   const currentUnpaidAmount =
-    billingMode === 'RENT' ? rentUnpaidPaise : ebUnpaidPaise;
+    billingMode === 'RENT'
+      ? rentUnpaidPaise
+      : billingMode === 'EB'
+      ? ebUnpaidPaise
+      : rentUnpaidPaise + ebUnpaidPaise;
   const currentReviewCount =
-    billingMode === 'RENT' ? rentReviewCount : ebReviewCount;
+    billingMode === 'RENT'
+      ? rentReviewCount
+      : billingMode === 'EB'
+      ? ebReviewCount
+      : combinedBills.filter((c) => c.has_pending_report && !c.is_all_paid).length;
   const currentUnpaidCount =
     billingMode === 'RENT'
       ? rentUnpaidCount + rentUngeneratedCount
-      : ebUnpaidCount;
-  const currentPaidCount = billingMode === 'RENT' ? rentPaidCount : ebPaidCount;
+      : billingMode === 'EB'
+      ? ebUnpaidCount
+      : combinedBills.filter((c) => c.remaining_paise > 0).length;
+  const currentPaidCount =
+    billingMode === 'RENT'
+      ? rentPaidCount
+      : billingMode === 'EB'
+      ? ebPaidCount
+      : combinedBills.filter((c) => c.is_all_paid).length;
   const currentTotalCount =
-    billingMode === 'RENT' ? rentTotalCount : ebTotalCount;
+    billingMode === 'RENT'
+      ? rentTotalCount
+      : billingMode === 'EB'
+      ? ebTotalCount
+      : combinedBills.length;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -875,18 +977,7 @@ export default function SimplifiedBillingManagementScreen() {
         subtitle={propertyName}
         showBack
         rightAction={
-          billingMode === 'RENT' ? (
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.headerActionBtn,
-                pressed && styles.cardPressed,
-              ]}
-              onPress={() => setGenerateRentModalVisible(true)}>
-              <Edit3 size={15} color={OwnerTheme.colors.primary} />
-              <Text style={styles.headerActionBtnText}>Update Rent</Text>
-            </Pressable>
-          ) : (
+          billingMode === 'EB' ? (
             <Pressable
               accessibilityRole="button"
               style={({ pressed }) => [
@@ -903,6 +994,17 @@ export default function SimplifiedBillingManagementScreen() {
                 Split EB
               </Text>
             </Pressable>
+          ) : (
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                pressed && styles.cardPressed,
+              ]}
+              onPress={() => setGenerateRentModalVisible(true)}>
+              <Edit3 size={15} color={OwnerTheme.colors.primary} />
+              <Text style={styles.headerActionBtnText}>Set Rent</Text>
+            </Pressable>
           )
         }
       />
@@ -917,14 +1019,15 @@ export default function SimplifiedBillingManagementScreen() {
             colors={[OwnerTheme.colors.primary]}
           />
         }>
-        {/* Compact Segmented Control: Rent vs Electricity */}
+        {/* Compact Segmented Control: Rent vs Electricity vs Combined */}
         <SegmentedFilter
           options={[
             { key: 'RENT', label: 'Rent' },
             { key: 'EB', label: 'Electricity' },
+            { key: 'COMBINED', label: 'Combined' },
           ]}
           activeKey={billingMode}
-          onSelect={(key) => setBillingMode(key)}
+          onSelect={(key) => setBillingMode(key as 'RENT' | 'EB' | 'COMBINED')}
           style={{ marginBottom: 12 }}
         />
 
@@ -1024,22 +1127,16 @@ export default function SimplifiedBillingManagementScreen() {
               </Text>
             </View>
           )
-        ) : (
+        ) : billingMode === 'EB' ? (
           <View style={styles.ebSplitterBanner}>
             <View style={{ flex: 1 }}>
               <Text style={styles.ebSplitterTitle}>Room EB Splitter</Text>
               <Text style={styles.ebSplitterSub}>
-                Split room electricity bill equally among occupants.
+                Use &ldquo;Split EB&rdquo; above to divide room electricity equally among occupants.
               </Text>
             </View>
-            <Pressable
-              accessibilityRole="button"
-              style={styles.ebSplitterBtn}
-              onPress={() => setSplitEbModalVisible(true)}>
-              <Text style={styles.ebSplitterBtnText}>Split Room EB</Text>
-            </Pressable>
           </View>
-        )}
+        ) : null}
 
         {/* Compact Billing Filter Tabs */}
         <SegmentedFilter
@@ -1078,6 +1175,8 @@ export default function SimplifiedBillingManagementScreen() {
                 const isPaid = res.status === 'paid';
                 const isNotGen = res.status === 'not_generated';
                 const hasReport = res.has_pending_report && !isPaid;
+                const dueStatus =
+                  !isPaid && !isNotGen ? formatDueStatus(res.due_date) : null;
 
                 return (
                   <View key={res.resident_id} style={styles.billCard}>
@@ -1089,6 +1188,21 @@ export default function SimplifiedBillingManagementScreen() {
                           Room {res.room_number}
                           {res.phone_number ? ` • ${res.phone_number}` : ''}
                         </Text>
+                        {dueStatus && (
+                          <View
+                            style={[
+                              styles.duePill,
+                              dueStatus.isOverdue && styles.duePillOverdue,
+                            ]}>
+                            <Text
+                              style={[
+                                styles.duePillText,
+                                dueStatus.isOverdue && styles.duePillTextOverdue,
+                              ]}>
+                              {dueStatus.label}
+                            </Text>
+                          </View>
+                        )}
                       </View>
                       <StatusBadge
                         label={
@@ -1139,7 +1253,7 @@ export default function SimplifiedBillingManagementScreen() {
                             </Text>
                             {res.wm_request_pending && !res.opt_in_wm ? (
                               <View style={styles.wmPendingBadge}>
-                                <Text style={styles.wmPendingBadgeText}>🔔 Requested</Text>
+                                <Text style={styles.wmPendingBadgeText}>Requested</Text>
                               </View>
                             ) : null}
                           </View>
@@ -1215,7 +1329,7 @@ export default function SimplifiedBillingManagementScreen() {
                         {res.rejected_report && (
                           <View style={styles.rejectedBannerWrap}>
                             <Text style={styles.rejectedBannerTitle}>
-                              ⚠️ Payment Proof Rejected
+                              Payment Proof Rejected
                             </Text>
                             <Text
                               style={styles.rejectedBannerSub}
@@ -1261,6 +1375,27 @@ export default function SimplifiedBillingManagementScreen() {
                               Mark as Paid (Cash)
                             </Text>
                           </Pressable>
+                          {!isNotGen && res.total_paise > 0 && (
+                            <Pressable
+                              style={styles.reminderActionBtn}
+                              onPress={() =>
+                                handleSendReminder(
+                                  res.full_name,
+                                  res.phone_number,
+                                  res.total_paise,
+                                  'monthly rent',
+                                  res.due_date
+                                )
+                              }>
+                              <MessageCircle
+                                size={14}
+                                color={OwnerTheme.colors.primary}
+                              />
+                              <Text style={styles.reminderActionBtnText}>
+                                Send Reminder
+                              </Text>
+                            </Pressable>
+                          )}
                         </View>
                       </>
                     )}
@@ -1269,7 +1404,7 @@ export default function SimplifiedBillingManagementScreen() {
               })}
             </View>
           )
-        ) : (
+        ) : billingMode === 'EB' ? (
           filteredEbList.length === 0 ? (
             <EmptyState
               title="No electricity bills"
@@ -1284,6 +1419,9 @@ export default function SimplifiedBillingManagementScreen() {
               {filteredEbList.map((res) => {
                 const isPaid = res.status === 'paid';
                 const hasReport = res.has_pending_report && !isPaid;
+                const dueStatus = !isPaid
+                  ? formatDueStatus(res.due_date)
+                  : null;
 
                 return (
                   <View key={res.resident_id} style={styles.billCard}>
@@ -1292,7 +1430,23 @@ export default function SimplifiedBillingManagementScreen() {
                         <Text style={styles.resName}>{res.full_name}</Text>
                         <Text style={styles.resRoom}>
                           Room {res.room_number}
+                          {res.phone_number ? ` • ${res.phone_number}` : ''}
                         </Text>
+                        {dueStatus && (
+                          <View
+                            style={[
+                              styles.duePill,
+                              dueStatus.isOverdue && styles.duePillOverdue,
+                            ]}>
+                            <Text
+                              style={[
+                                styles.duePillText,
+                                dueStatus.isOverdue && styles.duePillTextOverdue,
+                              ]}>
+                              {dueStatus.label}
+                            </Text>
+                          </View>
+                        )}
                       </View>
                       <StatusBadge
                         label={
@@ -1353,7 +1507,7 @@ export default function SimplifiedBillingManagementScreen() {
                         {res.rejected_report && (
                           <View style={styles.rejectedBannerWrap}>
                             <Text style={styles.rejectedBannerTitle}>
-                              ⚠️ Payment Proof Rejected
+                              Payment Proof Rejected
                             </Text>
                             <Text
                               style={styles.rejectedBannerSub}
@@ -1389,6 +1543,25 @@ export default function SimplifiedBillingManagementScreen() {
                               Mark as Paid (Cash)
                             </Text>
                           </Pressable>
+                          <Pressable
+                            style={styles.reminderActionBtn}
+                            onPress={() =>
+                              handleSendReminder(
+                                res.full_name,
+                                res.phone_number,
+                                res.amount_paise,
+                                'electricity share',
+                                res.due_date
+                              )
+                            }>
+                            <MessageCircle
+                              size={14}
+                              color={OwnerTheme.colors.primary}
+                            />
+                            <Text style={styles.reminderActionBtnText}>
+                              Send Reminder
+                            </Text>
+                          </Pressable>
                         </View>
                       </>
                     )}
@@ -1397,6 +1570,146 @@ export default function SimplifiedBillingManagementScreen() {
               })}
             </View>
           )
+        ) : filteredCombinedList.length === 0 ? (
+          <EmptyState
+            title="No combined bills"
+            description="No matching resident billing records found for this filter."
+          />
+        ) : (
+          <View style={styles.cardsList}>
+            {filteredCombinedList.map((res) => {
+              const dueStatus =
+                res.remaining_paise > 0 ? formatDueStatus(res.due_date) : null;
+
+              return (
+                <View key={res.resident_id} style={styles.billCard}>
+                  <View style={styles.cardHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.resName}>{res.full_name}</Text>
+                      <Text style={styles.resRoom}>
+                        Room {res.room_number}
+                        {res.phone_number ? ` • ${res.phone_number}` : ''}
+                      </Text>
+                      {dueStatus && (
+                        <View
+                          style={[
+                            styles.duePill,
+                            dueStatus.isOverdue && styles.duePillOverdue,
+                          ]}>
+                          <Text
+                            style={[
+                              styles.duePillText,
+                              dueStatus.isOverdue && styles.duePillTextOverdue,
+                            ]}>
+                            {dueStatus.label}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+                    <StatusBadge
+                      label={
+                        res.is_all_paid
+                          ? 'PAID'
+                          : res.has_pending_report
+                          ? 'REVIEW'
+                          : res.total_paise === 0
+                          ? 'NO BILLS'
+                          : 'UNPAID'
+                      }
+                      variant={
+                        res.is_all_paid
+                          ? 'success'
+                          : res.has_pending_report
+                          ? 'warning'
+                          : res.total_paise === 0
+                          ? 'neutral'
+                          : 'danger'
+                      }
+                      size="sm"
+                    />
+                  </View>
+
+                  <View style={styles.breakdownBox}>
+                    <View style={styles.breakdownRow}>
+                      <Text style={styles.breakdownLabel}>Room Rent</Text>
+                      <Text style={styles.breakdownValue}>
+                        {formatPaiseToRupees(res.rent_paise)}
+                      </Text>
+                    </View>
+                    {res.wm_paise > 0 && (
+                      <View style={styles.breakdownRow}>
+                        <Text style={styles.breakdownLabel}>
+                          Washing Machine
+                        </Text>
+                        <Text style={styles.breakdownValue}>
+                          {formatPaiseToRupees(res.wm_paise)}
+                        </Text>
+                      </View>
+                    )}
+                    {res.eb_paise > 0 && (
+                      <View style={styles.breakdownRow}>
+                        <Text style={styles.breakdownLabel}>EB Share</Text>
+                        <Text style={styles.breakdownValue}>
+                          {formatPaiseToRupees(res.eb_paise)}
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.totalRow}>
+                      <Text style={styles.totalLabel}>Combined Total</Text>
+                      <Text style={styles.totalValue}>
+                        {formatPaiseToRupees(res.total_paise)}
+                      </Text>
+                    </View>
+                    {res.paid_paise > 0 && res.remaining_paise > 0 && (
+                      <View style={styles.breakdownRow}>
+                        <Text style={styles.breakdownLabel}>
+                          Paid ({formatPaiseToRupees(res.paid_paise)}) • Due
+                        </Text>
+                        <Text
+                          style={[
+                            styles.breakdownValue,
+                            { color: OwnerTheme.colors.danger },
+                          ]}>
+                          {formatPaiseToRupees(res.remaining_paise)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {res.is_all_paid ? (
+                    <View style={styles.paidInfoBox}>
+                      <Receipt size={14} color={OwnerTheme.colors.success} />
+                      <Text style={styles.paidInfoText}>
+                        All rent and EB bills settled
+                      </Text>
+                    </View>
+                  ) : res.remaining_paise > 0 ? (
+                    <View style={styles.actionRow}>
+                      <Pressable
+                        style={styles.reminderActionBtn}
+                        onPress={() =>
+                          handleSendReminder(
+                            res.full_name,
+                            res.phone_number,
+                            res.remaining_paise,
+                            'combined PG bill (Rent + EB)',
+                            res.due_date
+                          )
+                        }>
+                        <MessageCircle
+                          size={14}
+                          color={OwnerTheme.colors.primary}
+                        />
+                        <Text style={styles.reminderActionBtnText}>
+                          Send Reminder
+                        </Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
+                </View>
+              );
+            })}
+          </View>
         )}
 
         <View style={{ height: 40 }} />
@@ -1890,7 +2203,7 @@ export default function SimplifiedBillingManagementScreen() {
           <Pressable
             style={styles.fullImageCloseBtn}
             onPress={() => setFullImageUrl(null)}>
-            <Text style={styles.fullImageCloseText}>Close ✕</Text>
+            <Text style={styles.fullImageCloseText}>Close</Text>
           </Pressable>
           {fullImageUrl && (
             <Image
@@ -2157,11 +2470,34 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.success,
     fontWeight: '500',
   },
+  duePill: {
+    alignSelf: 'flex-start',
+    marginTop: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: '#F1F5F9',
+  },
+  duePillOverdue: {
+    backgroundColor: '#FEE2E2',
+  },
+  duePillText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  duePillTextOverdue: {
+    color: OwnerTheme.colors.danger,
+  },
   actionRow: {
     marginTop: 10,
+    flexDirection: 'row',
+    gap: 8,
   },
   cashActionBtn: {
+    flex: 1,
     height: 42,
+    paddingHorizontal: 10,
     borderRadius: OwnerTheme.radius.md,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
@@ -2174,7 +2510,24 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: OwnerTheme.colors.textPrimary,
   },
+  reminderActionBtn: {
+    flex: 1,
+    height: 42,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    gap: 6,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  reminderActionBtnText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
+  },
   reviewActionBtn: {
+    flex: 1,
     height: 42,
     flexDirection: 'row',
     gap: 6,

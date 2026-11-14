@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useLocalSearchParams } from 'expo-router';
+import { AlertTriangle } from 'lucide-react-native';
 
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
@@ -188,7 +189,7 @@ export default function ReceiptDetailScreen() {
             {/* Reversed Banner */}
             {isReversed && (
               <View style={styles.reversedBanner}>
-                <Text style={styles.reversedIcon}>⚠️</Text>
+                <AlertTriangle size={20} color="#DC2626" />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.reversedTitle}>PAYMENT REVERSED</Text>
                   <Text style={styles.reversedSub}>
@@ -370,7 +371,7 @@ export default function ReceiptDetailScreen() {
             </Text>
 
             <View style={styles.warningBox}>
-              <Text style={styles.warningIcon}>⚠️</Text>
+              <AlertTriangle size={18} color="#D97706" />
               <Text style={styles.warningText}>
                 Reversing will immediately reopen all settled charges as outstanding and cancel any advance credit from this payment.
               </Text>

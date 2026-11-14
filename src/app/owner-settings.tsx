@@ -172,8 +172,8 @@ export default function OwnerSettingsScreen() {
               <View style={styles.rowContent}>
                 <Text style={styles.rowTitle}>PG Properties</Text>
                 <Text style={styles.rowSubtitle} numberOfLines={1}>
-                  {selectedProperty?.name || 'Manage PGs'} • {properties.length} property
-                  {properties.length === 1 ? '' : 'ies'}
+                  {selectedProperty?.name || 'Manage PGs'} • {properties.length}{' '}
+                  {properties.length === 1 ? 'property' : 'properties'}
                 </Text>
               </View>
               <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />

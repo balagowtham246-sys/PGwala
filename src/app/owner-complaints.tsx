@@ -16,10 +16,23 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { router } from 'expo-router';
+import {
+  CheckCircle2,
+  Camera,
+  X,
+  Droplets,
+  Zap,
+  Wifi,
+  Sparkles,
+  Utensils,
+  Armchair,
+  Wrench,
+} from 'lucide-react-native';
 
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { supabase, getSignedComplaintPhotoUrl } from '@/lib/supabase';
+import { sortComplaintsByUrgencyThenDate } from '@/lib/complaint-utils';
 import { OwnerHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 
@@ -56,14 +69,17 @@ export interface OwnerComplaintItem {
   };
 }
 
-const CATEGORY_CONFIG: Record<ComplaintCategory, { label: string; icon: string }> = {
-  plumbing: { label: 'Plumbing', icon: '🚿' },
-  electrical: { label: 'Electrical', icon: '⚡' },
-  wifi_internet: { label: 'Wi-Fi / Net', icon: '📶' },
-  cleaning: { label: 'Cleaning', icon: '🧹' },
-  food_mess: { label: 'Food & Mess', icon: '🍲' },
-  carpentry_furniture: { label: 'Furniture', icon: '🪑' },
-  other: { label: 'Other', icon: '📋' },
+const CATEGORY_CONFIG: Record<
+  ComplaintCategory,
+  { label: string; Icon: React.ComponentType<{ size?: number; color?: string }> }
+> = {
+  plumbing: { label: 'Plumbing', Icon: Droplets },
+  electrical: { label: 'Electrical', Icon: Zap },
+  wifi_internet: { label: 'Wi-Fi / Net', Icon: Wifi },
+  cleaning: { label: 'Cleaning', Icon: Sparkles },
+  food_mess: { label: 'Food & Mess', Icon: Utensils },
+  carpentry_furniture: { label: 'Furniture', Icon: Armchair },
+  other: { label: 'Other', Icon: Wrench },
 };
 
 const PRIORITY_CONFIG: Record<
@@ -99,6 +115,7 @@ export default function OwnerComplaintsScreen() {
   // Filters
   const [statusFilter, setStatusFilter] = useState<'all' | ComplaintStatus>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | ComplaintCategory>('all');
+  const [priorityFilter, setPriorityFilter] = useState<'all' | ComplaintPriority>('all');
 
   // Edit / Action Modal
   const [selectedComplaint, setSelectedComplaint] = useState<OwnerComplaintItem | null>(null);
@@ -245,12 +262,14 @@ export default function OwnerComplaintsScreen() {
   const resolvedCount = complaints.filter((c) => c.status === 'resolved').length;
 
   const filteredComplaints = useMemo(() => {
-    return complaints.filter((c) => {
+    const filtered = complaints.filter((c) => {
       if (statusFilter !== 'all' && c.status !== statusFilter) return false;
       if (categoryFilter !== 'all' && c.category !== categoryFilter) return false;
+      if (priorityFilter !== 'all' && c.priority !== priorityFilter) return false;
       return true;
     });
-  }, [complaints, statusFilter, categoryFilter]);
+    return sortComplaintsByUrgencyThenDate(filtered);
+  }, [complaints, statusFilter, categoryFilter, priorityFilter]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -352,14 +371,60 @@ export default function OwnerComplaintsScreen() {
                 return (
                   <Pressable
                     key={catKey}
-                    style={[styles.catPill, isActive && styles.catPillActive]}
+                    style={[styles.catPill, isActive && styles.catPillActive, { flexDirection: 'row', alignItems: 'center', gap: 5 }]}
                     onPress={() => setCategoryFilter(catKey)}>
+                    <config.Icon size={13} color={isActive ? '#FFFFFF' : '#475569'} />
                     <Text
                       style={[
                         styles.catPillText,
                         isActive && styles.catPillTextActive,
                       ]}>
-                      {config.icon} {config.label}
+                      {config.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+
+            {/* Priority Filter Scroll */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.catScroll}>
+              <Pressable
+                style={[
+                  styles.catPill,
+                  priorityFilter === 'all' && styles.catPillActive,
+                ]}
+                onPress={() => setPriorityFilter('all')}>
+                <Text
+                  style={[
+                    styles.catPillText,
+                    priorityFilter === 'all' && styles.catPillTextActive,
+                  ]}>
+                  All Priorities
+                </Text>
+              </Pressable>
+              {(['urgent', 'high', 'medium', 'low'] as ComplaintPriority[]).map((prioKey) => {
+                const pConfig = PRIORITY_CONFIG[prioKey];
+                const isActive = priorityFilter === prioKey;
+                return (
+                  <Pressable
+                    key={prioKey}
+                    style={[
+                      styles.catPill,
+                      isActive && {
+                        backgroundColor: pConfig.bgColor,
+                        borderColor: pConfig.color,
+                      },
+                    ]}
+                    onPress={() => setPriorityFilter(prioKey)}>
+                    <Text
+                      style={[
+                        styles.catPillText,
+                        isActive && { color: pConfig.color },
+                      ]}>
+                      {pConfig.label}
                     </Text>
                   </Pressable>
                 );
@@ -369,10 +434,18 @@ export default function OwnerComplaintsScreen() {
             {/* Complaints List */}
             {filteredComplaints.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Text style={styles.emptyIcon}>✓</Text>
-                <Text style={styles.emptyTitle}>No Complaints Found</Text>
+                <View style={styles.emptyIconCircle}>
+                  <CheckCircle2 size={26} color="#16A34A" />
+                </View>
+                <Text style={styles.emptyTitle}>
+                  {complaints.length === 0 || statusFilter === 'open'
+                    ? 'All clear'
+                    : 'No matching requests'}
+                </Text>
                 <Text style={styles.emptySub}>
-                  No maintenance issues match the selected filters.
+                  {complaints.length === 0 || statusFilter === 'open'
+                    ? 'Everything at the property is running smoothly.'
+                    : 'Try clearing a filter to see other maintenance tickets.'}
                 </Text>
               </View>
             ) : (
@@ -426,9 +499,10 @@ export default function OwnerComplaintsScreen() {
                     </View>
 
                     <View style={styles.catRow}>
-                      <Text style={styles.catText}>
-                        {catInfo.icon} {catInfo.label}
-                      </Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <catInfo.Icon size={14} color="#475569" />
+                        <Text style={styles.catText}>{catInfo.label}</Text>
+                      </View>
                       <Text style={styles.dateMeta}>{formattedDate}</Text>
                     </View>
 
@@ -438,9 +512,10 @@ export default function OwnerComplaintsScreen() {
                     {/* Resident Photo Attachment */}
                     {item.photo_url && (
                       <Pressable
-                        style={styles.photoViewBtn}
+                        style={[styles.photoViewBtn, { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }]}
                         onPress={() => handleViewPhoto(item.photo_url!)}>
-                        <Text style={styles.photoViewBtnText}>📷 View Resident Photo Attachment</Text>
+                        <Camera size={14} color="#0284C7" />
+                        <Text style={styles.photoViewBtnText}>View Resident Photo Attachment</Text>
                       </Pressable>
                     )}
 
@@ -562,9 +637,10 @@ export default function OwnerComplaintsScreen() {
         onRequestClose={() => setFullImageUrl(null)}>
         <View style={styles.fullImageOverlay}>
           <Pressable
-            style={styles.fullImageCloseBtn}
+            style={[styles.fullImageCloseBtn, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}
             onPress={() => setFullImageUrl(null)}>
-            <Text style={styles.fullImageCloseText}>Close ✕</Text>
+            <Text style={styles.fullImageCloseText}>Close</Text>
+            <X size={16} color="#FFFFFF" />
           </Pressable>
           {loadingFullImage ? (
             <ActivityIndicator size="large" color="#FFFFFF" />
@@ -640,12 +716,21 @@ const styles = StyleSheet.create({
   },
   emptyCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 30,
+    borderRadius: 16,
+    padding: 32,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E2E8F0',
     marginTop: 10,
+  },
+  emptyIconCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#DCFCE7',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   emptyIcon: {
     fontSize: 32,

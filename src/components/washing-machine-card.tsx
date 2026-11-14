@@ -10,7 +10,9 @@ import {
   View,
 } from 'react-native';
 import { RealtimeChannel } from '@supabase/supabase-js';
+import * as Notifications from 'expo-notifications';
 import {
+  Bell,
   ChevronRight,
   Clock,
   Disc3,
@@ -18,6 +20,19 @@ import {
 } from 'lucide-react-native';
 
 import { supabase } from '@/lib/supabase';
+import { OwnerTheme } from '@/constants/theme';
+
+const CYCLE_DURATION_MINUTES = 45;
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 export interface WashingMachineStatusData {
   property_id: string;
@@ -53,19 +68,27 @@ interface WashingMachineCardProps {
 
 let wmChannelSequence = 0;
 
-function formatDuration(startedAtIso: string | null): string {
-  if (!startedAtIso) return '';
+function formatCountdown(
+  startedAtIso: string | null,
+  nowMs: number
+): { label: string; remainingSeconds: number } {
+  if (!startedAtIso) {
+    return { label: `${CYCLE_DURATION_MINUTES}m left`, remainingSeconds: CYCLE_DURATION_MINUTES * 60 };
+  }
   try {
-    const started = new Date(startedAtIso).getTime();
-    const now = Date.now();
-    const diffMinutes = Math.max(0, Math.floor((now - started) / 60000));
-    if (diffMinutes < 1) return 'Just started';
-    if (diffMinutes < 60) return `${diffMinutes}m ago`;
-    const hours = Math.floor(diffMinutes / 60);
-    const mins = diffMinutes % 60;
-    return `${hours}h ${mins}m ago`;
+    const startedMs = new Date(startedAtIso).getTime();
+    if (Number.isNaN(startedMs)) {
+      return { label: `${CYCLE_DURATION_MINUTES}m left`, remainingSeconds: CYCLE_DURATION_MINUTES * 60 };
+    }
+    const elapsedSeconds = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
+    const remainingSeconds = Math.max(0, CYCLE_DURATION_MINUTES * 60 - elapsedSeconds);
+    if (remainingSeconds === 0) {
+      return { label: 'Finishing soon', remainingSeconds: 0 };
+    }
+    const mins = Math.ceil(remainingSeconds / 60);
+    return { label: `~${mins}m left`, remainingSeconds };
   } catch {
-    return '';
+    return { label: `${CYCLE_DURATION_MINUTES}m left`, remainingSeconds: CYCLE_DURATION_MINUTES * 60 };
   }
 }
 
@@ -87,9 +110,92 @@ export function WashingMachineCard({
   const [actionUnitId, setActionUnitId] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubscribed, setIsSubscribed] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [notifyMap, setNotifyMap] = useState<Record<string, string>>({});
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const isMountedRef = useRef(true);
+
+  const anyInUse = machines.some((m) => m.status === 'in_use');
+
+  useEffect(() => {
+    if (!anyInUse) return;
+    const id = setInterval(() => {
+      setNowMs(Date.now());
+    }, 30000);
+    return () => clearInterval(id);
+  }, [anyInUse]);
+
+  // Watch for a notified machine becoming free while the app is open
+  useEffect(() => {
+    const notifiedIds = Object.keys(notifyMap);
+    if (notifiedIds.length === 0) return;
+    for (const unit of machines) {
+      if (unit.status === 'free' && notifyMap[unit.id]) {
+        const notifId = notifyMap[unit.id];
+        if (notifId !== 'in_app_only') {
+          Notifications.cancelScheduledNotificationAsync(notifId).catch(() => {});
+        }
+        setNotifyMap((prev) => {
+          const next = { ...prev };
+          delete next[unit.id];
+          return next;
+        });
+        Alert.alert('Washing Machine Free', `${unit.machine_name} is now free to use.`);
+      }
+    }
+  }, [machines, notifyMap]);
+
+  const handleToggleNotify = async (unit: WashingMachineUnitData) => {
+    const existingId = notifyMap[unit.id];
+    if (existingId) {
+      if (existingId !== 'in_app_only') {
+        await Notifications.cancelScheduledNotificationAsync(existingId).catch(() => {});
+      }
+      setNotifyMap((prev) => {
+        const next = { ...prev };
+        delete next[unit.id];
+        return next;
+      });
+      return;
+    }
+
+    const { remainingSeconds } = formatCountdown(unit.started_at, Date.now());
+    const triggerSeconds = Math.max(10, remainingSeconds);
+
+    try {
+      const { status } = await Notifications.getPermissionsAsync();
+      let finalStatus = status;
+      if (status !== 'granted') {
+        const req = await Notifications.requestPermissionsAsync();
+        finalStatus = req.status;
+      }
+
+      if (finalStatus === 'granted') {
+        const notifId = await Notifications.scheduleNotificationAsync({
+          content: {
+            title: `${unit.machine_name} is likely free`,
+            body: 'The 45-minute wash cycle should be done now.',
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+            seconds: triggerSeconds,
+            repeats: false,
+          },
+        });
+        setNotifyMap((prev) => ({ ...prev, [unit.id]: notifId }));
+        return;
+      }
+    } catch {
+      // Fallback to in-app Realtime alert if local notifications aren't permitted
+    }
+
+    setNotifyMap((prev) => ({ ...prev, [unit.id]: 'in_app_only' }));
+    Alert.alert(
+      'In-App Reminder Set',
+      `We will alert you here as soon as ${unit.machine_name} becomes free.`
+    );
+  };
 
   // Fetch authoritative multi-unit state from the server
   const fetchStatus = useCallback(async (isInitial = false) => {
@@ -313,7 +419,7 @@ export function WashingMachineCard({
       if (!error && rpcRes && rpcRes.success) {
         await fetchStatus(false);
         Alert.alert(
-          'Wash Started! 🧺',
+          'Wash Started',
           `Session active on ${rpcRes.machine?.machine_name || 'selected machine'}. Please mark it free when your laundry is done.`
         );
         return;
@@ -334,7 +440,7 @@ export function WashingMachineCard({
       if (!legacyRes?.success) throw new Error(legacyRes?.error || 'Could not start machine.');
 
       await fetchStatus(false);
-      Alert.alert('Wash Started! 🧺', 'Machine is now marked in use. Please mark it free when done.');
+      Alert.alert('Wash Started', 'Machine is now marked in use. Please mark it free when done.');
     } catch (err: any) {
       console.warn('[WashingMachine] Start error:', err.message);
       Alert.alert('Could Not Start', err.message || 'Washing machine could not be started.');
@@ -546,21 +652,19 @@ export function WashingMachineCard({
                       </View>
 
                       {isUnitFree ? (
-                        <Text style={styles.modalUnitSubFree}>Clean and ready to use</Text>
+                        <Text style={styles.modalUnitSubFree}>Available</Text>
                       ) : (
                         <View style={{ marginTop: 3 }}>
                           <Text style={styles.modalUnitOccupant} numberOfLines={1}>
-                            👤 {unit.current_resident_name || 'Resident'}
+                            {unit.current_resident_name || 'Resident'}
                             {unit.current_resident_room ? ` (Room ${unit.current_resident_room})` : ''}
                           </Text>
-                          {unit.started_at ? (
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                              <Clock size={11} color="#64748B" />
-                              <Text style={styles.modalUnitDuration}>
-                                Started {formatDuration(unit.started_at)}
-                              </Text>
-                            </View>
-                          ) : null}
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
+                            <Clock size={11} color="#D97706" />
+                            <Text style={styles.modalUnitDuration}>
+                              {formatCountdown(unit.started_at, nowMs).label}
+                            </Text>
+                          </View>
                         </View>
                       )}
                     </View>
@@ -619,9 +723,25 @@ export function WashingMachineCard({
                           )}
                         </Pressable>
                       ) : !isUnitFree ? (
-                        <View style={styles.modalBusyPill}>
-                          <Text style={styles.modalBusyText}>Busy</Text>
-                        </View>
+                        <Pressable
+                          accessibilityRole="button"
+                          onPress={() => handleToggleNotify(unit)}
+                          style={[
+                            styles.notifyBtn,
+                            Boolean(notifyMap[unit.id]) && styles.notifyBtnActive,
+                          ]}>
+                          <Bell
+                            size={12}
+                            color={notifyMap[unit.id] ? '#0284C7' : '#475569'}
+                          />
+                          <Text
+                            style={[
+                              styles.notifyBtnText,
+                              Boolean(notifyMap[unit.id]) && styles.notifyBtnTextActive,
+                            ]}>
+                            {notifyMap[unit.id] ? 'Notified' : 'Notify me'}
+                          </Text>
+                        </Pressable>
                       ) : null}
                     </View>
                   </View>
@@ -675,7 +795,7 @@ export function WashingMachineCard({
                 ? styles.iconWrapFree
                 : styles.iconWrapInUse,
             ]}>
-            <Text style={{ fontSize: 18 }}>🫧</Text>
+            <Disc3 size={18} color={OwnerTheme.colors.primary} />
           </View>
           <View
             style={[
@@ -767,7 +887,7 @@ export function WashingMachineCard({
                 ? styles.iconWrapFree
                 : styles.iconWrapInUse,
             ]}>
-            <Text style={styles.machineIcon}>🫧</Text>
+            <Disc3 size={20} color={OwnerTheme.colors.primary} />
           </View>
           <View>
             <View style={styles.titleRow}>
@@ -877,10 +997,10 @@ export function WashingMachineCard({
                   </View>
                   <Text style={styles.infoText}>
                     {isUnitFree
-                      ? 'Clean and ready to use'
-                      : `Used by ${m.current_resident_name || 'Resident'} ${
-                          m.current_resident_room ? `(${m.current_resident_room})` : ''
-                        }`}
+                      ? 'Available'
+                      : `Used by ${m.current_resident_name || 'Resident'}${
+                          m.current_resident_room ? ` (${m.current_resident_room})` : ''
+                        } • ${formatCountdown(m.started_at, nowMs).label}`}
                   </Text>
                 </View>
 
@@ -915,6 +1035,25 @@ export function WashingMachineCard({
                     ) : (
                       <Text style={styles.actionBtnText}>Start Wash</Text>
                     )}
+                  </Pressable>
+                ) : !isUnitFree ? (
+                  <Pressable
+                    style={[
+                      styles.notifyBtn,
+                      Boolean(notifyMap[m.id]) && styles.notifyBtnActive,
+                    ]}
+                    onPress={() => handleToggleNotify(m)}>
+                    <Bell
+                      size={12}
+                      color={notifyMap[m.id] ? '#0284C7' : '#475569'}
+                    />
+                    <Text
+                      style={[
+                        styles.notifyBtnText,
+                        Boolean(notifyMap[m.id]) && styles.notifyBtnTextActive,
+                      ]}>
+                      {notifyMap[m.id] ? 'Notified' : 'Notify me when done'}
+                    </Text>
                   </Pressable>
                 ) : null}
               </View>
@@ -1434,6 +1573,29 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: '#DC2626',
+  },
+  notifyBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+  },
+  notifyBtnActive: {
+    backgroundColor: '#E0F2FE',
+    borderColor: '#7DD3FC',
+  },
+  notifyBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  notifyBtnTextActive: {
+    color: '#0284C7',
   },
   modalFooter: {
     marginTop: 14,

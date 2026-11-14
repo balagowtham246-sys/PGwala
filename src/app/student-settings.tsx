@@ -10,11 +10,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import {
-  Building2,
   ChevronRight,
   LogOut,
-  Receipt,
-  Wrench,
   ShieldCheck,
 } from 'lucide-react-native';
 
@@ -128,83 +125,6 @@ export default function ResidentSettingsScreen() {
           </View>
           <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
         </Pressable>
-
-        {/* Group 1: Accommodation & Services */}
-        <View style={styles.section}>
-          <Text style={styles.sectionHeader}>ACCOMMODATION & SERVICES</Text>
-          <View style={styles.groupedCard}>
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.settingsRow,
-                styles.rowDivider,
-                pressed && styles.rowPressed,
-              ]}
-              onPress={() => router.push('/student-accommodation')}>
-              <View
-                style={[
-                  styles.iconWrap,
-                  { backgroundColor: OwnerTheme.colors.primaryLight },
-                ]}>
-                <Building2 size={18} color={OwnerTheme.colors.primary} />
-              </View>
-              <View style={styles.rowContent}>
-                <Text style={styles.rowTitle}>My Accommodation</Text>
-                <Text style={styles.rowSubtitle} numberOfLines={1}>
-                  {summary ? `Room ${summary.roomNumber} details & rules` : 'Room and PG facility details'}
-                </Text>
-              </View>
-              <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.settingsRow,
-                styles.rowDivider,
-                pressed && styles.rowPressed,
-              ]}
-              onPress={() => router.push('/student-billing')}>
-              <View
-                style={[
-                  styles.iconWrap,
-                  { backgroundColor: '#F1F5F9' },
-                ]}>
-                <Receipt size={18} color={OwnerTheme.colors.textPrimary} />
-              </View>
-              <View style={styles.rowContent}>
-                <Text style={styles.rowTitle}>My Bills & Receipts</Text>
-                <Text style={styles.rowSubtitle}>
-                  View monthly rent, dues & download receipts
-                </Text>
-              </View>
-              <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.settingsRow,
-                pressed && styles.rowPressed,
-              ]}
-              onPress={() => router.push('/student-complaints')}>
-              <View
-                style={[
-                  styles.iconWrap,
-                  { backgroundColor: OwnerTheme.colors.warningLight },
-                ]}>
-                <Wrench size={18} color={OwnerTheme.colors.warning} />
-              </View>
-              <View style={styles.rowContent}>
-                <Text style={styles.rowTitle}>Complaints & Requests</Text>
-                <Text style={styles.rowSubtitle}>
-                  Raise room, electrical or plumbing issues
-                </Text>
-              </View>
-              <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
-            </Pressable>
-          </View>
-        </View>
 
         {/* Group 2: Account & Security */}
         <View style={styles.section}>

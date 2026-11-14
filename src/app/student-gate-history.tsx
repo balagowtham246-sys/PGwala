@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -11,7 +11,15 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { DoorOpen, HelpCircle, Home, LogOut } from 'lucide-react-native';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { BottomTabInset } from '@/constants/theme';
+import {
+  countDaysOutThisMonth,
+  groupLogsByLocalDay,
+  isOutOverHours,
+} from '@/lib/movement-utils';
+import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { router } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
@@ -86,6 +94,26 @@ export default function StudentGateHistoryScreen() {
   const [resident, setResident] = useState<StudentResident | null>(null);
   const [logs, setLogs] = useState<MovementLog[]>([]);
   const [filter, setFilter] = useState<DateFilter>('all');
+  const [savingMovement, setSavingMovement] = useState(false);
+  const [undoToast, setUndoToast] = useState<{
+    message: string;
+    undoDirection: 'IN' | 'OUT';
+  } | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    };
+  }, []);
+
+  const showUndoToast = (message: string, undoDirection: 'IN' | 'OUT') => {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    setUndoToast({ message, undoDirection });
+    undoTimerRef.current = setTimeout(() => {
+      setUndoToast(null);
+    }, 8000);
+  };
 
   const loadData = useCallback(async () => {
     if (!user?.id) return;
@@ -147,10 +175,42 @@ export default function StudentGateHistoryScreen() {
     loadData();
   }, [loadData]);
 
-  // Current status based on most recent log
-  const currentStatus = logs.length > 0 ? logs[0].direction : 'UNKNOWN';
+  // Current status based on most recent log (default IN if no logs yet)
+  const currentStatus = logs.length > 0 ? logs[0].direction : 'IN';
   const lastEventTime = logs.length > 0 ? formatEventTime(logs[0].event_time) : null;
   const lastEventDate = logs.length > 0 ? formatDateHeader(logs[0].event_time) : null;
+  const outNudge = isOutOverHours(currentStatus, logs[0]?.event_time);
+  const daysOutThisMonth = useMemo(() => countDaysOutThisMonth(logs), [logs]);
+
+  const recordGateToggle = async (targetDirection: 'IN' | 'OUT', isUndo: boolean = false) => {
+    if (savingMovement) return;
+    if (isUndo) {
+      triggerLightHaptic();
+    } else {
+      triggerSuccessHaptic();
+    }
+    setSavingMovement(true);
+    try {
+      const { data, error } = await supabase.rpc('record_student_movement', {
+        p_direction: targetDirection,
+        p_note: isUndo ? 'Undo previous gate tap' : undefined,
+      });
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Could not update gate status.');
+      if (!isUndo) {
+        showUndoToast(
+          targetDirection === 'IN' ? 'Marked Inside PG' : 'Marked Outside PG',
+          targetDirection === 'IN' ? 'OUT' : 'IN'
+        );
+      }
+      await loadData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      Alert.alert('Update Failed', msg || 'Could not update gate status.');
+    } finally {
+      setSavingMovement(false);
+    }
+  };
 
   // Filtered logs
   const filteredLogs = useMemo(() => {
@@ -178,33 +238,11 @@ export default function StudentGateHistoryScreen() {
     });
   }, [logs, filter]);
 
-  // Group filtered logs by calendar date
-  const groupedLogs = useMemo(() => {
-    const groups: { dateKey: string; dateTitle: string; items: MovementLog[] }[] = [];
-    const map = new Map<string, MovementLog[]>();
-
-    for (const log of filteredLogs) {
-      const key = log.event_time.split('T')[0] || 'unknown';
-      if (!map.has(key)) {
-        map.set(key, []);
-      }
-      map.get(key)!.push(log);
-    }
-
-    const sortedKeys = Array.from(map.keys()).sort((a, b) => b.localeCompare(a));
-    for (const key of sortedKeys) {
-      const items = map.get(key)!;
-      groups.push({
-        dateKey: key,
-        dateTitle: formatDateHeader(items[0]?.event_time),
-        items,
-      });
-    }
-    return groups;
-  }, [filteredLogs]);
-
-  const totalIn = filteredLogs.filter((l) => l.direction === 'IN').length;
-  const totalOut = filteredLogs.filter((l) => l.direction === 'OUT').length;
+  // Group filtered logs by local calendar date
+  const groupedLogs = useMemo(
+    () => groupLogsByLocalDay(filteredLogs),
+    [filteredLogs]
+  );
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -225,7 +263,13 @@ export default function StudentGateHistoryScreen() {
           <Pressable
             accessibilityRole="button"
             style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-            onPress={() => router.back()}>
+            onPress={() => {
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/student-dashboard');
+              }
+            }}>
             <Text style={styles.backButtonText}>‹ Back</Text>
           </Pressable>
           <View style={styles.headerTitleWrap}>
@@ -261,9 +305,13 @@ export default function StudentGateHistoryScreen() {
                   : styles.statusCardUnknown,
               ]}>
               <View style={styles.statusIconWrap}>
-                <Text style={styles.statusIcon}>
-                  {currentStatus === 'IN' ? '🏠' : currentStatus === 'OUT' ? '🚶' : '❓'}
-                </Text>
+                {currentStatus === 'IN' ? (
+                  <Home size={22} color="#16A34A" />
+                ) : currentStatus === 'OUT' ? (
+                  <LogOut size={22} color="#D97706" />
+                ) : (
+                  <HelpCircle size={22} color="#64748B" />
+                )}
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.statusLabel}>Current Gate Status</Text>
@@ -288,22 +336,41 @@ export default function StudentGateHistoryScreen() {
                   </Text>
                 )}
               </View>
+              <Pressable
+                style={[
+                  styles.gateQuickBtn,
+                  currentStatus === 'IN' ? styles.gateQuickOutBtn : styles.gateQuickInBtn,
+                  savingMovement && { opacity: 0.6 },
+                ]}
+                disabled={savingMovement}
+                onPress={() =>
+                  recordGateToggle(currentStatus === 'IN' ? 'OUT' : 'IN')
+                }>
+                {savingMovement ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.gateQuickBtnText}>
+                    {currentStatus === 'IN' ? 'Mark Out' : 'Mark In'}
+                  </Text>
+                )}
+              </Pressable>
             </View>
 
-            {/* Quick Stats Row */}
-            <View style={styles.statsRow}>
-              <View style={styles.statBox}>
-                <Text style={styles.statVal}>{filteredLogs.length}</Text>
-                <Text style={styles.statLabel}>Total Events</Text>
+            {/* 10+ Hours Out Nudge */}
+            {outNudge.isOver && (
+              <View style={styles.overHoursBanner}>
+                <Text style={styles.overHoursText}>
+                  You&apos;ve been out for {outNudge.hoursOut}+ hours. Tap &quot;Mark In&quot; when you&apos;re back at the PG.
+                </Text>
               </View>
-              <View style={styles.statBox}>
-                <Text style={[styles.statVal, styles.textIn]}>{totalIn}</Text>
-                <Text style={styles.statLabel}>Check-ins (IN)</Text>
-              </View>
-              <View style={styles.statBox}>
-                <Text style={[styles.statVal, styles.textOut]}>{totalOut}</Text>
-                <Text style={styles.statLabel}>Check-outs (OUT)</Text>
-              </View>
+            )}
+
+            {/* Monthly Summary */}
+            <View style={styles.monthSummaryCard}>
+              <Text style={styles.monthSummaryLabel}>This month</Text>
+              <Text style={styles.monthSummaryValue}>
+                {daysOutThisMonth} {daysOutThisMonth === 1 ? 'day' : 'days'} out
+              </Text>
             </View>
 
             {/* Filter Tabs */}
@@ -358,7 +425,11 @@ export default function StudentGateHistoryScreen() {
                             styles.directionBadge,
                             isIn ? styles.badgeIn : styles.badgeOut,
                           ]}>
-                          <Text style={styles.directionIcon}>{isIn ? '🚪' : '🚶'}</Text>
+                          {isIn ? (
+                            <DoorOpen size={14} color="#15803D" />
+                          ) : (
+                            <LogOut size={14} color="#B45309" />
+                          )}
                           <Text
                             style={[
                               styles.directionText,
@@ -382,7 +453,7 @@ export default function StudentGateHistoryScreen() {
                           )}
                           {!isIn && typeof log.food_required === 'boolean' && (
                             <Text style={[styles.foodBadge, log.food_required ? styles.foodNeeded : styles.foodNotNeeded]}>
-                              {log.food_required ? '🍽️ Dinner Required' : '❌ No Dinner Needed'}
+                              {log.food_required ? 'Dinner Required' : 'No Dinner Needed'}
                             </Text>
                           )}
                           {log.note && (
@@ -399,6 +470,22 @@ export default function StudentGateHistoryScreen() {
         )}
       </ScrollView>
 
+      {undoToast && (
+        <View style={styles.undoToast}>
+          <Text style={styles.undoToastText}>{undoToast.message}</Text>
+          <Pressable
+            hitSlop={8}
+            onPress={() => {
+              const dir = undoToast.undoDirection;
+              setUndoToast(null);
+              if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+              recordGateToggle(dir, true);
+            }}>
+            <Text style={styles.undoToastAction}>UNDO</Text>
+          </Pressable>
+        </View>
+      )}
+
       <RoleBottomNav activeTab="gate" roleOverride="student" />
     </SafeAreaView>
   );
@@ -412,7 +499,85 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: 40,
+    paddingBottom: BottomTabInset + 40,
+  },
+  gateQuickBtn: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  gateQuickOutBtn: {
+    backgroundColor: '#D97706',
+  },
+  gateQuickInBtn: {
+    backgroundColor: '#16A34A',
+  },
+  gateQuickBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  overHoursBanner: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  overHoursText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#92400E',
+  },
+  monthSummaryCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    marginBottom: 14,
+  },
+  monthSummaryLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#64748B',
+  },
+  monthSummaryValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  undoToast: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: BottomTabInset + 14,
+    backgroundColor: '#0F172A',
+    borderRadius: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  undoToastText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  undoToastAction: {
+    color: '#38BDF8',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   topBar: {
     flexDirection: 'row',

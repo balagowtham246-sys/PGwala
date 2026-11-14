@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -6,18 +6,35 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { Eye, EyeOff, AlertCircle } from 'lucide-react-native';
+import {
+  Eye,
+  EyeOff,
+  AlertCircle,
+  Fingerprint,
+  Receipt,
+  ShieldCheck,
+  Wrench,
+} from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
 import { useAuth, UserProfile } from '@/context/auth-context';
 import { PrimaryButton } from '@/components/ui/owner';
+import {
+  authenticateWithBiometrics,
+  clearBiometricCredentials,
+  getBiometricAvailability,
+  getSavedBiometricCredentials,
+  saveBiometricCredentials,
+  SavedBiometricCredentials,
+} from '@/lib/biometric-auth';
 
 export default function LoginScreen() {
   const { signOut } = useAuth();
@@ -26,20 +43,37 @@ export default function LoginScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricLabel, setBiometricLabel] = useState('Biometrics');
+  const [savedCreds, setSavedCreds] = useState<SavedBiometricCredentials | null>(null);
+  const [enableBiometric, setEnableBiometric] = useState(false);
 
-  const handleSignIn = async () => {
-    const trimmedEmail = email.trim();
-    if (!trimmedEmail || !password) {
-      setErrorMessage('Please enter both email and password.');
-      return;
-    }
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const [avail, creds] = await Promise.all([
+        getBiometricAvailability(),
+        getSavedBiometricCredentials(),
+      ]);
+      if (!active) return;
+      setBiometricAvailable(avail.available);
+      setBiometricLabel(avail.label);
+      if (avail.available && creds) {
+        setSavedCreds(creds);
+        setEnableBiometric(true);
+        setEmail((prev) => prev || creds.email);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(trimmedEmail)) {
-      setErrorMessage('Please enter a valid email address.');
-      return;
-    }
-
+  const performSignIn = async (
+    targetEmail: string,
+    targetPassword: string,
+    fromBiometric: boolean
+  ) => {
     setLoading(true);
     setErrorMessage(null);
 
@@ -47,17 +81,25 @@ export default function LoginScreen() {
       // 1. Authenticate with Supabase Auth
       const { data: authData, error: authError } =
         await supabase.auth.signInWithPassword({
-          email: trimmedEmail,
-          password,
+          email: targetEmail,
+          password: targetPassword,
         });
 
       if (authError) {
         if (
           authError.message.toLowerCase().includes('invalid login credentials')
         ) {
-          setErrorMessage(
-            'Invalid email or password. Please verify and try again.'
-          );
+          if (fromBiometric) {
+            await clearBiometricCredentials();
+            setSavedCreds(null);
+            setErrorMessage(
+              'Saved credentials expired or changed. Please sign in with your password.'
+            );
+          } else {
+            setErrorMessage(
+              'Invalid email or password. Please verify and try again.'
+            );
+          }
         } else if (authError.message.toLowerCase().includes('network')) {
           setErrorMessage(
             'Network connection error. Please verify your internet connection.'
@@ -65,14 +107,12 @@ export default function LoginScreen() {
         } else {
           setErrorMessage(authError.message);
         }
-        setLoading(false);
         return;
       }
 
       const user = authData.user;
       if (!user) {
         setErrorMessage('Authentication failed. No user record returned.');
-        setLoading(false);
         return;
       }
 
@@ -88,13 +128,23 @@ export default function LoginScreen() {
         setErrorMessage(
           'Profile record not found for this account. Contact system support.'
         );
-        setLoading(false);
         return;
       }
 
       const profile = profileData as UserProfile;
 
-      // 3. Enforce Role Check and Navigation
+      // 3. Persist or clear biometric credentials based on user preference
+      if (!fromBiometric && biometricAvailable) {
+        if (enableBiometric) {
+          await saveBiometricCredentials(targetEmail, targetPassword);
+          setSavedCreds({ email: targetEmail, password: targetPassword });
+        } else {
+          await clearBiometricCredentials();
+          setSavedCreds(null);
+        }
+      }
+
+      // 4. Enforce Role Check and Navigation
       if (profile.role === 'owner') {
         router.replace('/(tabs)');
       } else if (profile.role === 'student') {
@@ -104,8 +154,6 @@ export default function LoginScreen() {
         setErrorMessage(
           `Access Denied: Unrecognized account role '${profile.role}'. Please contact support.`
         );
-        setLoading(false);
-        return;
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -113,6 +161,31 @@ export default function LoginScreen() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleSignIn = async () => {
+    const trimmedEmail = email.trim();
+    if (!trimmedEmail || !password) {
+      setErrorMessage('Please enter both email and password.');
+      return;
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+      setErrorMessage('Please enter a valid email address.');
+      return;
+    }
+
+    await performSignIn(trimmedEmail, password, false);
+  };
+
+  const handleBiometricSignIn = async () => {
+    if (!savedCreds || loading) return;
+    const verified = await authenticateWithBiometrics(
+      `Sign in to PGwala with ${biometricLabel}`
+    );
+    if (!verified) return;
+    await performSignIn(savedCreds.email, savedCreds.password, true);
   };
 
   const handleForgotPassword = () => {
@@ -134,13 +207,28 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}>
-          {/* Brand Header */}
+          {/* Brand Header & Value Highlights */}
           <View style={styles.brandContainer}>
             <View style={styles.logoBadge}>
               <Text style={styles.logoBadgeText}>PG</Text>
             </View>
             <Text style={styles.appTitle}>PGwala</Text>
-            <Text style={styles.appSubtitle}>Property Management</Text>
+            <Text style={styles.appSubtitle}>Run your PG effortlessly</Text>
+
+            <View style={styles.valuePillsRow}>
+              <View style={styles.valuePill}>
+                <Receipt size={13} color={OwnerTheme.colors.primary} />
+                <Text style={styles.valuePillText}>Rent & EB Billing</Text>
+              </View>
+              <View style={styles.valuePill}>
+                <ShieldCheck size={13} color={OwnerTheme.colors.primary} />
+                <Text style={styles.valuePillText}>Smart Gate Logs</Text>
+              </View>
+              <View style={styles.valuePill}>
+                <Wrench size={13} color={OwnerTheme.colors.primary} />
+                <Text style={styles.valuePillText}>Instant Maintenance</Text>
+              </View>
+            </View>
           </View>
 
           {/* Login Card */}
@@ -215,6 +303,23 @@ export default function LoginScreen() {
               </View>
             </View>
 
+            {/* Biometric Opt-in Toggle */}
+            {biometricAvailable && (
+              <View style={styles.biometricToggleRow}>
+                <Text style={styles.biometricToggleLabel}>
+                  Enable {biometricLabel} sign-in
+                </Text>
+                <Switch
+                  value={enableBiometric}
+                  onValueChange={setEnableBiometric}
+                  trackColor={{
+                    false: OwnerTheme.colors.border,
+                    true: OwnerTheme.colors.primary,
+                  }}
+                />
+              </View>
+            )}
+
             {/* Sign In Button */}
             <PrimaryButton
               label="Sign In"
@@ -222,6 +327,19 @@ export default function LoginScreen() {
               loading={loading}
               style={{ marginTop: 8 }}
             />
+
+            {/* Biometric Quick Sign-In */}
+            {biometricAvailable && savedCreds && (
+              <Pressable
+                style={[styles.biometricBtn, loading && { opacity: 0.6 }]}
+                onPress={handleBiometricSignIn}
+                disabled={loading}>
+                <Fingerprint size={18} color={OwnerTheme.colors.primary} />
+                <Text style={styles.biometricBtnText}>
+                  Sign in with {biometricLabel}
+                </Text>
+              </Pressable>
+            )}
           </View>
 
           {/* Footer Note */}
@@ -279,10 +397,59 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.textPrimary,
   },
   appSubtitle: {
-    fontSize: 13,
+    fontSize: 14,
     color: OwnerTheme.colors.textSecondary,
-    fontWeight: '500',
+    fontWeight: '600',
     marginTop: 2,
+  },
+  valuePillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 14,
+  },
+  valuePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: OwnerTheme.radius.full,
+  },
+  valuePillText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primaryDark,
+  },
+  biometricToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  biometricToggleLabel: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  biometricBtn: {
+    marginTop: 10,
+    height: 46,
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.primary,
+    backgroundColor: OwnerTheme.colors.primarySoft,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  biometricBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
   },
   card: {
     backgroundColor: '#FFFFFF',

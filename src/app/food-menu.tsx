@@ -21,6 +21,19 @@ import { BottomTabInset, OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  Building2,
+  AlertTriangle,
+  Check,
+  X,
+  Utensils,
+  Clipboard,
+  Calendar,
+  Save,
+  FileText,
+  Pencil,
+} from 'lucide-react-native';
 import { OwnerHeader } from '@/components/ui/owner';
 
 export type MealType = 'breakfast' | 'lunch' | 'dinner';
@@ -46,26 +59,59 @@ const MEAL_ORDER: MealType[] = ['breakfast', 'lunch', 'dinner'];
 
 const MEAL_CONFIG: Record<
   MealType,
-  { title: string; icon: string; timeHint: string; defaultPlaceholder: string }
+  { title: string; timeHint: string; defaultPlaceholder: string }
 > = {
   breakfast: {
     title: 'Breakfast',
-    icon: '🍳',
-    timeHint: 'Morning (e.g. 7:30 AM – 9:30 AM)',
+    timeHint: 'Morning (7:30 AM – 9:30 AM)',
     defaultPlaceholder: 'e.g., Idli, Sambar, Coconut Chutney, Tea / Coffee',
   },
   lunch: {
     title: 'Lunch',
-    icon: '🍛',
-    timeHint: 'Afternoon (e.g. 12:30 PM – 2:30 PM)',
+    timeHint: 'Afternoon (12:30 PM – 2:30 PM)',
     defaultPlaceholder: 'e.g., Rice, Dal Tadka, Paneer Butter Masala, Roti, Curd',
   },
   dinner: {
     title: 'Dinner',
-    icon: '🍲',
-    timeHint: 'Night (e.g. 8:00 PM – 10:00 PM)',
+    timeHint: 'Night (8:00 PM – 10:00 PM)',
     defaultPlaceholder: 'e.g., Chapati, Mixed Veg Curry, Jeera Rice, Dal, Gulab Jamun',
   },
+};
+
+const MEAL_CHIP_SUGGESTIONS: Record<MealType, string[]> = {
+  breakfast: [
+    'Idli',
+    'Dosa',
+    'Poha',
+    'Upma',
+    'Aloo Paratha',
+    'Sambar',
+    'Chutney',
+    'Boiled Egg',
+    'Tea / Coffee',
+  ],
+  lunch: [
+    'Steamed Rice',
+    'Dal Tadka',
+    'Roti',
+    'Sambar',
+    'Curd',
+    'Paneer Curry',
+    'Mix Veg',
+    'Salad',
+    'Buttermilk',
+  ],
+  dinner: [
+    'Chapati',
+    'Jeera Rice',
+    'Dal Fry',
+    'Veg Kurma',
+    'Paneer Butter Masala',
+    'Egg Curry',
+    'Chicken Curry',
+    'Curd Rice',
+    'Gulab Jamun',
+  ],
 };
 
 // Date helpers
@@ -119,6 +165,7 @@ export default function FoodMenuScreen() {
   const [formNotes, setFormNotes] = useState('');
   const [formPublished, setFormPublished] = useState(true);
   const [savingMeal, setSavingMeal] = useState(false);
+  const [applyingBulk, setApplyingBulk] = useState(false);
 
   // Status feedback
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -418,6 +465,152 @@ export default function FoodMenuScreen() {
     );
   };
 
+  const toggleChipItem = (chip: string) => {
+    const existing = formItems
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const idx = existing.findIndex((s) => s.toLowerCase() === chip.toLowerCase());
+    if (idx >= 0) {
+      existing.splice(idx, 1);
+    } else {
+      existing.push(chip);
+    }
+    setFormItems(existing.join(', '));
+  };
+
+  const upsertMealsForSelectedDate = async (
+    entries: { meal_type: MealType; items: string; notes: string | null; is_published: boolean }[]
+  ) => {
+    if (!property?.id) return;
+    for (const entry of entries) {
+      const existing = menus[entry.meal_type];
+      if (existing) {
+        const { error } = await supabase
+          .from('food_menus')
+          .update({
+            items: entry.items,
+            notes: entry.notes,
+            is_published: entry.is_published,
+          })
+          .eq('id', existing.id)
+          .eq('property_id', property.id);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('food_menus').insert({
+          property_id: property.id,
+          menu_date: selectedDateStr,
+          meal_type: entry.meal_type,
+          items: entry.items,
+          notes: entry.notes,
+          is_published: entry.is_published,
+        });
+        if (error) throw error;
+      }
+    }
+    await loadMenusForDate(property.id, selectedDateStr);
+  };
+
+  const handleCopyYesterday = async () => {
+    if (!property?.id) return;
+    try {
+      setApplyingBulk(true);
+      setErrorMessage(null);
+      setSuccessMessage(null);
+      const yesterday = new Date(selectedDate);
+      yesterday.setDate(selectedDate.getDate() - 1);
+      const yStr = toIsoDate(yesterday);
+
+      const { data, error } = await supabase
+        .from('food_menus')
+        .select('meal_type, items, notes, is_published')
+        .eq('property_id', property.id)
+        .eq('menu_date', yStr);
+      if (error) throw error;
+
+      if (!data || data.length === 0) {
+        Alert.alert('Nothing to Copy', `No meals were saved on ${formatDisplayDate(yesterday)}.`);
+        return;
+      }
+
+      await upsertMealsForSelectedDate(
+        data.map((m) => ({
+          meal_type: m.meal_type as MealType,
+          items: m.items,
+          notes: m.notes,
+          is_published: Boolean(m.is_published),
+        }))
+      );
+      setSuccessMessage(`Copied ${data.length} meal(s) from ${formatDisplayDate(yesterday)}.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      Alert.alert('Copy Failed', msg);
+    } finally {
+      setApplyingBulk(false);
+    }
+  };
+
+  const handleSaveWeeklyTemplate = async () => {
+    if (!property?.id) return;
+    const configured = MEAL_ORDER.filter((m) => Boolean(menus[m]));
+    if (configured.length === 0) {
+      Alert.alert('No Meals Set', 'Add at least one meal for this day before saving it to the weekly template.');
+      return;
+    }
+    try {
+      setApplyingBulk(true);
+      const key = `@pgwala_weekly_menu_template_${property.id}`;
+      const raw = await AsyncStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : {};
+      const weekday = String(selectedDate.getDay());
+      parsed[weekday] = configured.map((m) => ({
+        meal_type: m,
+        items: menus[m]!.items,
+        notes: menus[m]!.notes,
+        is_published: menus[m]!.is_published,
+      }));
+      await AsyncStorage.setItem(key, JSON.stringify(parsed));
+      const dayName = selectedDate.toLocaleDateString('en-IN', { weekday: 'long' });
+      setSuccessMessage(`Saved ${dayName} menu to weekly template.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      Alert.alert('Template Save Failed', msg);
+    } finally {
+      setApplyingBulk(false);
+    }
+  };
+
+  const handleApplyWeeklyTemplate = async () => {
+    if (!property?.id) return;
+    try {
+      setApplyingBulk(true);
+      setErrorMessage(null);
+      setSuccessMessage(null);
+      const key = `@pgwala_weekly_menu_template_${property.id}`;
+      const raw = await AsyncStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : {};
+      const weekday = String(selectedDate.getDay());
+      const entries = parsed[weekday];
+      const dayName = selectedDate.toLocaleDateString('en-IN', { weekday: 'long' });
+
+      if (!Array.isArray(entries) || entries.length === 0) {
+        Alert.alert(
+          'No Template Found',
+          `No weekly template saved for ${dayName} yet. Set meals for a ${dayName} and tap "Save Template".`
+        );
+        return;
+      }
+
+      await upsertMealsForSelectedDate(entries);
+      setSuccessMessage(`Applied ${dayName} weekly template.`);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      Alert.alert('Apply Template Failed', msg);
+    } finally {
+      setApplyingBulk(false);
+    }
+  };
+
   const today = new Date();
   const isToday = isSameDay(selectedDate, today);
   const tomorrow = new Date();
@@ -456,7 +649,7 @@ export default function FoodMenuScreen() {
             </View>
           ) : property ? (
             <View style={styles.propertyBadge}>
-              <Text style={styles.propertyBadgeIcon}>🏢</Text>
+              <Building2 size={18} color="#0284C7" style={{ marginRight: 10 }} />
               <View style={styles.propertyBadgeDetails}>
                 <Text style={styles.propertyBadgeLabel}>Active Property</Text>
                 <Text style={styles.propertyBadgeName}>{property.name}</Text>
@@ -467,7 +660,10 @@ export default function FoodMenuScreen() {
           {/* Table Missing Notice (Guides owner to run migration if not yet deployed) */}
           {tableMissingNotice && (
             <View style={styles.migrationNoticeBox}>
-              <Text style={styles.migrationNoticeTitle}>⚠️ Database Setup Required</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                <AlertTriangle size={15} color="#B45309" />
+                <Text style={[styles.migrationNoticeTitle, { marginBottom: 0 }]}>Database Setup Required</Text>
+              </View>
               <Text style={styles.migrationNoticeText}>
                 The <Text style={{ fontWeight: '700' }}>food_menus</Text> table has not been created in Supabase yet.
               </Text>
@@ -480,20 +676,20 @@ export default function FoodMenuScreen() {
           {/* Feedback Banners */}
           {successMessage && (
             <View style={styles.successBanner}>
-              <Text style={styles.successIcon}>✓</Text>
+              <Check size={16} color="#059669" />
               <Text style={styles.successText}>{successMessage}</Text>
               <Pressable hitSlop={8} onPress={() => setSuccessMessage(null)}>
-                <Text style={styles.bannerDismiss}>✕</Text>
+                <X size={16} color="#059669" />
               </Pressable>
             </View>
           )}
 
           {errorMessage && (
             <View style={styles.errorBanner}>
-              <Text style={styles.errorIcon}>⚠️</Text>
+              <AlertTriangle size={16} color="#DC2626" />
               <Text style={styles.errorText}>{errorMessage}</Text>
               <Pressable hitSlop={8} onPress={() => setErrorMessage(null)}>
-                <Text style={styles.bannerDismiss}>✕</Text>
+                <X size={16} color="#DC2626" />
               </Pressable>
             </View>
           )}
@@ -577,6 +773,50 @@ export default function FoodMenuScreen() {
             </View>
           </View>
 
+          {/* Dinner Not Set Nudge */}
+          {isToday && !loadingMenus && !menus.dinner && (
+            <Pressable
+              accessibilityRole="button"
+              style={[styles.dinnerNudgeBanner, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}
+              onPress={() => openEditForm('dinner')}>
+              <Utensils size={14} color="#92400E" />
+              <Text style={styles.dinnerNudgeText}>
+                Dinner not set. Add before 5 PM ›
+              </Text>
+            </Pressable>
+          )}
+
+          {/* Quick Reuse Bar: Copy Yesterday & Weekly Template */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.templateToolbar}>
+            <Pressable
+              accessibilityRole="button"
+              style={[styles.templateBtn, { flexDirection: 'row', alignItems: 'center', gap: 5 }]}
+              disabled={applyingBulk}
+              onPress={handleCopyYesterday}>
+              <Clipboard size={13} color="#334155" />
+              <Text style={styles.templateBtnText}>Copy Yesterday</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              style={[styles.templateBtn, { flexDirection: 'row', alignItems: 'center', gap: 5 }]}
+              disabled={applyingBulk}
+              onPress={handleApplyWeeklyTemplate}>
+              <Calendar size={13} color="#334155" />
+              <Text style={styles.templateBtnText}>Apply Weekly Template</Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              style={[styles.templateBtn, { flexDirection: 'row', alignItems: 'center', gap: 5 }]}
+              disabled={applyingBulk}
+              onPress={handleSaveWeeklyTemplate}>
+              <Save size={13} color="#334155" />
+              <Text style={styles.templateBtnText}>Save Day Template</Text>
+            </Pressable>
+          </ScrollView>
+
           {/* Section: Meals */}
           <View style={styles.sectionHeaderRow}>
             <Text style={styles.sectionTitle}>Daily Meals</Text>
@@ -599,7 +839,7 @@ export default function FoodMenuScreen() {
                   {/* Meal Header */}
                   <View style={styles.mealHeaderRow}>
                     <View style={styles.mealHeaderLeft}>
-                      <Text style={styles.mealIcon}>{config.icon}</Text>
+                      <Utensils size={18} color="#0284C7" style={{ marginRight: 10 }} />
                       <View>
                         <Text style={styles.mealTitle}>{config.title}</Text>
                         <Text style={styles.mealTimeHint}>{config.timeHint}</Text>
@@ -650,6 +890,35 @@ export default function FoodMenuScreen() {
                       <Text style={styles.formSectionTitle}>
                         {menu ? `Edit ${config.title} Menu` : `Add ${config.title} Menu`}
                       </Text>
+
+                      {/* Quick-Tap Dish Chips */}
+                      <Text style={styles.inputLabel}>Quick Add Dishes</Text>
+                      <View style={styles.dishChipsWrap}>
+                        {MEAL_CHIP_SUGGESTIONS[mealType].map((chip) => {
+                          const isAdded = formItems
+                            .split(',')
+                            .map((s) => s.trim().toLowerCase())
+                            .includes(chip.toLowerCase());
+                          return (
+                            <Pressable
+                              key={chip}
+                              accessibilityRole="button"
+                              style={[
+                                styles.dishChip,
+                                isAdded && styles.dishChipActive,
+                              ]}
+                              onPress={() => toggleChipItem(chip)}>
+                              <Text
+                                style={[
+                                  styles.dishChipText,
+                                  isAdded && styles.dishChipTextActive,
+                                ]}>
+                                {isAdded ? `Added: ${chip}` : `+ ${chip}`}
+                              </Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
 
                       {/* Items Input */}
                       <Text style={styles.inputLabel}>
@@ -721,7 +990,7 @@ export default function FoodMenuScreen() {
                           ) : (
                             <Text style={styles.saveBtnText}>
                               {formPublished
-                                ? (menu ? '✓ Save & Publish' : '+ Publish Menu')
+                                ? (menu ? 'Save & Publish' : '+ Publish Menu')
                                 : 'Save as Draft'}
                             </Text>
                           )}
@@ -737,7 +1006,7 @@ export default function FoodMenuScreen() {
 
                       {menu.notes && (
                         <View style={styles.notesBox}>
-                          <Text style={styles.notesIcon}>📝</Text>
+                          <FileText size={14} color="#64748B" style={{ marginRight: 6 }} />
                           <Text style={styles.notesText}>{menu.notes}</Text>
                         </View>
                       )}
@@ -746,9 +1015,10 @@ export default function FoodMenuScreen() {
                       <View style={styles.menuActionToolbar}>
                         <Pressable
                           accessibilityRole="button"
-                          style={styles.editMenuBtn}
+                          style={[styles.editMenuBtn, { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }]}
                           onPress={() => openEditForm(mealType)}>
-                          <Text style={styles.editMenuBtnText}>✏️ Edit Menu</Text>
+                          <Pencil size={14} color="#0284C7" />
+                          <Text style={styles.editMenuBtnText}>Edit Menu</Text>
                         </Pressable>
 
                         <Pressable
@@ -794,6 +1064,65 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: '#F8FAFC',
+  },
+  dinnerNudgeBanner: {
+    marginTop: 12,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  dinnerNudgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#B45309',
+  },
+  templateToolbar: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingTop: 12,
+    paddingBottom: 4,
+  },
+  templateBtn: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  templateBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  dishChipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginBottom: 8,
+  },
+  dishChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  dishChipActive: {
+    backgroundColor: '#E0F2FE',
+    borderColor: '#0284C7',
+  },
+  dishChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  dishChipTextActive: {
+    color: '#0369A1',
   },
   keyboardContainer: {
     flex: 1,

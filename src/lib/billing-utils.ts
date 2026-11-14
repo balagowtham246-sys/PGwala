@@ -164,3 +164,64 @@ export function getBillReportState(
   };
 }
 
+/**
+ * Computes full calendar days overdue for a YYYY-MM-DD due date string.
+ */
+export function getOverdueDays(
+  dueDateIso?: string | null,
+  now: Date = new Date()
+): number {
+  if (!dueDateIso) return 0;
+  const parts = dueDateIso.split('T')[0].split('-').map((n) => parseInt(n, 10));
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return 0;
+
+  const due = new Date(parts[0], parts[1] - 1, parts[2]);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffMs = today.getTime() - due.getTime();
+  return diffMs > 0 ? Math.floor(diffMs / (1000 * 60 * 60 * 24)) : 0;
+}
+
+/**
+ * Formats a due date with overdue ageing (e.g., "Due 5 Nov • 9d overdue").
+ */
+export function formatDueStatus(
+  dueDateIso?: string | null,
+  now: Date = new Date()
+): { label: string; isOverdue: boolean } | null {
+  if (!dueDateIso) return null;
+  const parts = dueDateIso.split('T')[0].split('-').map((n) => parseInt(n, 10));
+  if (parts.length !== 3 || parts.some((n) => Number.isNaN(n))) return null;
+
+  const due = new Date(parts[0], parts[1] - 1, parts[2]);
+  const formatted = due.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+  });
+  const overdueDays = getOverdueDays(dueDateIso, now);
+
+  if (overdueDays > 0) {
+    return {
+      label: `Due ${formatted} • ${overdueDays}d overdue`,
+      isOverdue: true,
+    };
+  }
+  return {
+    label: `Due ${formatted}`,
+    isOverdue: false,
+  };
+}
+
+/**
+ * Builds a WhatsApp deep link (`https://wa.me/...`) for a resident phone number.
+ */
+export function buildWhatsAppReminderUrl(
+  phone: string | null | undefined,
+  message: string
+): string | null {
+  if (!phone) return null;
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  const normalized = digits.length === 10 ? `91${digits}` : digits;
+  return `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
+}
+

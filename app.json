@@ -46,7 +46,8 @@
       ],
       "expo-status-bar",
       "expo-web-browser",
-      "@sentry/react-native"
+      "@sentry/react-native",
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true,

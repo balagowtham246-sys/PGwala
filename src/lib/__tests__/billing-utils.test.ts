@@ -6,6 +6,9 @@ import {
   isEveningOrNightWindow,
   getBillReportState,
   PRESET_REJECTION_REASONS,
+  getOverdueDays,
+  formatDueStatus,
+  buildWhatsAppReminderUrl,
 } from '../billing-utils';
 
 describe('billing-utils', () => {
@@ -212,6 +215,30 @@ describe('billing-utils', () => {
       expect(PRESET_REJECTION_REASONS.length).toBeGreaterThan(0);
       expect(PRESET_REJECTION_REASONS).toContain('Screenshot blurred or unreadable');
       expect(PRESET_REJECTION_REASONS).toContain('Amount does not match bill total');
+    });
+  });
+
+  describe('due ageing and WhatsApp reminder helpers', () => {
+    it('computes overdue days and formats due status', () => {
+      const now = new Date(2026, 10, 14); // 14 Nov 2026
+      expect(getOverdueDays('2026-11-05', now)).toBe(9);
+      expect(getOverdueDays('2026-11-20', now)).toBe(0);
+
+      expect(formatDueStatus('2026-11-05', now)).toEqual({
+        label: 'Due 5 Nov • 9d overdue',
+        isOverdue: true,
+      });
+      expect(formatDueStatus('2026-11-20', now)).toEqual({
+        label: 'Due 20 Nov',
+        isOverdue: false,
+      });
+    });
+
+    it('builds WhatsApp URLs for 10-digit Indian phone numbers and rejects invalid ones', () => {
+      const url = buildWhatsAppReminderUrl('9876543210', 'Rent due');
+      expect(url).toBe('https://wa.me/919876543210?text=Rent%20due');
+      expect(buildWhatsAppReminderUrl(null, 'Rent due')).toBeNull();
+      expect(buildWhatsAppReminderUrl('12345', 'Rent due')).toBeNull();
     });
   });
 });

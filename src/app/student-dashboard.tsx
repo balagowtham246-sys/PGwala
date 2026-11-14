@@ -17,21 +17,17 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import {
-  Building2,
-  DoorOpen,
   Utensils,
   Receipt,
-  Wrench,
-  Clock,
   LogIn,
   LogOut,
   ChevronRight,
   Settings,
-  Check,
-  ArrowRight,
   AlertCircle,
   MessageCircle,
   X,
+  Check,
+  ClipboardList,
 } from 'lucide-react-native';
 
 import { BottomTabInset, OwnerTheme } from '@/constants/theme';
@@ -41,6 +37,13 @@ import { supabase } from '@/lib/supabase';
 import { triggerLightHaptic, triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { WashingMachineCard } from '@/components/washing-machine-card';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import {
+  getChatLastSeenStorageKey,
+  getFirstName,
+  getNextUpcomingMeal,
+  hasUnreadChatMessage,
+} from '@/lib/resident-home-utils';
+import { isOutOverHours } from '@/lib/movement-utils';
 
 // --- Types ---
 interface ResidentAccommodationInfo {
@@ -87,20 +90,17 @@ const RETURN_TIME_OPTIONS = [
   'Custom',
 ];
 
-const MEAL_CONFIG: Record<MealType, { title: string; icon: string; timeHint: string }> = {
+const MEAL_CONFIG: Record<MealType, { title: string; timeHint: string }> = {
   breakfast: {
     title: 'Breakfast',
-    icon: '🍳',
     timeHint: 'Morning (7:30 AM – 9:30 AM)',
   },
   lunch: {
     title: 'Lunch',
-    icon: '🍛',
     timeHint: 'Afternoon (12:30 PM – 2:30 PM)',
   },
   dinner: {
     title: 'Dinner',
-    icon: '🍲',
     timeHint: 'Night (8:00 PM – 10:00 PM)',
   },
 };
@@ -133,8 +133,9 @@ export default function ResidentDashboardScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [resident, setResident] = useState<ResidentAccommodationInfo | null>(null);
 
-  // Active Meal Tab for in-place detail view
-  const [activeMealTab, setActiveMealTab] = useState<MealType>('breakfast');
+  // Active Meal Tab for in-place detail view (defaults to next upcoming meal)
+  const [activeMealTab, setActiveMealTab] = useState<MealType>(() => getNextUpcomingMeal());
+  const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const [menus, setMenus] = useState<Record<MealType, ResidentFoodMenu | null>>({
     breakfast: null,
     lunch: null,
@@ -159,6 +160,25 @@ export default function ResidentDashboardScreen() {
   // Feedback State
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const hasMountedRef = useRef(false);
+  const [undoToast, setUndoToast] = useState<{
+    message: string;
+    undoDirection: 'IN' | 'OUT';
+  } | null>(null);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    };
+  }, []);
+
+  const showUndoToast = (message: string, undoDirection: 'IN' | 'OUT') => {
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    setUndoToast({ message, undoDirection });
+    undoTimerRef.current = setTimeout(() => {
+      setUndoToast(null);
+    }, 8000);
+  };
 
   const loadResidentData = useCallback(async () => {
     if (!user?.id) return;
@@ -307,6 +327,25 @@ export default function ResidentDashboardScreen() {
         }
       }
 
+      setActiveMealTab(getNextUpcomingMeal());
+
+      // Check unread PG chat messages
+      const [latestChatRes, lastSeenIso] = await Promise.all([
+        supabase
+          .from('property_chat_messages')
+          .select('created_at, resident_id')
+          .eq('property_id', residentInfo.property_id)
+          .neq('resident_id', residentInfo.id)
+          .eq('is_deleted', false)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        AsyncStorage.getItem(getChatLastSeenStorageKey(residentInfo.property_id)),
+      ]);
+      setHasUnreadChat(
+        hasUnreadChatMessage(latestChatRes.data?.created_at, lastSeenIso)
+      );
+
       // Cache dashboard state for 0ms loads on slow mobile networks
       void AsyncStorage.setItem(
         `student_dash_cache_${user?.id}`,
@@ -381,7 +420,8 @@ export default function ResidentDashboardScreen() {
       if (error) throw error;
       if (!data?.success) throw new Error(data?.error || 'Failed to update attendance.');
 
-      Alert.alert('Welcome Back! 🏠', 'You have marked yourself INSIDE the PG.');
+      triggerSuccessHaptic();
+      showUndoToast('Marked Inside PG', 'OUT');
       await loadResidentData();
     } catch (err: any) {
       Alert.alert('Update Failed', err.message || 'Could not record check-in.');
@@ -415,7 +455,8 @@ export default function ResidentDashboardScreen() {
       if (!data?.success) throw new Error(data?.error || 'Failed to update attendance.');
 
       setGoingOutModalVisible(false);
-      Alert.alert('Status Updated 🚶', 'You have marked yourself OUT of the PG.');
+      triggerSuccessHaptic();
+      showUndoToast('Marked Outside PG', 'IN');
       await loadResidentData();
     } catch (err: any) {
       Alert.alert('Update Failed', err.message || 'Could not record departure.');
@@ -424,7 +465,30 @@ export default function ResidentDashboardScreen() {
     }
   };
 
+  const handleUndoMovement = async () => {
+    if (!undoToast || savingMovement) return;
+    const targetDir = undoToast.undoDirection;
+    setUndoToast(null);
+    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+    triggerLightHaptic();
+    setSavingMovement(true);
+    try {
+      const { data, error } = await supabase.rpc('record_student_movement', {
+        p_direction: targetDir,
+        p_note: 'Undo previous gate tap',
+      });
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Could not undo gate status.');
+      await loadResidentData();
+    } catch (err: any) {
+      Alert.alert('Undo Failed', err.message || 'Could not undo last gate action.');
+    } finally {
+      setSavingMovement(false);
+    }
+  };
+
   const isInside = !latestMovement || latestMovement.direction === 'IN';
+  const outNudge = isOutOverHours(latestMovement?.direction, latestMovement?.event_time);
 
   const getInitials = (name?: string | null) => {
     if (!name) return 'RE';
@@ -442,27 +506,39 @@ export default function ResidentDashboardScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      {/* Top Header: Brand + PG Accommodation Badge + Settings Cog */}
+      {/* Top Header: Brand + Chat Icon (with Unread Dot) + Settings Cog */}
       <View style={styles.headerRow}>
         <Text style={styles.brandTitle}>PGwala</Text>
 
-        <View style={styles.propertyPill}>
-          <Building2 size={14} color={OwnerTheme.colors.primary} />
-          <Text style={styles.propertyPillText} numberOfLines={1}>
-            {resident?.property?.name || 'Resident Portal'}
-          </Text>
-        </View>
+        <View style={styles.headerActionsRow}>
+          {resident && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="PG Community Chat"
+              style={({ pressed }) => [
+                styles.settingsBtn,
+                pressed && styles.btnPressed,
+              ]}
+              onPress={() => {
+                setHasUnreadChat(false);
+                router.push('/student-chat');
+              }}>
+              <MessageCircle size={18} color={OwnerTheme.colors.primary} />
+              {hasUnreadChat && <View style={styles.chatUnreadDot} />}
+            </Pressable>
+          )}
 
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Resident Settings"
-          style={({ pressed }) => [
-            styles.settingsBtn,
-            pressed && styles.btnPressed,
-          ]}
-          onPress={() => router.push('/student-settings')}>
-          <Settings size={18} color={OwnerTheme.colors.primary} />
-        </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Resident Settings"
+            style={({ pressed }) => [
+              styles.settingsBtn,
+              pressed && styles.btnPressed,
+            ]}
+            onPress={() => router.push('/student-settings')}>
+            <Settings size={18} color={OwnerTheme.colors.primary} />
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
@@ -475,28 +551,45 @@ export default function ResidentDashboardScreen() {
             colors={[OwnerTheme.colors.primary]}
           />
         }>
-        {/* Temporary Password Alert Banner */}
-        {Boolean(
-          profile?.must_change_password ||
-            user?.user_metadata?.must_change_password ||
-            user?.user_metadata?.is_temporary_password
-        ) && (
-          <Pressable
-            style={({ pressed }) => [
-              styles.tempPasswordBanner,
-              pressed && { opacity: 0.8 },
-            ]}
-            onPress={() => router.push('/student-profile-edit')}>
-            <AlertCircle size={18} color="#92400E" />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.tempPasswordTitle}>Temporary Password Active</Text>
-              <Text style={styles.tempPasswordSubtitle}>
-                Tap here to set your private password and secure your resident account.
-              </Text>
-            </View>
-            <ChevronRight size={16} color="#92400E" />
-          </Pressable>
-        )}
+        {/* First-Login Profile / Password Alert Banner */}
+        {(() => {
+          const needsPasswordChange = Boolean(
+            profile?.must_change_password ||
+              user?.user_metadata?.must_change_password ||
+              user?.user_metadata?.is_temporary_password
+          );
+          const needsPhone = Boolean(
+            resident && !resident.phone_number?.trim() && !profile?.phone_number?.trim()
+          );
+          if (!needsPasswordChange && !needsPhone) return null;
+          return (
+            <Pressable
+              style={({ pressed }) => [
+                styles.tempPasswordBanner,
+                pressed && { opacity: 0.8 },
+              ]}
+              onPress={() => router.push('/student-profile-edit')}>
+              <AlertCircle size={18} color="#92400E" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tempPasswordTitle}>
+                  {needsPhone && needsPasswordChange
+                    ? 'Complete Your Profile'
+                    : needsPhone
+                    ? 'Add Your Phone Number'
+                    : 'Temporary Password Active'}
+                </Text>
+                <Text style={styles.tempPasswordSubtitle}>
+                  {needsPhone && needsPasswordChange
+                    ? 'Tap here to add your phone number and set a private password.'
+                    : needsPhone
+                    ? 'Tap here to save your contact phone number for your PG owner.'
+                    : 'Tap here to set your private password and secure your resident account.'}
+                </Text>
+              </View>
+              <ChevronRight size={16} color="#92400E" />
+            </Pressable>
+          );
+        })()}
 
         {/* Error Banner */}
         {errorMessage && (
@@ -515,36 +608,69 @@ export default function ResidentDashboardScreen() {
           </View>
         ) : resident ? (
           <>
-            {/* Top 1: Simplified Resident Tile Card */}
-            <View style={styles.residentTileCard}>
-              <View style={styles.avatarCircle}>
-                <Text style={styles.avatarText}>
-                  {getInitials(resident.full_name)}
-                </Text>
-              </View>
-
-              <View style={styles.residentTileInfo}>
-                <Text style={styles.greetingText}>{getGreeting()}</Text>
-                <View style={styles.residentNameRow}>
-                  <Text style={styles.residentTileName} numberOfLines={1}>
-                    {resident.full_name}
-                  </Text>
-                  <View style={styles.roomPill}>
-                    <Text style={styles.roomPillText}>Room {resident.room_number}</Text>
-                  </View>
-                </View>
-
-                <Text style={styles.residentTileProp} numberOfLines={1}>
-                  {resident.property?.name || 'Assigned PG'}
-                  {resident.property?.address ? ` • ${resident.property.address}` : ''}
-                </Text>
-              </View>
-
-              <View style={styles.activeDotBadge}>
-                <View style={styles.activeDot} />
-                <Text style={styles.activeDotText}>Active</Text>
+            {/* Simple Greeting */}
+            <View style={styles.greetingSimpleRow}>
+              <Text style={styles.greetingSimpleText} numberOfLines={1}>
+                Hi, {getFirstName(resident.full_name)}
+              </Text>
+              <View style={styles.roomPill}>
+                <Text style={styles.roomPillText}>Room {resident.room_number}</Text>
               </View>
             </View>
+
+            {/* Lead Hero Card: Pending Rent or Next Upcoming Meal */}
+            {pendingDuesPaise !== null && pendingDuesPaise > 0 ? (
+              <Pressable
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.heroFocusCard,
+                  styles.heroFocusCardDue,
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() => router.push('/student-billing')}>
+                <View style={styles.heroFocusLeft}>
+                  <Text style={styles.heroFocusLabelDue}>RENT DUE</Text>
+                  <Text style={styles.heroFocusTitle}>
+                    ₹{(pendingDuesPaise / 100).toLocaleString('en-IN')} due
+                  </Text>
+                  <Text style={styles.heroFocusSub}>
+                    Tap to view breakdown & pay ›
+                  </Text>
+                </View>
+                <Receipt size={24} color={OwnerTheme.colors.danger} />
+              </Pressable>
+            ) : (
+              (() => {
+                const nextMeal = getNextUpcomingMeal();
+                const nextMealCfg = MEAL_CONFIG[nextMeal];
+                const nextMealMenu = menus[nextMeal];
+                return (
+                  <Pressable
+                    accessibilityRole="button"
+                    style={({ pressed }) => [
+                      styles.heroFocusCard,
+                      pressed && styles.btnPressed,
+                    ]}
+                    onPress={() => router.push('/student-menu')}>
+                    <View style={styles.heroFocusLeft}>
+                      <Text style={styles.heroFocusLabel}>
+                        UP NEXT • RENT ₹0 DUE
+                      </Text>
+                      <Text style={styles.heroFocusTitle}>
+                        {nextMealCfg.title} (
+                        {nextMealCfg.timeHint.replace(/^[^(]+\(([^)]+)\)$/, '$1')})
+                      </Text>
+                      <Text style={styles.heroFocusSub} numberOfLines={1}>
+                        {nextMealMenu
+                          ? nextMealMenu.items
+                          : 'All rent & dues settled for this month'}
+                      </Text>
+                    </View>
+                    <ChevronRight size={20} color={OwnerTheme.colors.primary} />
+                  </Pressable>
+                );
+              })()
+            )}
 
             {/* Top 2: 1 x 2 Hero Section (Washing Machine & Gate Attendance Side-by-Side) */}
             <View style={styles.heroRow}>
@@ -592,6 +718,11 @@ export default function ResidentDashboardScreen() {
                     ? `${isInside ? 'In since' : 'Out at'} ${formatMovementTime(latestMovement.event_time)}`
                     : 'Present on campus'}
                 </Text>
+                {!isInside && outNudge.isOver && (
+                  <Text style={styles.gateOverHoursNudge}>
+                    Out for {outNudge.hoursOut}+ hrs • Remember to mark Inside
+                  </Text>
+                )}
 
                 <View style={styles.gateActionWrap}>
                   {isInside ? (
@@ -606,7 +737,7 @@ export default function ResidentDashboardScreen() {
                         setFoodRequired(true);
                         setGoingOutModalVisible(true);
                       }}>
-                      <Text style={styles.gateOutBtnText}>🚶 Going Out</Text>
+                      <Text style={styles.gateOutBtnText}>Going Out</Text>
                     </Pressable>
                   ) : (
                     <Pressable
@@ -624,7 +755,10 @@ export default function ResidentDashboardScreen() {
                       {savingMovement ? (
                         <ActivityIndicator size="small" color="#FFFFFF" />
                       ) : (
-                        <Text style={styles.gateInBtnText}>✓ Mark Inside</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                          <Check size={14} color="#FFFFFF" />
+                          <Text style={styles.gateInBtnText}>Mark Inside</Text>
+                        </View>
                       )}
                     </Pressable>
                   )}
@@ -666,7 +800,6 @@ export default function ResidentDashboardScreen() {
                         triggerSelectionHaptic();
                         setActiveMealTab(mealKey);
                       }}>
-                      <Text style={styles.mealChipEmoji}>{cfg.icon}</Text>
                       <Text
                         style={[
                           styles.mealChipText,
@@ -714,101 +847,11 @@ export default function ResidentDashboardScreen() {
                 )}
               </View>
             </View>
-
-            {/* Section 4: Resident Services (Neatly Aligned 3-Card Grid) */}
-            <View style={styles.sectionHeaderRow}>
-              <Text style={styles.sectionHeading}>Resident Services</Text>
-            </View>
-
-            <View style={styles.servicesList}>
-              {/* Bills & Rent */}
-              <Pressable
-                accessibilityRole="button"
-                style={({ pressed }) => [
-                  styles.serviceCard,
-                  pressed && styles.btnPressed,
-                ]}
-                onPress={() => router.push('/student-billing')}>
-                <View
-                  style={[
-                    styles.serviceIconWrap,
-                    { backgroundColor: '#F1F5F9' },
-                  ]}>
-                  <Receipt size={18} color={OwnerTheme.colors.textPrimary} />
-                </View>
-                <View style={styles.serviceTextCol}>
-                  <Text style={styles.serviceTitle}>My Bills & Rent</Text>
-                  <Text style={styles.serviceSubtitle}>Dues, payments & receipts</Text>
-                </View>
-                {pendingDuesPaise !== null ? (
-                  <View
-                    style={[
-                      styles.duesBadge,
-                      pendingDuesPaise > 0 ? styles.duesPending : styles.duesClear,
-                    ]}>
-                    <Text
-                      style={[
-                        styles.duesBadgeText,
-                        pendingDuesPaise > 0 ? styles.duesPendingText : styles.duesClearText,
-                      ]}>
-                      {pendingDuesPaise > 0
-                        ? `₹${(pendingDuesPaise / 100).toLocaleString('en-IN')}`
-                        : 'Clear'}
-                    </Text>
-                  </View>
-                ) : null}
-                <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
-              </Pressable>
-
-              {/* Maintenance & Complaints */}
-              <Pressable
-                accessibilityRole="button"
-                style={({ pressed }) => [
-                  styles.serviceCard,
-                  pressed && styles.btnPressed,
-                ]}
-                onPress={() => router.push('/student-complaints')}>
-                <View
-                  style={[
-                    styles.serviceIconWrap,
-                    { backgroundColor: OwnerTheme.colors.warningLight },
-                  ]}>
-                  <Wrench size={18} color={OwnerTheme.colors.warning} />
-                </View>
-                <View style={styles.serviceTextCol}>
-                  <Text style={styles.serviceTitle}>Complaints & Requests</Text>
-                  <Text style={styles.serviceSubtitle}>Raise room maintenance or repairs</Text>
-                </View>
-                <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
-              </Pressable>
-
-              {/* Gate History */}
-              <Pressable
-                accessibilityRole="button"
-                style={({ pressed }) => [
-                  styles.serviceCard,
-                  pressed && styles.btnPressed,
-                ]}
-                onPress={() => router.push('/student-gate-history')}>
-                <View
-                  style={[
-                    styles.serviceIconWrap,
-                    { backgroundColor: OwnerTheme.colors.primaryLight },
-                  ]}>
-                  <Clock size={18} color={OwnerTheme.colors.primary} />
-                </View>
-                <View style={styles.serviceTextCol}>
-                  <Text style={styles.serviceTitle}>Gate Movement History</Text>
-                  <Text style={styles.serviceSubtitle}>Review your entry & exit logs</Text>
-                </View>
-                <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
-              </Pressable>
-            </View>
           </>
         ) : (
           /* Unlinked Account State */
           <View style={styles.unlinkedCard}>
-            <Text style={{ fontSize: 32 }}>📋</Text>
+            <ClipboardList size={32} color={OwnerTheme.colors.primary} />
             <Text style={styles.unlinkedTitle}>Awaiting Room Allocation</Text>
             <Text style={styles.unlinkedBody}>
               Your account is signed in, but has not yet been linked to a room allocation by your PG owner.
@@ -951,15 +994,13 @@ export default function ResidentDashboardScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Floating Action Button: PG Community Chat */}
-      {resident && (
-        <Pressable
-          style={styles.chatFab}
-          onPress={() => router.push('/student-chat')}
-          accessibilityLabel="Open Resident Community Chat">
-          <MessageCircle size={20} color="#FFFFFF" />
-          <Text style={styles.chatFabText}>PG Chat</Text>
-        </Pressable>
+      {undoToast && (
+        <View style={styles.undoToast}>
+          <Text style={styles.undoToastText}>{undoToast.message}</Text>
+          <Pressable hitSlop={8} onPress={handleUndoMovement}>
+            <Text style={styles.undoToastAction}>UNDO</Text>
+          </Pressable>
+        </View>
       )}
 
       <RoleBottomNav activeTab="home" roleOverride="student" />
@@ -1008,6 +1049,11 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.textPrimary,
     flex: 1,
   },
+  headerActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   settingsBtn: {
     width: 38,
     height: 38,
@@ -1015,6 +1061,104 @@ const styles = StyleSheet.create({
     backgroundColor: OwnerTheme.colors.primaryLight,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  chatUnreadDot: {
+    position: 'absolute',
+    top: 7,
+    right: 7,
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: OwnerTheme.colors.danger,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+  },
+  greetingSimpleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 2,
+  },
+  greetingSimpleText: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: OwnerTheme.colors.textPrimary,
+    flex: 1,
+  },
+  heroFocusCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    borderLeftWidth: 4,
+    borderLeftColor: OwnerTheme.colors.primary,
+    padding: 16,
+    ...OwnerTheme.shadow,
+  },
+  heroFocusCardDue: {
+    borderLeftColor: OwnerTheme.colors.danger,
+    backgroundColor: '#FFFBFB',
+  },
+  heroFocusLeft: {
+    flex: 1,
+    gap: 3,
+  },
+  heroFocusLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+    letterSpacing: 0.6,
+  },
+  heroFocusLabelDue: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: OwnerTheme.colors.danger,
+    letterSpacing: 0.6,
+  },
+  heroFocusTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  heroFocusSub: {
+    fontSize: 13,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  gateOverHoursNudge: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: OwnerTheme.colors.warning,
+    marginTop: 4,
+  },
+  undoToast: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    bottom: BottomTabInset + 14,
+    backgroundColor: '#0F172A',
+    borderRadius: OwnerTheme.radius.md,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    ...OwnerTheme.shadow,
+  },
+  undoToastText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  undoToastAction: {
+    color: '#38BDF8',
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   scrollContent: {
     paddingHorizontal: 16,

@@ -43,8 +43,10 @@ export function OwnerHeader({
   const handleBack = () => {
     if (onBack) {
       onBack();
-    } else {
+    } else if (router.canGoBack()) {
       router.back();
+    } else {
+      router.replace('/(tabs)');
     }
   };
 

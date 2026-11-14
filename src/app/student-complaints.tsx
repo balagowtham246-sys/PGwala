@@ -17,6 +17,19 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import {
+  CheckCircle2,
+  Camera,
+  Check,
+  X,
+  Droplets,
+  Zap,
+  Wifi,
+  Sparkles,
+  Utensils,
+  Armchair,
+  Wrench,
+} from 'lucide-react-native';
 
 import { useAuth } from '@/context/auth-context';
 import { supabase, decodeBase64ToBytes, getSignedComplaintPhotoUrl } from '@/lib/supabase';
@@ -59,14 +72,17 @@ interface StudentResident {
   };
 }
 
-const CATEGORY_CONFIG: Record<ComplaintCategory, { label: string; icon: string }> = {
-  plumbing: { label: 'Plumbing / Water', icon: '🚿' },
-  electrical: { label: 'Electrical / Lights', icon: '⚡' },
-  wifi_internet: { label: 'Wi-Fi & Internet', icon: '📶' },
-  cleaning: { label: 'Room & Washroom Cleaning', icon: '🧹' },
-  food_mess: { label: 'Food & Mess Quality', icon: '🍲' },
-  carpentry_furniture: { label: 'Bed & Furniture', icon: '🪑' },
-  other: { label: 'Other Issues', icon: '📋' },
+const CATEGORY_CONFIG: Record<
+  ComplaintCategory,
+  { label: string; Icon: React.ComponentType<{ size?: number; color?: string }> }
+> = {
+  plumbing: { label: 'Plumbing / Water', Icon: Droplets },
+  electrical: { label: 'Electrical / Lights', Icon: Zap },
+  wifi_internet: { label: 'Wi-Fi & Internet', Icon: Wifi },
+  cleaning: { label: 'Room & Washroom Cleaning', Icon: Sparkles },
+  food_mess: { label: 'Food & Mess Quality', Icon: Utensils },
+  carpentry_furniture: { label: 'Bed & Furniture', Icon: Armchair },
+  other: { label: 'Other Issues', Icon: Wrench },
 };
 
 const PRIORITY_CONFIG: Record<
@@ -380,7 +396,13 @@ export default function StudentComplaintsScreen() {
           <Pressable
             accessibilityRole="button"
             style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-            onPress={() => router.back()}>
+            onPress={() => {
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/student-dashboard');
+              }
+            }}>
             <Text style={styles.backButtonText}>‹ Back</Text>
           </Pressable>
           <View style={styles.headerTitleWrap}>
@@ -420,52 +442,64 @@ export default function StudentComplaintsScreen() {
               </Pressable>
             </View>
 
-            {/* Filter Tabs */}
-            <View style={styles.filterRow}>
-              <Pressable
-                style={[styles.filterBtn, filter === 'active' && styles.filterBtnActive]}
-                onPress={() => setFilter('active')}>
-                <Text
-                  style={[
-                    styles.filterBtnText,
-                    filter === 'active' && styles.filterBtnTextActive,
-                  ]}>
-                  Active ({activeCount})
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[styles.filterBtn, filter === 'resolved' && styles.filterBtnActive]}
-                onPress={() => setFilter('resolved')}>
-                <Text
-                  style={[
-                    styles.filterBtnText,
-                    filter === 'resolved' && styles.filterBtnTextActive,
-                  ]}>
-                  Resolved ({complaints.length - activeCount})
-                </Text>
-              </Pressable>
-              <Pressable
-                style={[styles.filterBtn, filter === 'all' && styles.filterBtnActive]}
-                onPress={() => setFilter('all')}>
-                <Text
-                  style={[
-                    styles.filterBtnText,
-                    filter === 'all' && styles.filterBtnTextActive,
-                  ]}>
-                  All ({complaints.length})
-                </Text>
-              </Pressable>
-            </View>
+            {/* Filter Tabs (hide zero-count tabs) */}
+            {complaints.length > 0 && (
+              <View style={styles.filterRow}>
+                {activeCount > 0 && (
+                  <Pressable
+                    style={[styles.filterBtn, filter === 'active' && styles.filterBtnActive]}
+                    onPress={() => setFilter('active')}>
+                    <Text
+                      style={[
+                        styles.filterBtnText,
+                        filter === 'active' && styles.filterBtnTextActive,
+                      ]}>
+                      Active ({activeCount})
+                    </Text>
+                  </Pressable>
+                )}
+                {complaints.length - activeCount > 0 && (
+                  <Pressable
+                    style={[styles.filterBtn, filter === 'resolved' && styles.filterBtnActive]}
+                    onPress={() => setFilter('resolved')}>
+                    <Text
+                      style={[
+                        styles.filterBtnText,
+                        filter === 'resolved' && styles.filterBtnTextActive,
+                      ]}>
+                      Resolved ({complaints.length - activeCount})
+                    </Text>
+                  </Pressable>
+                )}
+                {activeCount > 0 && complaints.length - activeCount > 0 && (
+                  <Pressable
+                    style={[styles.filterBtn, filter === 'all' && styles.filterBtnActive]}
+                    onPress={() => setFilter('all')}>
+                    <Text
+                      style={[
+                        styles.filterBtnText,
+                        filter === 'all' && styles.filterBtnTextActive,
+                      ]}>
+                      All ({complaints.length})
+                    </Text>
+                  </Pressable>
+                )}
+              </View>
+            )}
 
             {/* Complaints List */}
             {filteredComplaints.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Text style={styles.emptyIcon}>🎉</Text>
-                <Text style={styles.emptyTitle}>No Issues Found</Text>
+                <View style={styles.emptyIconCircle}>
+                  <CheckCircle2 size={26} color="#16A34A" />
+                </View>
+                <Text style={styles.emptyTitle}>
+                  {filter === 'active' ? 'All clear' : 'No matching requests'}
+                </Text>
                 <Text style={styles.emptySub}>
                   {filter === 'active'
-                    ? 'You have no open complaints or pending maintenance requests!'
-                    : 'No complaints match the selected filter.'}
+                    ? 'No open maintenance requests. If anything needs attention, tap + to report it.'
+                    : 'No maintenance requests match the selected filter.'}
                 </Text>
               </View>
             ) : (
@@ -487,7 +521,7 @@ export default function StudentComplaintsScreen() {
                     {/* Top Row: Category & Badges */}
                     <View style={styles.cardHeaderRow}>
                       <View style={styles.catBadge}>
-                        <Text style={styles.catIcon}>{catInfo.icon}</Text>
+                        <catInfo.Icon size={14} color="#475569" />
                         <Text style={styles.catText}>{catInfo.label}</Text>
                       </View>
 
@@ -522,9 +556,10 @@ export default function StudentComplaintsScreen() {
                     {/* Attached Photo View */}
                     {item.photo_url && (
                       <Pressable
-                        style={styles.cardPhotoBtn}
+                        style={[styles.cardPhotoBtn, { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }]}
                         onPress={() => handleViewPhoto(item.photo_url!)}>
-                        <Text style={styles.cardPhotoBtnText}>📷 View Attached Photo</Text>
+                        <Camera size={14} color="#0284C7" />
+                        <Text style={styles.cardPhotoBtnText}>View Attached Photo</Text>
                       </Pressable>
                     )}
 
@@ -585,7 +620,7 @@ export default function StudentComplaintsScreen() {
                         isSelected && styles.categoryChipActive,
                       ]}
                       onPress={() => setCategory(catKey)}>
-                      <Text style={styles.categoryChipIcon}>{cConfig.icon}</Text>
+                      <cConfig.Icon size={14} color={isSelected ? '#FFFFFF' : '#475569'} />
                       <Text
                         style={[
                           styles.categoryChipText,
@@ -658,7 +693,10 @@ export default function StudentComplaintsScreen() {
                 <View style={styles.photoPreviewCard}>
                   <Image source={{ uri: selectedPhoto.uri }} style={styles.photoPreviewImg} />
                   <View style={styles.photoPreviewMeta}>
-                    <Text style={styles.photoAttachedText}>✓ Photo Attached</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                      <Check size={14} color="#059669" />
+                      <Text style={styles.photoAttachedText}>Photo Attached</Text>
+                    </View>
                     <Pressable
                       style={styles.photoRemoveBtn}
                       onPress={() => setSelectedPhoto(null)}>
@@ -668,7 +706,7 @@ export default function StudentComplaintsScreen() {
                 </View>
               ) : (
                 <Pressable style={styles.photoUploadBtn} onPress={handlePickImage}>
-                  <Text style={styles.photoUploadIcon}>📷</Text>
+                  <Camera size={22} color="#64748B" />
                   <Text style={styles.photoUploadTitle}>Attach Photo</Text>
                   <Text style={styles.photoUploadSub}>Take a photo or choose from gallery</Text>
                 </Pressable>
@@ -706,9 +744,10 @@ export default function StudentComplaintsScreen() {
         onRequestClose={() => setFullImageUrl(null)}>
         <View style={styles.fullImageOverlay}>
           <Pressable
-            style={styles.fullImageCloseBtn}
+            style={[styles.fullImageCloseBtn, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}
             onPress={() => setFullImageUrl(null)}>
-            <Text style={styles.fullImageCloseText}>Close ✕</Text>
+            <Text style={styles.fullImageCloseText}>Close</Text>
+            <X size={16} color="#FFFFFF" />
           </Pressable>
           {loadingFullImage ? (
             <ActivityIndicator size="large" color="#FFFFFF" />
@@ -860,11 +899,20 @@ const styles = StyleSheet.create({
   },
   emptyCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 30,
+    borderRadius: 16,
+    padding: 32,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: '#E2E8F0',
+  },
+  emptyIconCircle: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    backgroundColor: '#DCFCE7',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   emptyIcon: {
     fontSize: 32,

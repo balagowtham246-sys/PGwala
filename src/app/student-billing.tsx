@@ -15,6 +15,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Camera, Check, X } from 'lucide-react-native';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
 import { router } from 'expo-router';
@@ -77,6 +78,7 @@ export default function SimplifiedStudentBillingScreen() {
 
   // Past Bills History
   const [pastBills, setPastBills] = useState<StudentBillCardItem[]>([]);
+  const [breakdownExpanded, setBreakdownExpanded] = useState(false);
 
   // Payment Proof Modal
   const [selectedBillForPayment, setSelectedBillForPayment] = useState<StudentBillCardItem | null>(null);
@@ -362,7 +364,7 @@ export default function SimplifiedStudentBillingScreen() {
       setReferenceNumber('');
       setStudentNotes('');
       Alert.alert(
-        'Payment Sent! 📨',
+        'Payment Sent',
         `Your ${selectedBillForPayment.title} payment report has been sent to the owner for review.`
       );
       await loadStudentBills();
@@ -391,7 +393,13 @@ export default function SimplifiedStudentBillingScreen() {
           <Pressable
             accessibilityRole="button"
             style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
-            onPress={() => router.back()}>
+            onPress={() => {
+              if (router.canGoBack()) {
+                router.back();
+              } else {
+                router.replace('/student-dashboard');
+              }
+            }}>
             <Text style={styles.backBtnText}>‹ Back</Text>
           </Pressable>
           <View style={{ flex: 1 }}>
@@ -408,336 +416,284 @@ export default function SimplifiedStudentBillingScreen() {
             <Text style={styles.loadingText}>Loading your bills...</Text>
           </View>
         ) : (
-          <>
-            {/* SECTION: CURRENT MONTH BILLS */}
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Current Month Bills</Text>
-            </View>
+          (() => {
+            const unpaidBills = [currentRentBill, currentEbBill].filter(
+              (b): b is StudentBillCardItem => Boolean(b && b.status !== 'paid')
+            );
+            const totalDuePaise = unpaidBills.reduce((s, b) => s + b.total_paise, 0);
+            const totalBilledPaise =
+              (currentRentBill?.total_paise || 0) + (currentEbBill?.total_paise || 0);
+            const hasAnyCurrentBill = Boolean(currentRentBill || currentEbBill);
+            const allCurrentPaid = hasAnyCurrentBill && unpaidBills.length === 0;
+            const anyPendingReview = unpaidBills.some(
+              (b) => b.pending_report?.status === 'pending'
+            );
+            const anyRejected = unpaidBills.some(
+              (b) => b.pending_report?.status === 'rejected'
+            );
+            const earliestDueDate = unpaidBills[0]?.due_date || null;
+            const primaryPaymentId =
+              currentRentBill?.payment_id || currentEbBill?.payment_id || null;
+            const primaryReceiptNum =
+              currentRentBill?.receipt_number || currentEbBill?.receipt_number || null;
+            const currentMonthLabel =
+              currentRentBill?.month_label || currentEbBill?.month_label || 'This Month';
 
-            {/* CARD 1: ROOM RENT BILL */}
-            {currentRentBill ? (
-              <View style={styles.billCard}>
-                <View style={styles.billCardTop}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.billCardHeaderTitle}>🏠 Room Rent Bill</Text>
-                    <Text style={styles.monthBadgeText}>{currentRentBill.month_label}</Text>
-                    <Text style={styles.dueText}>
-                      Pay before: <Text style={styles.boldText}>{formatDate(currentRentBill.due_date)}</Text>
-                    </Text>
-                  </View>
-
-                  {/* Status Badge */}
-                  {currentRentBill.status === 'paid' ? (
-                    <View style={[styles.statusBadge, styles.badgePaid]}>
-                      <Text style={styles.badgePaidText}>✓ PAID</Text>
-                    </View>
-                  ) : currentRentBill.pending_report?.status === 'pending' ? (
-                    <View style={[styles.statusBadge, styles.badgeReview]}>
-                      <Text style={styles.badgeReviewText}>🕒 UNDER REVIEW</Text>
-                    </View>
-                  ) : currentRentBill.pending_report?.status === 'rejected' ? (
-                    <View style={[styles.statusBadge, styles.badgeRejected]}>
-                      <Text style={styles.badgeRejectedText}>⚠️ REJECTED</Text>
-                    </View>
-                  ) : (
-                    <View style={[styles.statusBadge, styles.badgeUnpaid]}>
-                      <Text style={styles.badgeUnpaidText}>UNPAID</Text>
-                    </View>
-                  )}
-                </View>
-
-                {/* Amount Breakdown */}
-                <View style={styles.breakdownBox}>
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Room Rent:</Text>
-                    <Text style={styles.breakdownVal}>
-                      {formatPaiseToRupees(currentRentBill.rent_paise || 0)}
-                    </Text>
-                  </View>
-
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>
-                      Washing Machine {(currentRentBill.wm_paise || 0) > 0 ? '(Opted)' : '(Not opted)'}:
-                    </Text>
-                    <Text style={styles.breakdownVal}>
-                      {formatPaiseToRupees(currentRentBill.wm_paise || 0)}
-                    </Text>
-                  </View>
-
-                  <View style={[styles.breakdownRow, styles.totalRow]}>
-                    <Text style={styles.totalLabel}>Total Rent Bill:</Text>
-                    <Text style={styles.totalVal}>
-                      {formatPaiseToRupees(currentRentBill.total_paise)}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Action or Confirmation */}
-                {currentRentBill.status === 'paid' ? (
-                  <View style={styles.paidConfirmedBox}>
-                    <Text style={styles.paidConfirmedTitle}>Payment Confirmed ✅</Text>
-                    <Text style={styles.paidConfirmedSub}>
-                      Receipt: <Text style={styles.boldText}>{currentRentBill.receipt_number || 'Confirmed'}</Text>
-                      {currentRentBill.paid_date ? ` • Paid on ${formatDate(currentRentBill.paid_date)}` : ''}
-                    </Text>
-                    {currentRentBill.payment_id && (
-                      <Pressable
-                        style={styles.viewReceiptLink}
-                        onPress={() =>
-                          router.push({
-                            pathname: '/receipt-detail',
-                            params: { id: currentRentBill.payment_id! },
-                          })
-                        }>
-                        <Text style={styles.viewReceiptLinkText}>View Official Receipt ›</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                ) : currentRentBill.pending_report?.status === 'pending' ? (
-                  <View style={styles.pendingReportBox}>
-                    <Text style={styles.pendingReportTitle}>Payment Sent — Awaiting Owner Confirmation</Text>
-                    <Text style={styles.pendingReportSub}>
-                      Method: {currentRentBill.pending_report.claimed_method === 'upi' ? 'UPI' : 'Cash'}
-                      {currentRentBill.pending_report.reference_number
-                        ? ` • Ref: ${currentRentBill.pending_report.reference_number}`
-                        : ''}
-                    </Text>
-                    {currentRentBill.pending_report.screenshot_url && (
-                      <Pressable
-                        style={styles.previewScreenshotBtn}
-                        onPress={() =>
-                          handleViewUploadedScreenshot(
-                            currentRentBill.pending_report!.screenshot_url!
-                          )
-                        }>
-                        <Text style={styles.previewScreenshotText}>🔍 View Uploaded Screenshot</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                ) : currentRentBill.pending_report?.status === 'rejected' ? (
-                  <View style={styles.rejectedReportBox}>
-                    <View style={styles.rejectedHeaderRow}>
-                      <Text style={styles.rejectedReportTitle}>⚠️ Payment Proof Rejected</Text>
-                    </View>
-                    <Text style={styles.rejectedReasonText}>
-                      Owner Feedback: {currentRentBill.pending_report.rejection_reason || 'Payment proof could not be verified by owner.'}
-                    </Text>
-                    <Text style={styles.rejectedHelpText}>
-                      Please review your transaction details, take a clearer screenshot, or enter the correct reference number and resubmit.
-                    </Text>
-                    <Pressable
-                      style={({ pressed }) => [styles.resubmitBtn, pressed && styles.pressed]}
-                      onPress={() => handleOpenPaymentModal(currentRentBill)}>
-                      <Text style={styles.resubmitBtnText}>
-                        🔄 Resubmit Payment Proof ›
-                      </Text>
-                    </Pressable>
-                  </View>
-                ) : (
-                  <Pressable
-                    style={({ pressed }) => [styles.payNowBtn, pressed && styles.pressed]}
-                    onPress={() => handleOpenPaymentModal(currentRentBill)}>
-                    <Text style={styles.payNowBtnText}>
-                      💳 Pay Rent ({formatPaiseToRupees(currentRentBill.total_paise)})
-                    </Text>
-                  </Pressable>
-                )}
-              </View>
-            ) : null}
-
-            {/* CARD 2: ELECTRICITY (EB) BILL */}
-            {currentEbBill ? (
-              <View style={[styles.billCard, { borderColor: '#FED7AA', marginTop: 14 }]}>
-                <View style={styles.billCardTop}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.billCardHeaderTitle, { color: '#C2410C' }]}>
-                      ⚡ Electricity (EB) Bill
-                    </Text>
-                    <Text style={[styles.monthBadgeText, { color: '#D97706' }]}>
-                      {currentEbBill.month_label}
-                    </Text>
-                    <Text style={styles.dueText}>
-                      Pay before: <Text style={styles.boldText}>{formatDate(currentEbBill.due_date)}</Text>
-                    </Text>
-                  </View>
-
-                  {/* Status Badge */}
-                  {currentEbBill.status === 'paid' ? (
-                    <View style={[styles.statusBadge, styles.badgePaid]}>
-                      <Text style={styles.badgePaidText}>✓ PAID</Text>
-                    </View>
-                  ) : currentEbBill.pending_report?.status === 'pending' ? (
-                    <View style={[styles.statusBadge, styles.badgeReview]}>
-                      <Text style={styles.badgeReviewText}>🕒 UNDER REVIEW</Text>
-                    </View>
-                  ) : currentEbBill.pending_report?.status === 'rejected' ? (
-                    <View style={[styles.statusBadge, styles.badgeRejected]}>
-                      <Text style={styles.badgeRejectedText}>⚠️ REJECTED</Text>
-                    </View>
-                  ) : (
-                    <View style={[styles.statusBadge, styles.badgeUnpaid]}>
-                      <Text style={styles.badgeUnpaidText}>UNPAID</Text>
-                    </View>
-                  )}
-                </View>
-
-                {/* Amount Breakdown */}
-                <View style={[styles.breakdownBox, { backgroundColor: '#FFFBEB' }]}>
-                  <View style={styles.breakdownRow}>
-                    <Text style={styles.breakdownLabel}>Room Meter Share:</Text>
-                    <Text style={[styles.totalVal, { color: '#D97706' }]}>
-                      {formatPaiseToRupees(currentEbBill.total_paise)}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Action or Confirmation */}
-                {currentEbBill.status === 'paid' ? (
-                  <View style={styles.paidConfirmedBox}>
-                    <Text style={styles.paidConfirmedTitle}>EB Payment Confirmed ✅</Text>
-                    <Text style={styles.paidConfirmedSub}>
-                      Receipt: <Text style={styles.boldText}>{currentEbBill.receipt_number || 'Confirmed'}</Text>
-                      {currentEbBill.paid_date ? ` • Paid on ${formatDate(currentEbBill.paid_date)}` : ''}
-                    </Text>
-                    {currentEbBill.payment_id && (
-                      <Pressable
-                        style={styles.viewReceiptLink}
-                        onPress={() =>
-                          router.push({
-                            pathname: '/receipt-detail',
-                            params: { id: currentEbBill.payment_id! },
-                          })
-                        }>
-                        <Text style={styles.viewReceiptLinkText}>View Official Receipt ›</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                ) : currentEbBill.pending_report?.status === 'pending' ? (
-                  <View style={styles.pendingReportBox}>
-                    <Text style={styles.pendingReportTitle}>EB Payment Sent — Awaiting Confirmation</Text>
-                    <Text style={styles.pendingReportSub}>
-                      Method: {currentEbBill.pending_report.claimed_method === 'upi' ? 'UPI' : 'Cash'}
-                      {currentEbBill.pending_report.reference_number
-                        ? ` • Ref: ${currentEbBill.pending_report.reference_number}`
-                        : ''}
-                    </Text>
-                    {currentEbBill.pending_report.screenshot_url && (
-                      <Pressable
-                        style={styles.previewScreenshotBtn}
-                        onPress={() =>
-                          handleViewUploadedScreenshot(
-                            currentEbBill.pending_report!.screenshot_url!
-                          )
-                        }>
-                        <Text style={styles.previewScreenshotText}>🔍 View Uploaded Screenshot</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                ) : currentEbBill.pending_report?.status === 'rejected' ? (
-                  <View style={styles.rejectedReportBox}>
-                    <View style={styles.rejectedHeaderRow}>
-                      <Text style={styles.rejectedReportTitle}>⚠️ Payment Proof Rejected</Text>
-                    </View>
-                    <Text style={styles.rejectedReasonText}>
-                      Owner Feedback: {currentEbBill.pending_report.rejection_reason || 'Payment proof could not be verified by owner.'}
-                    </Text>
-                    <Text style={styles.rejectedHelpText}>
-                      Please review your transaction details, take a clearer screenshot, or enter the correct reference number and resubmit.
-                    </Text>
+            return (
+              <>
+                {/* HERO STATUS FIRST */}
+                <View
+                  style={[
+                    styles.heroStatusCard,
+                    totalDuePaise === 0
+                      ? styles.heroStatusClear
+                      : styles.heroStatusDue,
+                  ]}>
+                  <Text
+                    style={[
+                      styles.heroStatusAmount,
+                      totalDuePaise === 0
+                        ? styles.heroStatusAmountClear
+                        : styles.heroStatusAmountDue,
+                    ]}>
+                    {totalDuePaise === 0
+                      ? 'All clear'
+                      : `${formatPaiseToRupees(totalDuePaise)} due`}
+                  </Text>
+                  <Text style={styles.heroStatusSub}>
+                    {totalDuePaise === 0
+                      ? 'No pending dues for this month'
+                      : anyPendingReview
+                      ? 'Payment proof submitted • Awaiting owner review'
+                      : earliestDueDate
+                      ? `Pay before ${formatDate(earliestDueDate)}`
+                      : 'Pending payment for this month'}
+                  </Text>
+                  {unpaidBills.length > 0 && (
                     <Pressable
                       style={({ pressed }) => [
-                        styles.resubmitBtn,
-                        { backgroundColor: '#C2410C' },
+                        styles.heroPayBtn,
                         pressed && styles.pressed,
                       ]}
-                      onPress={() => handleOpenPaymentModal(currentEbBill)}>
-                      <Text style={styles.resubmitBtnText}>
-                        🔄 Resubmit EB Proof ›
+                      onPress={() => handleOpenPaymentModal(unpaidBills[0])}>
+                      <Text style={styles.heroPayBtnText}>
+                        Pay via UPI & Upload Proof
                       </Text>
                     </Pressable>
+                  )}
+                </View>
+
+                {/* MERGED MONTHLY TOTAL CARD */}
+                {hasAnyCurrentBill ? (
+                  <View style={styles.billCard}>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() => setBreakdownExpanded((prev) => !prev)}
+                      style={styles.billCardTop}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.billCardHeaderTitle}>
+                          {currentMonthLabel} Total
+                        </Text>
+                        <Text style={styles.mergedTotalAmount}>
+                          {formatPaiseToRupees(totalBilledPaise)}
+                        </Text>
+                        {!allCurrentPaid && earliestDueDate && (
+                          <Text style={styles.dueText}>
+                            Pay before:{' '}
+                            <Text style={styles.boldText}>
+                              {formatDate(earliestDueDate)}
+                            </Text>
+                          </Text>
+                        )}
+                      </View>
+
+                      <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                        {allCurrentPaid ? (
+                          <View style={[styles.statusBadge, styles.badgePaid]}>
+                            <Text style={styles.badgePaidText}>PAID</Text>
+                          </View>
+                        ) : anyPendingReview ? (
+                          <View style={[styles.statusBadge, styles.badgeReview]}>
+                            <Text style={styles.badgeReviewText}>UNDER REVIEW</Text>
+                          </View>
+                        ) : anyRejected ? (
+                          <View style={[styles.statusBadge, styles.badgeRejected]}>
+                            <Text style={styles.badgeRejectedText}>REJECTED</Text>
+                          </View>
+                        ) : (
+                          <View style={[styles.statusBadge, styles.badgeUnpaid]}>
+                            <Text style={styles.badgeUnpaidText}>UNPAID</Text>
+                          </View>
+                        )}
+                        <Text style={styles.expandToggleText}>
+                          {breakdownExpanded ? 'Hide breakdown ▴' : 'Tap for breakdown ▾'}
+                        </Text>
+                      </View>
+                    </Pressable>
+
+                    {breakdownExpanded && (
+                      <View style={styles.breakdownBox}>
+                        {currentRentBill && (
+                          <>
+                            <View style={styles.breakdownRow}>
+                              <Text style={styles.breakdownLabel}>Room Rent</Text>
+                              <Text style={styles.breakdownVal}>
+                                {formatPaiseToRupees(currentRentBill.rent_paise || 0)}
+                              </Text>
+                            </View>
+                            {(currentRentBill.wm_paise || 0) > 0 && (
+                              <View style={styles.breakdownRow}>
+                                <Text style={styles.breakdownLabel}>
+                                  Washing Machine
+                                </Text>
+                                <Text style={styles.breakdownVal}>
+                                  {formatPaiseToRupees(currentRentBill.wm_paise || 0)}
+                                </Text>
+                              </View>
+                            )}
+                            {currentRentBill.status !== 'paid' && (
+                              <View style={styles.itemActionInline}>
+                                <Text style={styles.itemStatusMini}>
+                                  {currentRentBill.pending_report?.status === 'pending'
+                                    ? 'Rent proof under review'
+                                    : currentRentBill.pending_report?.status === 'rejected'
+                                    ? 'Rent proof rejected'
+                                    : 'Rent unpaid'}
+                                </Text>
+                                <Pressable
+                                  onPress={() => handleOpenPaymentModal(currentRentBill)}>
+                                  <Text style={styles.itemPayMiniLink}>
+                                    {currentRentBill.pending_report?.status === 'rejected'
+                                      ? 'Resubmit ›'
+                                      : 'Pay Rent ›'}
+                                  </Text>
+                                </Pressable>
+                              </View>
+                            )}
+                          </>
+                        )}
+
+                        {currentEbBill && (
+                          <>
+                            <View style={styles.breakdownRow}>
+                              <Text style={styles.breakdownLabel}>
+                                Electricity (EB) Share
+                              </Text>
+                              <Text style={styles.breakdownVal}>
+                                {formatPaiseToRupees(currentEbBill.total_paise)}
+                              </Text>
+                            </View>
+                            {currentEbBill.status !== 'paid' && (
+                              <View style={styles.itemActionInline}>
+                                <Text style={styles.itemStatusMini}>
+                                  {currentEbBill.pending_report?.status === 'pending'
+                                    ? 'EB proof under review'
+                                    : currentEbBill.pending_report?.status === 'rejected'
+                                    ? 'EB proof rejected'
+                                    : 'EB unpaid'}
+                                </Text>
+                                <Pressable
+                                  onPress={() => handleOpenPaymentModal(currentEbBill)}>
+                                  <Text style={styles.itemPayMiniLink}>
+                                    {currentEbBill.pending_report?.status === 'rejected'
+                                      ? 'Resubmit ›'
+                                      : 'Pay EB ›'}
+                                  </Text>
+                                </Pressable>
+                              </View>
+                            )}
+                          </>
+                        )}
+
+                        <View style={[styles.breakdownRow, styles.totalRow]}>
+                          <Text style={styles.totalLabel}>Monthly Total</Text>
+                          <Text style={styles.totalVal}>
+                            {formatPaiseToRupees(totalBilledPaise)}
+                          </Text>
+                        </View>
+                      </View>
+                    )}
+
+                    {/* Collapsed Single Receipt Link when Paid */}
+                    {allCurrentPaid && primaryPaymentId && (
+                      <Pressable
+                        style={styles.singleReceiptLink}
+                        onPress={() =>
+                          router.push({
+                            pathname: '/receipt-detail',
+                            params: { id: primaryPaymentId },
+                          })
+                        }>
+                        <Text style={styles.singleReceiptLinkText}>
+                          Receipt{primaryReceiptNum ? ` (${primaryReceiptNum})` : ''} ›
+                        </Text>
+                      </Pressable>
+                    )}
                   </View>
                 ) : (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.payNowBtn,
-                      { backgroundColor: '#D97706' },
-                      pressed && styles.pressed,
-                    ]}
-                    onPress={() => handleOpenPaymentModal(currentEbBill)}>
-                    <Text style={styles.payNowBtnText}>
-                      ⚡ Pay EB Bill ({formatPaiseToRupees(currentEbBill.total_paise)})
+                  <View style={styles.emptyCard}>
+                    <Text style={styles.emptyTitle}>No Active Bills</Text>
+                    <Text style={styles.emptySubtitle}>
+                      Your owner has not generated any bills for this month yet. Check back soon!
                     </Text>
-                  </Pressable>
-                )}
-              </View>
-            ) : null}
-
-            {/* If neither rent nor EB generated yet */}
-            {!currentRentBill && !currentEbBill && (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyTitle}>No Active Bills</Text>
-                <Text style={styles.emptySubtitle}>
-                  Your owner has not generated any bills for this month yet. Check back soon!
-                </Text>
-              </View>
-            )}
-
-            {/* SECTION: PAST MONTHS HISTORY */}
-            <View style={[styles.sectionHeader, { marginTop: 24 }]}>
-              <Text style={styles.sectionTitle}>Past Months History</Text>
-            </View>
-
-            {pastBills.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptySubtitle}>No previous months on record.</Text>
-              </View>
-            ) : (
-              <View style={styles.historyList}>
-                {pastBills.map((bill) => (
-                  <View key={bill.charge_id} style={styles.historyCard}>
-                    <View style={styles.historyCardLeft}>
-                      <Text style={styles.historyMonth}>
-                        {bill.category === 'rent' ? '🏠' : '⚡'} {bill.month_label} ({bill.title})
-                      </Text>
-                      <Text style={styles.historyAmount}>
-                        {formatPaiseToRupees(bill.total_paise)}
-                      </Text>
-                      {bill.category === 'rent' && (
-                        <Text style={styles.historyMeta}>
-                          Rent: {formatPaiseToRupees(bill.rent_paise || 0)}
-                          {(bill.wm_paise || 0) > 0 ? ` + WM: ₹500` : ''}
-                        </Text>
-                      )}
-                    </View>
-
-                    <View style={styles.historyCardRight}>
-                      {bill.status === 'paid' ? (
-                        <View style={[styles.statusBadge, styles.badgePaid]}>
-                          <Text style={styles.badgePaidText}>✓ PAID</Text>
-                        </View>
-                      ) : bill.pending_report?.status === 'pending' ? (
-                        <View style={[styles.statusBadge, styles.badgeReview]}>
-                          <Text style={styles.badgeReviewText}>🕒 REVIEW</Text>
-                        </View>
-                      ) : bill.pending_report?.status === 'rejected' ? (
-                        <View style={[styles.statusBadge, styles.badgeRejected]}>
-                          <Text style={styles.badgeRejectedText}>⚠️ REJECTED</Text>
-                        </View>
-                      ) : (
-                        <View style={[styles.statusBadge, styles.badgeUnpaid]}>
-                          <Text style={styles.badgeUnpaidText}>UNPAID</Text>
-                        </View>
-                      )}
-
-                      {bill.receipt_number && (
-                        <Text style={styles.historyReceiptNum}>{bill.receipt_number}</Text>
-                      )}
-                    </View>
                   </View>
-                ))}
-              </View>
-            )}
-          </>
+                )}
+
+                {/* SECTION: PAST MONTHS HISTORY (Hidden when empty) */}
+                {pastBills.length > 0 && (
+                  <>
+                    <View style={[styles.sectionHeader, { marginTop: 24 }]}>
+                      <Text style={styles.sectionTitle}>Past Months History</Text>
+                    </View>
+                    <View style={styles.historyList}>
+                      {pastBills.map((bill) => (
+                        <View key={bill.charge_id} style={styles.historyCard}>
+                          <View style={styles.historyCardLeft}>
+                            <Text style={styles.historyMonth}>
+                              {bill.month_label} ({bill.title})
+                            </Text>
+                            <Text style={styles.historyAmount}>
+                              {formatPaiseToRupees(bill.total_paise)}
+                            </Text>
+                            {bill.category === 'rent' && (
+                              <Text style={styles.historyMeta}>
+                                Rent: {formatPaiseToRupees(bill.rent_paise || 0)}
+                                {(bill.wm_paise || 0) > 0 ? ` + WM: ₹500` : ''}
+                              </Text>
+                            )}
+                          </View>
+
+                          <View style={styles.historyCardRight}>
+                            {bill.status === 'paid' ? (
+                              <View style={[styles.statusBadge, styles.badgePaid]}>
+                                <Text style={styles.badgePaidText}>PAID</Text>
+                              </View>
+                            ) : bill.pending_report?.status === 'pending' ? (
+                              <View style={[styles.statusBadge, styles.badgeReview]}>
+                                <Text style={styles.badgeReviewText}>REVIEW</Text>
+                              </View>
+                            ) : bill.pending_report?.status === 'rejected' ? (
+                              <View style={[styles.statusBadge, styles.badgeRejected]}>
+                                <Text style={styles.badgeRejectedText}>REJECTED</Text>
+                              </View>
+                            ) : (
+                              <View style={[styles.statusBadge, styles.badgeUnpaid]}>
+                                <Text style={styles.badgeUnpaidText}>UNPAID</Text>
+                              </View>
+                            )}
+
+                            {bill.receipt_number && (
+                              <Text style={styles.historyReceiptNum}>{bill.receipt_number}</Text>
+                            )}
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  </>
+                )}
+              </>
+            );
+          })()
         )}
 
         <View style={{ height: 40 }} />
@@ -756,15 +712,42 @@ export default function SimplifiedStudentBillingScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Send Payment Proof</Text>
               <Pressable hitSlop={8} onPress={() => setPaymentModalVisible(false)}>
-                <Text style={styles.modalCloseText}>✕</Text>
+                <X size={20} color="#64748B" />
               </Pressable>
             </View>
 
             <ScrollView style={{ maxHeight: 440 }} showsVerticalScrollIndicator={false}>
+              {/* Switch between unpaid Rent & EB when both are pending */}
+              {currentRentBill &&
+                currentEbBill &&
+                currentRentBill.status !== 'paid' &&
+                currentEbBill.status !== 'paid' && (
+                  <View style={[styles.methodToggleRow, { marginBottom: 12 }]}>
+                    {[currentRentBill, currentEbBill].map((billOpt) => {
+                      const active =
+                        selectedBillForPayment?.charge_id === billOpt.charge_id;
+                      return (
+                        <Pressable
+                          key={billOpt.charge_id}
+                          style={[styles.methodBtn, active && styles.methodBtnActive]}
+                          onPress={() => setSelectedBillForPayment(billOpt)}>
+                          <Text
+                            style={[
+                              styles.methodBtnText,
+                              active && styles.methodBtnTextActive,
+                            ]}>
+                            {billOpt.category === 'rent' ? 'Rent' : 'EB'} (
+                            {formatPaiseToRupees(billOpt.total_paise)})
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                )}
+
               {/* Bill Details */}
               <View style={styles.modalBillBanner}>
                 <Text style={styles.modalBillBannerTitle}>
-                  {selectedBillForPayment?.category === 'rent' ? '🏠 ' : '⚡ '}
                   {selectedBillForPayment?.title} • {selectedBillForPayment?.month_label}
                 </Text>
                 <Text style={styles.modalBillBannerAmount}>
@@ -801,7 +784,7 @@ export default function SimplifiedStudentBillingScreen() {
                       styles.methodBtnText,
                       paymentMethod === 'upi' && styles.methodBtnTextActive,
                     ]}>
-                    📱 UPI / Online
+                    UPI / Online
                   </Text>
                 </Pressable>
 
@@ -816,7 +799,7 @@ export default function SimplifiedStudentBillingScreen() {
                       styles.methodBtnText,
                       paymentMethod === 'cash' && styles.methodBtnTextActive,
                     ]}>
-                    💵 Paid by Cash
+                    Paid by Cash
                   </Text>
                 </Pressable>
               </View>
@@ -833,12 +816,12 @@ export default function SimplifiedStudentBillingScreen() {
                         resizeMode="cover"
                       />
                       <Pressable style={styles.changePicBtn} onPress={handlePickScreenshot}>
-                        <Text style={styles.changePicBtnText}>🔄 Change Screenshot</Text>
+                        <Text style={styles.changePicBtnText}>Change Screenshot</Text>
                       </Pressable>
                     </View>
                   ) : (
                     <Pressable style={styles.uploadPhotoBtn} onPress={handlePickScreenshot}>
-                      <Text style={styles.uploadPhotoIcon}>📷</Text>
+                      <Camera size={24} color="#0284C7" style={{ marginBottom: 6 }} />
                       <Text style={styles.uploadPhotoText}>Upload Payment Screenshot</Text>
                       <Text style={styles.uploadPhotoSub}>From photo gallery or camera</Text>
                     </Pressable>
@@ -910,7 +893,7 @@ export default function SimplifiedStudentBillingScreen() {
         onRequestClose={() => setFullImageUrl(null)}>
         <View style={styles.fullImageOverlay}>
           <Pressable style={styles.fullImageCloseBtn} onPress={() => setFullImageUrl(null)}>
-            <Text style={styles.fullImageCloseText}>✕ Close</Text>
+            <Text style={styles.fullImageCloseText}>Close</Text>
           </Pressable>
           {fullImageUrl && (
             <Image
@@ -935,6 +918,86 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: 16,
     paddingBottom: 40,
+  },
+  heroStatusCard: {
+    borderRadius: 16,
+    padding: 20,
+    borderWidth: 1,
+    marginBottom: 14,
+  },
+  heroStatusClear: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+  },
+  heroStatusDue: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  heroStatusAmount: {
+    fontSize: 28,
+    fontWeight: '800',
+  },
+  heroStatusAmountClear: {
+    color: '#15803D',
+  },
+  heroStatusAmountDue: {
+    color: '#B45309',
+  },
+  heroStatusSub: {
+    fontSize: 13,
+    color: '#475569',
+    marginTop: 4,
+  },
+  heroPayBtn: {
+    marginTop: 14,
+    backgroundColor: '#0284C7',
+    borderRadius: 12,
+    paddingVertical: 13,
+    alignItems: 'center',
+  },
+  heroPayBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  mergedTotalAmount: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginTop: 2,
+  },
+  expandToggleText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0284C7',
+  },
+  itemActionInline: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+    paddingLeft: 8,
+  },
+  itemStatusMini: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  itemPayMiniLink: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  singleReceiptLink: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
+    alignItems: 'flex-end',
+  },
+  singleReceiptLinkText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0284C7',
   },
   topBar: {
     flexDirection: 'row',

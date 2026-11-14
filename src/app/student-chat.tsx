@@ -1,4 +1,13 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { router } from 'expo-router';
+import {
+  ArrowLeft,
+  Ban,
+  Lock,
+  MessageCircle,
+  Send,
+  Users,
+} from 'lucide-react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -12,21 +21,16 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
-import {
-  ArrowLeft,
-  Lock,
-  Send,
-  Trash2,
-  Users,
-} from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '@/context/auth-context';
-import { supabase } from '@/lib/supabase';
+import { getChatLastSeenStorageKey } from '@/lib/resident-home-utils';
+import { formatMovementDayLabel, getLocalDateKey } from '@/lib/movement-utils';
 import {
-  getChatSenderDisplayName,
   formatSenderRoomSubtitle,
+  getChatSenderDisplayName,
 } from '@/lib/chat-utils';
+import { supabase } from '@/lib/supabase';
 
 export interface ChatMessage {
   id: string;
@@ -102,6 +106,10 @@ export default function StudentChatScreen() {
         propertyName: propName,
       };
       setResident(curResident);
+      AsyncStorage.setItem(
+        getChatLastSeenStorageKey(curResident.property_id),
+        new Date().toISOString()
+      ).catch(() => {});
 
       // 2. Fetch recent chat history
       const { data: msgData, error: msgError } = await supabase
@@ -297,54 +305,80 @@ export default function StudentChatScreen() {
     );
   };
 
-  const renderMessageItem = ({ item }: { item: ChatMessage }) => {
+  const renderMessageItem = ({ item, index }: { item: ChatMessage; index: number }) => {
     const isMe = item.resident_id === resident?.id;
+    const senderName = getChatSenderDisplayName(item.sender_name, item.resident?.full_name);
+    const senderRoom = formatSenderRoomSubtitle(item.sender_room || item.resident?.room_number);
+    const initials = senderName
+      .trim()
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((p) => p[0]?.toUpperCase() || '')
+      .join('');
+    const currentDayKey = getLocalDateKey(item.created_at);
+    const prevDayKey = index > 0 ? getLocalDateKey(messages[index - 1].created_at) : null;
+    const showDayDivider = index === 0 || currentDayKey !== prevDayKey;
     const timeFormatted = new Date(item.created_at).toLocaleTimeString('en-IN', {
       hour: '2-digit',
       minute: '2-digit',
     });
 
     return (
-      <View style={[styles.messageRow, isMe ? styles.messageRowMe : styles.messageRowThem]}>
-        <View style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleThem]}>
-          {/* Sender Header for other residents */}
-          {!isMe && (
-            <View style={styles.senderHeader}>
-              <Text style={styles.senderNameText}>
-                {getChatSenderDisplayName(item.sender_name, item.resident?.full_name)}
-                {formatSenderRoomSubtitle(item.sender_room || item.resident?.room_number)
-                  ? ` • ${formatSenderRoomSubtitle(item.sender_room || item.resident?.room_number)}`
-                  : ''}
+      <View>
+        {showDayDivider && (
+          <View style={styles.dayDividerWrap}>
+            <View style={styles.dayDividerPill}>
+              <Text style={styles.dayDividerText}>
+                {formatMovementDayLabel(item.created_at)}
               </Text>
             </View>
-          )}
-
-          {/* Message Content */}
-          {item.is_deleted ? (
-            <Text style={[styles.deletedMessageText, isMe && styles.deletedMessageTextMe]}>
-              🚫 This message was deleted
-            </Text>
-          ) : (
-            <Text style={[styles.messageText, isMe ? styles.messageTextMe : styles.messageTextThem]}>
-              {item.message}
-            </Text>
-          )}
-
-          {/* Footer: Timestamp and Delete Button for own message */}
-          <View style={styles.bubbleFooter}>
-            <Text style={[styles.timeText, isMe ? styles.timeTextMe : styles.timeTextThem]}>
-              {timeFormatted}
-            </Text>
-
-            {isMe && !item.is_deleted && (
-              <Pressable
-                hitSlop={8}
-                onPress={() => handlePromptDelete(item)}
-                style={styles.deleteBtn}>
-                <Trash2 size={12} color="rgba(255,255,255,0.7)" />
-              </Pressable>
-            )}
           </View>
+        )}
+        <View style={[styles.messageRow, isMe ? styles.messageRowMe : styles.messageRowThem]}>
+          {!isMe && (
+            <View style={styles.senderAvatar}>
+              <Text style={styles.senderAvatarText}>{initials || 'R'}</Text>
+            </View>
+          )}
+          <Pressable
+            onLongPress={() => {
+              if (isMe && !item.is_deleted) {
+                handlePromptDelete(item);
+              }
+            }}
+            delayLongPress={350}
+            style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleThem]}>
+            {/* Sender Header for other residents */}
+            {!isMe && (
+              <View style={styles.senderHeader}>
+                <Text style={styles.senderNameText}>
+                  {senderName}
+                  {senderRoom ? ` • ${senderRoom}` : ''}
+                </Text>
+              </View>
+            )}
+
+            {/* Message Content */}
+            {item.is_deleted ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                <Ban size={12} color={isMe ? 'rgba(255,255,255,0.7)' : '#94A3B8'} />
+                <Text style={[styles.deletedMessageText, isMe && styles.deletedMessageTextMe]}>
+                  This message was deleted
+                </Text>
+              </View>
+            ) : (
+              <Text style={[styles.messageText, isMe ? styles.messageTextMe : styles.messageTextThem]}>
+                {item.message}
+              </Text>
+            )}
+
+            {/* Footer: Timestamp */}
+            <View style={styles.bubbleFooter}>
+              <Text style={[styles.timeText, isMe ? styles.timeTextMe : styles.timeTextThem]}>
+                {timeFormatted}
+              </Text>
+            </View>
+          </Pressable>
         </View>
       </View>
     );
@@ -420,7 +454,7 @@ export default function StudentChatScreen() {
           onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <Text style={styles.emptyIcon}>💬</Text>
+              <MessageCircle size={36} color="#0284C7" style={{ marginBottom: 10 }} />
               <Text style={styles.emptyTitle}>Welcome to Your PG Lounge!</Text>
               <Text style={styles.emptySub}>
                 Say hello to your flatmates. Discuss maintenance issues, EB bill splits, food
@@ -571,6 +605,36 @@ const styles = StyleSheet.create({
     borderBottomLeftRadius: 2,
     borderWidth: 1,
     borderColor: '#E2E8F0',
+  },
+  dayDividerWrap: {
+    alignItems: 'center',
+    marginVertical: 10,
+  },
+  dayDividerPill: {
+    backgroundColor: '#E2E8F0',
+    paddingHorizontal: 12,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  dayDividerText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  senderAvatar: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#E0F2FE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+    alignSelf: 'flex-end',
+  },
+  senderAvatarText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#0284C7',
   },
   senderHeader: {
     marginBottom: 4,

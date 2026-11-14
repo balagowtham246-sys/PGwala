@@ -8,6 +8,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Utensils } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -24,10 +25,10 @@ interface StudentFoodMenuItem {
   notes: string | null;
 }
 
-const MEAL_META: Record<MealType, { title: string; icon: string; timeHint: string }> = {
-  breakfast: { title: 'Breakfast', icon: '🍳', timeHint: '7:30 AM – 9:30 AM' },
-  lunch: { title: 'Lunch', icon: '🍛', timeHint: '12:30 PM – 2:30 PM' },
-  dinner: { title: 'Dinner', icon: '🍲', timeHint: '8:00 PM – 10:00 PM' },
+const MEAL_META: Record<MealType, { title: string; timeHint: string }> = {
+  breakfast: { title: 'Breakfast', timeHint: '7:30 AM – 9:30 AM' },
+  lunch: { title: 'Lunch', timeHint: '12:30 PM – 2:30 PM' },
+  dinner: { title: 'Dinner', timeHint: '8:00 PM – 10:00 PM' },
 };
 
 function getTodayIso(): string {
@@ -130,7 +131,7 @@ export default function StudentMenuScreen() {
             return (
               <View key={mealKey} style={styles.card}>
                 <View style={styles.cardHeader}>
-                  <Text style={styles.mealIcon}>{meta.icon}</Text>
+                  <Utensils size={18} color={OwnerTheme.colors.primary} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.mealTitle}>{meta.title}</Text>
                     <Text style={styles.mealTime}>{meta.timeHint}</Text>

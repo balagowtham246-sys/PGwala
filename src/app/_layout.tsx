@@ -94,7 +94,7 @@ function RootLayout() {
   );
 }
 
-export default Sentry.wrap(RootLayout);
+export default SENTRY_DSN ? Sentry.wrap(RootLayout) : RootLayout;
 
 const styles = StyleSheet.create({
   loadingContainer: {

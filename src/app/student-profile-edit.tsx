@@ -3,6 +3,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Lock, User, CheckCircle2, AlertCircle } from 'lucide-react-native';
+import { Lock, User, CheckCircle2, AlertCircle, Eye, EyeOff } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -24,6 +25,8 @@ export default function ResidentProfileEditScreen() {
   const [phoneNumber, setPhoneNumber] = useState(profile?.phone_number || '');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const [saving, setSaving] = useState(false);
   const [passwordError, setPasswordError] = useState<string | null>(null);
@@ -33,10 +36,16 @@ export default function ResidentProfileEditScreen() {
   const isTemporaryPassword = Boolean(
     profile?.must_change_password || user?.user_metadata?.must_change_password
   );
+  const needsPhoneNumber = !profile?.phone_number?.trim();
 
   const handleSave = async () => {
     if (!user?.id) return;
     const trimmedPhone = phoneNumber.trim();
+
+    if ((isTemporaryPassword || needsPhoneNumber) && !trimmedPhone) {
+      setErrorMessage('Please enter your 10-digit phone number to complete your profile.');
+      return;
+    }
 
     if (trimmedPhone && trimmedPhone.length < 10) {
       setErrorMessage('Please enter a valid phone number (at least 10 digits).');
@@ -204,24 +213,36 @@ export default function ResidentProfileEditScreen() {
 
             <View style={styles.fieldGroup}>
               <Text style={styles.label}>New Password</Text>
-              <TextInput
-                style={styles.textInput}
-                value={newPassword}
-                onChangeText={(val) => {
-                  setNewPassword(val);
-                  setPasswordError(null);
-                }}
-                placeholder="Minimum 6 characters"
-                placeholderTextColor={OwnerTheme.colors.textMuted}
-                secureTextEntry
-              />
+              <View style={styles.passwordInputRow}>
+                <TextInput
+                  style={styles.passwordInput}
+                  value={newPassword}
+                  onChangeText={(val) => {
+                    setNewPassword(val);
+                    setPasswordError(null);
+                  }}
+                  placeholder="Minimum 6 characters"
+                  placeholderTextColor={OwnerTheme.colors.textMuted}
+                  secureTextEntry={!showNewPassword}
+                />
+                <Pressable
+                  hitSlop={8}
+                  style={styles.eyeBtn}
+                  onPress={() => setShowNewPassword((prev) => !prev)}>
+                  {showNewPassword ? (
+                    <EyeOff size={18} color={OwnerTheme.colors.textSecondary} />
+                  ) : (
+                    <Eye size={18} color={OwnerTheme.colors.textSecondary} />
+                  )}
+                </Pressable>
+              </View>
             </View>
 
-            {newPassword ? (
-              <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Confirm New Password</Text>
+            <View style={styles.fieldGroup}>
+              <Text style={styles.label}>Confirm New Password</Text>
+              <View style={styles.passwordInputRow}>
                 <TextInput
-                  style={styles.textInput}
+                  style={styles.passwordInput}
                   value={confirmPassword}
                   onChangeText={(val) => {
                     setConfirmPassword(val);
@@ -229,10 +250,20 @@ export default function ResidentProfileEditScreen() {
                   }}
                   placeholder="Repeat new password"
                   placeholderTextColor={OwnerTheme.colors.textMuted}
-                  secureTextEntry
+                  secureTextEntry={!showConfirmPassword}
                 />
+                <Pressable
+                  hitSlop={8}
+                  style={styles.eyeBtn}
+                  onPress={() => setShowConfirmPassword((prev) => !prev)}>
+                  {showConfirmPassword ? (
+                    <EyeOff size={18} color={OwnerTheme.colors.textSecondary} />
+                  ) : (
+                    <Eye size={18} color={OwnerTheme.colors.textSecondary} />
+                  )}
+                </Pressable>
               </View>
-            ) : null}
+            </View>
           </View>
 
           <PrimaryButton
@@ -322,6 +353,26 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: OwnerTheme.colors.textPrimary,
     backgroundColor: '#FAFAFA',
+  },
+  passwordInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 50,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: '#FAFAFA',
+    paddingRight: 10,
+  },
+  passwordInput: {
+    flex: 1,
+    height: '100%',
+    paddingHorizontal: 14,
+    fontSize: 15,
+    color: OwnerTheme.colors.textPrimary,
+  },
+  eyeBtn: {
+    padding: 6,
   },
   inputDisabled: {
     backgroundColor: '#F1F5F9',
