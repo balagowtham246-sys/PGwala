@@ -12,6 +12,7 @@ export const STUDENT_ROUTES = [
   'student-settings',
   'student-profile-edit',
   'student-accommodation',
+  'student-food-updates',
 ] as const;
 
 export const OWNER_ROUTES = [
@@ -26,11 +27,17 @@ export const OWNER_ROUTES = [
   'owner-profile-edit',
   'owner-properties',
   'owner-notifications',
+  'owner-wardens',
+] as const;
+
+export const WARDEN_ROUTES = [
+  'warden-dashboard',
+  'student-profile-edit',
 ] as const;
 
 export interface NavigationGuardState {
   hasSession: boolean;
-  role: 'owner' | 'student' | null | undefined;
+  role: 'owner' | 'student' | 'warden' | null | undefined;
   currentSegment: string | undefined;
 }
 
@@ -51,7 +58,9 @@ export function evaluateNavigationRedirect(state: NavigationGuardState): string 
   if (role === 'owner') {
     if (
       inAuthGroup ||
-      (currentSegment && (STUDENT_ROUTES as readonly string[]).includes(currentSegment))
+      (currentSegment &&
+        ((STUDENT_ROUTES as readonly string[]).includes(currentSegment) ||
+          currentSegment === 'warden-dashboard'))
     ) {
       return '/(tabs)';
     }
@@ -62,7 +71,9 @@ export function evaluateNavigationRedirect(state: NavigationGuardState): string 
   if (role === 'student') {
     if (
       inAuthGroup ||
-      (currentSegment && (OWNER_ROUTES as readonly string[]).includes(currentSegment)) ||
+      (currentSegment &&
+        ((OWNER_ROUTES as readonly string[]).includes(currentSegment) ||
+          currentSegment === 'warden-dashboard')) ||
       !currentSegment
     ) {
       return '/student-dashboard';
@@ -70,7 +81,15 @@ export function evaluateNavigationRedirect(state: NavigationGuardState): string 
     return null; // Permitted on student or shared routes (e.g. receipt-detail)
   }
 
-  // 4. Unknown / invalid role
+  // 4. Warden Persona: only warden routes (plus shared profile edit)
+  if (role === 'warden') {
+    if (currentSegment && (WARDEN_ROUTES as readonly string[]).includes(currentSegment)) {
+      return null;
+    }
+    return '/warden-dashboard';
+  }
+
+  // 5. Unknown / invalid role
   return inAuthGroup ? null : '/login';
 }
 

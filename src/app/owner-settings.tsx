@@ -18,6 +18,7 @@ import {
   Bell,
   ShieldCheck,
   UserPlus,
+  UserCog,
   Disc3,
   Minus,
   Plus,
@@ -174,6 +175,30 @@ export default function OwnerSettingsScreen() {
                 <Text style={styles.rowSubtitle} numberOfLines={1}>
                   {selectedProperty?.name || 'Manage PGs'} • {properties.length}{' '}
                   {properties.length === 1 ? 'property' : 'properties'}
+                </Text>
+              </View>
+              <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.settingsRow,
+                styles.rowDivider,
+                pressed && styles.rowPressed,
+              ]}
+              onPress={() => router.push('/owner-wardens')}>
+              <View
+                style={[
+                  styles.iconWrap,
+                  { backgroundColor: OwnerTheme.colors.primaryLight },
+                ]}>
+                <UserCog size={18} color={OwnerTheme.colors.primary} />
+              </View>
+              <View style={styles.rowContent}>
+                <Text style={styles.rowTitle}>Wardens</Text>
+                <Text style={styles.rowSubtitle} numberOfLines={1}>
+                  Assign food-alert wardens to your PGs
                 </Text>
               </View>
               <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />

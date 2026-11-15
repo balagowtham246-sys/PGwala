@@ -149,6 +149,8 @@ export default function LoginScreen() {
         router.replace('/(tabs)');
       } else if (profile.role === 'student') {
         router.replace('/student-dashboard');
+      } else if (profile.role === 'warden') {
+        router.replace('/warden-dashboard');
       } else {
         await signOut();
         setErrorMessage(

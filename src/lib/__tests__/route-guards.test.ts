@@ -2,6 +2,7 @@ import {
   evaluateNavigationRedirect,
   OWNER_ROUTES,
   STUDENT_ROUTES,
+  WARDEN_ROUTES,
 } from '../navigation-guards';
 
 describe('navigation-guards', () => {
@@ -132,5 +133,40 @@ describe('navigation-guards', () => {
       ).toBeNull();
     });
   });
-});
 
+  describe('warden role', () => {
+    it('keeps wardens on warden routes and sends them away from everything else', () => {
+      for (const route of WARDEN_ROUTES) {
+        expect(
+          evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: route })
+        ).toBeNull();
+      }
+      for (const route of [...OWNER_ROUTES, ...STUDENT_ROUTES.filter((r) => r !== 'student-profile-edit'), 'login']) {
+        expect(
+          evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: route })
+        ).toBe('/warden-dashboard');
+      }
+    });
+
+    it('blocks owners and students from the warden dashboard', () => {
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'warden-dashboard' })
+      ).toBe('/(tabs)');
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'warden-dashboard' })
+      ).toBe('/student-dashboard');
+    });
+
+    it('lets owners reach warden management and residents reach food updates', () => {
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'owner-wardens' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'student-food-updates' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'owner-wardens' })
+      ).toBe('/student-dashboard');
+    });
+  });
+});

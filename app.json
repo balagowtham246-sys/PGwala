@@ -47,7 +47,13 @@
       "expo-status-bar",
       "expo-web-browser",
       "@sentry/react-native",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-notifications",
+        {
+          "color": "#0284C7"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

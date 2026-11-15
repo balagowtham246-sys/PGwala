@@ -1,12 +1,13 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
+import { unregisterPushToken } from '@/lib/push-notifications';
 
 export interface UserProfile {
   id: string;
   full_name: string;
   phone_number: string | null;
-  role: 'owner' | 'student';
+  role: 'owner' | 'student' | 'warden';
   must_change_password?: boolean;
 }
 
@@ -115,6 +116,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = async () => {
     try {
+      await unregisterPushToken();
       await supabase.auth.signOut();
     } catch (err) {
       console.error('[AuthContext] Error during signOut:', err);

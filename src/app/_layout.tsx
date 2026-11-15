@@ -10,6 +10,7 @@ import { UpdateGuard } from '@/components/update-guard';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { PropertyProvider } from '@/context/property-context';
 import { evaluateNavigationRedirect } from '@/lib/navigation-guards';
+import { registerForPushNotifications, subscribeToPushTokenChanges } from '@/lib/push-notifications';
 
 // Initialize Sentry crash monitoring if DSN is provided
 const SENTRY_DSN = process.env.EXPO_PUBLIC_SENTRY_DSN;
@@ -26,6 +27,15 @@ SplashScreen.preventAutoHideAsync();
 function RootNavigationLayout() {
   const { session, profile, isLoading } = useAuth();
   const segments = useSegments();
+  const pushRole = profile?.role;
+
+  // Register this device for food-alert pushes (residents and wardens only).
+  // Permission denial is fine: announcements remain available inside the app.
+  useEffect(() => {
+    if (!session || (pushRole !== 'student' && pushRole !== 'warden')) return;
+    registerForPushNotifications().catch(() => {});
+    return subscribeToPushTokenChanges();
+  }, [session, pushRole]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -74,6 +84,9 @@ function RootNavigationLayout() {
       <Stack.Screen name="owner-profile-edit" />
       <Stack.Screen name="owner-properties" />
       <Stack.Screen name="owner-notifications" />
+      <Stack.Screen name="owner-wardens" />
+      <Stack.Screen name="warden-dashboard" />
+      <Stack.Screen name="student-food-updates" />
     </Stack>
   );
 }

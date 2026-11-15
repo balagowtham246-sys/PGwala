@@ -37,6 +37,7 @@ import { supabase } from '@/lib/supabase';
 import { triggerLightHaptic, triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { WashingMachineCard } from '@/components/washing-machine-card';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { FoodStatusBanner } from '@/components/food-status-banner';
 import {
   getChatLastSeenStorageKey,
   getFirstName,
@@ -131,6 +132,7 @@ export default function ResidentDashboardScreen() {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [foodRefreshKey, setFoodRefreshKey] = useState(0);
   const [resident, setResident] = useState<ResidentAccommodationInfo | null>(null);
 
   // Active Meal Tab for in-place detail view (defaults to next upcoming meal)
@@ -403,6 +405,7 @@ export default function ResidentDashboardScreen() {
 
   const handleRefresh = () => {
     setRefreshing(true);
+    setFoodRefreshKey((k) => k + 1);
     refreshProfile();
     loadResidentData();
   };
@@ -617,6 +620,9 @@ export default function ResidentDashboardScreen() {
                 <Text style={styles.roomPillText}>Room {resident.room_number}</Text>
               </View>
             </View>
+
+            {/* Food Alerts: today's latest status per meal (delayed / cancelled highlighted) */}
+            <FoodStatusBanner refreshKey={foodRefreshKey} />
 
             {/* Lead Hero Card: Pending Rent or Next Upcoming Meal */}
             {pendingDuesPaise !== null && pendingDuesPaise > 0 ? (
