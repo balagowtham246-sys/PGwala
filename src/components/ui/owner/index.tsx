@@ -17,9 +17,16 @@ import {
 } from 'lucide-react-native';
 import { OwnerTheme } from '@/constants/theme';
 
+export const HIGH_CONTRAST_SWITCH_COLORS = {
+  false: '#CBD5E1',
+  true: '#0284C7',
+} as const;
+
+export const SWITCH_THUMB_COLOR = '#FFFFFF';
+
 /* ==========================================================================
    OwnerHeader
-   Standard header for all owner screens
+   Compact 56px inline header for all owner subscreens
    ========================================================================== */
 interface OwnerHeaderProps {
   title: string;
@@ -63,10 +70,10 @@ export function OwnerHeader({
               pressed && styles.backButtonPressed,
             ]}
             onPress={handleBack}>
-            <ArrowLeft size={20} color={OwnerTheme.colors.textPrimary} />
+            <ArrowLeft size={18} color={OwnerTheme.colors.textPrimary} />
           </Pressable>
         )}
-        <View style={styles.headerTitleCol}>
+        <View style={styles.headerTitleInlineRow}>
           <Text style={styles.headerTitle} numberOfLines={1}>
             {title}
           </Text>
@@ -75,15 +82,15 @@ export function OwnerHeader({
               <Pressable
                 hitSlop={8}
                 onPress={onSubtitlePress}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                <Text style={styles.headerSubtitle} numberOfLines={1}>
+                style={styles.headerSubtitlePill}>
+                <Text style={styles.headerSubtitleInline} numberOfLines={1}>
                   {subtitle}
                 </Text>
                 <Text style={{ fontSize: 10, color: OwnerTheme.colors.primary }}>▾</Text>
               </Pressable>
             ) : (
-              <Text style={styles.headerSubtitle} numberOfLines={1}>
-                {subtitle}
+              <Text style={styles.headerSubtitleInline} numberOfLines={1}>
+                · {subtitle}
               </Text>
             )
           ) : null}
@@ -589,13 +596,13 @@ export function ErrorState({
    Styles
    ========================================================================== */
 const styles = StyleSheet.create({
-  // Header
+  // Header (compact 56px inline bar)
   headerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
+    height: 56,
+    paddingHorizontal: 16,
     backgroundColor: OwnerTheme.colors.background,
     borderBottomWidth: 1,
     borderBottomColor: OwnerTheme.colors.border,
@@ -604,38 +611,52 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+    minWidth: 0,
   },
   backButton: {
-    width: 36,
-    height: 36,
+    width: 34,
+    height: 34,
     borderRadius: OwnerTheme.radius.sm,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: OwnerTheme.colors.border,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   backButtonPressed: {
     backgroundColor: '#F1F5F9',
   },
-  headerTitleCol: {
+  headerTitleInlineRow: {
     flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minWidth: 0,
   },
   headerTitle: {
-    ...OwnerTheme.typography.screenHeading,
-    fontSize: 22,
+    fontSize: 18,
+    fontWeight: '700',
+    letterSpacing: -0.3,
     color: OwnerTheme.colors.textPrimary,
+    flexShrink: 0,
   },
-  headerSubtitle: {
-    ...OwnerTheme.typography.supporting,
+  headerSubtitlePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 1,
+  },
+  headerSubtitleInline: {
+    fontSize: 12,
+    fontWeight: '500',
     color: OwnerTheme.colors.textSecondary,
-    marginTop: 2,
+    flexShrink: 1,
   },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginLeft: 12,
+    marginLeft: 8,
   },
 
   // Buttons

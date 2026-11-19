@@ -22,6 +22,8 @@ export const OWNER_ROUTES = [
   'student-in-out',
   'add-resident',
   'edit-resident',
+  'residents-directory',
+  'resident-profile',
   'food-menu',
   'billing-management',
   'owner-complaints',

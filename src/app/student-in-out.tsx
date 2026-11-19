@@ -1,19 +1,22 @@
-import React, { useCallback, useState, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, useFocusEffect } from 'expo-router';
+import { Href, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   LogIn,
   LogOut,
+  Search,
   UserPlus,
   Utensils,
   X,
@@ -23,12 +26,17 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
+import { ownerRecordMovement } from '@/services/residents.service';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import {
   groupLogsByLocalDay,
   isLateReturn,
   sortLogsDescending,
 } from '@/lib/movement-utils';
+import {
+  formatGateEventTimestamp,
+  toSentenceCaseStatus,
+} from '@/lib/ux-utils';
 import {
   OwnerHeader,
   StatisticCard,
@@ -92,37 +100,76 @@ function formatEventDate(isoString: string): string {
 export default function StudentInOutScreen() {
   const { user } = useAuth();
   const { selectedProperty, selectedPropertyId } = useProperty();
+  const params = useLocalSearchParams<{ residentId?: string | string[] }>();
+  const rawParamResidentId = Array.isArray(params.residentId)
+    ? params.residentId[0]
+    : params.residentId;
+  const paramResidentId = rawParamResidentId?.trim() || null;
+
+  const userId = user?.id;
+  const activeSelectedPropertyId = selectedPropertyId;
+  const activeSelectedPropertyName = selectedProperty?.name;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [propertyId, setPropertyId] = useState<string | null>(
+    activeSelectedPropertyId ?? null
+  );
   const [propertyName, setPropertyName] = useState('Shalom Residency');
 
   const [residents, setResidents] = useState<ResidentRecord[]>([]);
   const [allResidents, setAllResidents] = useState<ResidentRecord[]>([]);
   const [logs, setLogs] = useState<MovementLogRecord[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [savingResidentIds, setSavingResidentIds] = useState<string[]>([]);
+  const [clearedResidentId, setClearedResidentId] = useState<string | null>(
+    null
+  );
 
-  // Filter Tabs
+  useEffect(() => {
+    if (paramResidentId) return;
+    const timer = setTimeout(() => {
+      setClearedResidentId(null);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [paramResidentId]);
+
+  const activeResidentFilterId =
+    paramResidentId && paramResidentId !== clearedResidentId
+      ? paramResidentId
+      : null;
+
+  const handleClearResidentFilter = () => {
+    setClearedResidentId(paramResidentId);
+    try {
+      router.setParams({ residentId: undefined });
+    } catch {
+      // Non-fatal in pager context
+    }
+  };
+
+  // Filter Tabs & Search
   type FilterTab = 'ALL' | 'OUT' | 'IN';
   const [activeTab, setActiveTab] = useState<FilterTab>('ALL');
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Full History Modal state
   const [fullHistoryVisible, setFullHistoryVisible] = useState(false);
   const [historyDirectionFilter, setHistoryDirectionFilter] = useState<
     'ALL' | 'IN' | 'OUT'
   >('ALL');
-  const [historyResidentFilter, setHistoryResidentFilter] = useState<string>('ALL');
   const [historyDateFilter, setHistoryDateFilter] = useState<
     'ALL' | 'TODAY' | 'WEEK'
   >('ALL');
+  const [referenceTimeMs, setReferenceTimeMs] = useState(() => Date.now());
 
   const loadData = useCallback(async () => {
     try {
       setErrorMessage(null);
 
       // 1. Resolve active property ID & name
-      let activePropId = selectedPropertyId;
-      let activePropName = selectedProperty?.name;
+      let activePropId = activeSelectedPropertyId;
+      let activePropName = activeSelectedPropertyName;
 
       if (!activePropId) {
         let query = supabase
@@ -130,14 +177,15 @@ export default function StudentInOutScreen() {
           .select('id, name')
           .eq('is_active', true);
 
-        if (user?.id) {
-          query = query.eq('owner_id', user.id);
+        if (userId) {
+          query = query.eq('owner_id', userId);
         }
 
         const { data: properties, error: propError } = await query.limit(1);
         if (propError) throw propError;
 
         if (!properties || properties.length === 0) {
+          setPropertyId(null);
           setResidents([]);
           setAllResidents([]);
           setLogs([]);
@@ -149,6 +197,7 @@ export default function StudentInOutScreen() {
         activePropName = properties[0].name;
       }
 
+      setPropertyId(activePropId);
       setPropertyName(activePropName || 'Shalom Residency');
 
       // 2. Fetch all residents
@@ -208,6 +257,7 @@ export default function StudentInOutScreen() {
       if (logsError) throw logsError;
 
       setLogs(sortLogsDescending(logsData ?? []));
+      setReferenceTimeMs(Date.now());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[StudentInOut] Error fetching data:', err);
@@ -216,7 +266,7 @@ export default function StudentInOutScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id, selectedPropertyId, selectedProperty?.name]);
+  }, [userId, activeSelectedPropertyId, activeSelectedPropertyName]);
 
   useFocusEffect(
     useCallback(() => {
@@ -227,6 +277,37 @@ export default function StudentInOutScreen() {
   const handleRefresh = () => {
     setRefreshing(true);
     loadData();
+  };
+
+  const handleQuickToggleGate = async (
+    resident: ResidentRecord,
+    nextDirection: ResidentStatus
+  ) => {
+    const activePropId =
+      propertyId ?? activeSelectedPropertyId ?? resident.property_id;
+    if (!activePropId) {
+      Alert.alert('Error', 'Property could not be determined.');
+      return;
+    }
+
+    setSavingResidentIds((prev) =>
+      prev.includes(resident.id) ? prev : [...prev, resident.id]
+    );
+    try {
+      const res = await ownerRecordMovement(
+        activePropId,
+        resident.id,
+        nextDirection,
+        user?.id
+      );
+      if (!res.ok) {
+        Alert.alert('Gate Update Failed', res.error.message);
+        return;
+      }
+      await loadData();
+    } finally {
+      setSavingResidentIds((prev) => prev.filter((id) => id !== resident.id));
+    }
   };
 
   const getLatestResidentLog = (
@@ -271,10 +352,17 @@ export default function StudentInOutScreen() {
     return acc;
   }, 0);
 
+  const normalizedSearch = searchQuery.trim().toLowerCase();
   const filteredResidents = residents.filter((r) => {
+    if (activeResidentFilterId && r.id !== activeResidentFilterId) return false;
     const status = getResidentCurrentStatus(r.id);
-    if (activeTab === 'OUT') return status === 'OUT';
-    if (activeTab === 'IN') return status === 'IN';
+    if (activeTab === 'OUT' && status !== 'OUT') return false;
+    if (activeTab === 'IN' && status !== 'IN') return false;
+    if (normalizedSearch) {
+      const matchesName = r.full_name.toLowerCase().includes(normalizedSearch);
+      const matchesRoom = r.room_number.toLowerCase().includes(normalizedSearch);
+      return matchesName || matchesRoom;
+    }
     return true;
   });
 
@@ -286,21 +374,25 @@ export default function StudentInOutScreen() {
     return map;
   }, [allResidents]);
 
+  const filteredResidentName = useMemo(() => {
+    if (!activeResidentFilterId) return '';
+    return residentMap.get(activeResidentFilterId)?.full_name || 'Resident';
+  }, [activeResidentFilterId, residentMap]);
+
+  const scopedLogs = useMemo(() => {
+    if (!activeResidentFilterId) return logs;
+    return logs.filter((l) => l.resident_id === activeResidentFilterId);
+  }, [logs, activeResidentFilterId]);
+
   // Full history filtered list
   const filteredHistoryLogs = useMemo(() => {
-    const today = new Date().toDateString();
-    const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const today = new Date(referenceTimeMs).toDateString();
+    const oneWeekAgo = referenceTimeMs - 7 * 24 * 60 * 60 * 1000;
 
-    return logs.filter((log) => {
+    return scopedLogs.filter((log) => {
       if (
         historyDirectionFilter !== 'ALL' &&
         log.direction !== historyDirectionFilter
-      ) {
-        return false;
-      }
-      if (
-        historyResidentFilter !== 'ALL' &&
-        log.resident_id !== historyResidentFilter
       ) {
         return false;
       }
@@ -313,7 +405,7 @@ export default function StudentInOutScreen() {
       }
       return true;
     });
-  }, [logs, historyDirectionFilter, historyResidentFilter, historyDateFilter]);
+  }, [scopedLogs, historyDirectionFilter, historyDateFilter, referenceTimeMs]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -339,6 +431,7 @@ export default function StudentInOutScreen() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -377,22 +470,34 @@ export default function StudentInOutScreen() {
           />
         </View>
 
-        {/* Dinner Count & Late Return Summary Strip */}
-        <View style={styles.summaryStrip}>
-          <View style={styles.summaryStripLeft}>
-            <Utensils size={14} color={OwnerTheme.colors.primary} />
-            <Text style={styles.summaryStripText}>
-              Dinner count: <Text style={styles.summaryStripBold}>{mealsRequiredCount}</Text> ({counts.inside} inside + {outsideMealsCount} returning)
-            </Text>
-          </View>
-          {lateReturnCount > 0 && (
+        {/* Late Return Alert Strip (only shown when overdue returns exist) */}
+        {lateReturnCount > 0 && (
+          <View style={styles.lateAlertRow}>
             <View style={styles.lateChip}>
               <Text style={styles.lateChipText}>
                 {lateReturnCount} late return{lateReturnCount > 1 ? 's' : ''}
               </Text>
             </View>
-          )}
-        </View>
+          </View>
+        )}
+
+        {/* Resident Filter Banner */}
+        {activeResidentFilterId && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Filtered to ${filteredResidentName}. Show all`}
+            style={({ pressed }) => [
+              styles.residentFilterBanner,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={handleClearResidentFilter}>
+            <Text style={styles.residentFilterBannerText} numberOfLines={1}>
+              Filtered to {filteredResidentName} ·{' '}
+              <Text style={styles.residentFilterBannerAction}>Show all</Text>
+            </Text>
+            <X size={15} color={OwnerTheme.colors.primary} />
+          </Pressable>
+        )}
 
         {/* Filter Segmented Control */}
         <SegmentedFilter
@@ -403,8 +508,31 @@ export default function StudentInOutScreen() {
           ]}
           activeKey={activeTab}
           onSelect={(key) => setActiveTab(key as FilterTab)}
-          style={{ marginVertical: 14 }}
+          style={{ marginTop: 14, marginBottom: 10 }}
         />
+
+        {/* Live Resident Search Bar */}
+        <View style={styles.searchBarWrap}>
+          <Search size={16} color={OwnerTheme.colors.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search by name or room..."
+            placeholderTextColor={OwnerTheme.colors.textMuted}
+            returnKeyType="search"
+            autoCorrect={false}
+          />
+          {searchQuery.length > 0 && (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Clear search"
+              hitSlop={8}
+              onPress={() => setSearchQuery('')}>
+              <X size={16} color={OwnerTheme.colors.textSecondary} />
+            </Pressable>
+          )}
+        </View>
 
         {/* Residents Roster */}
         {loading ? (
@@ -413,16 +541,32 @@ export default function StudentInOutScreen() {
             <Text style={styles.loadingText}>Loading attendance roster...</Text>
           </View>
         ) : filteredResidents.length === 0 ? (
-          <EmptyState
-            title="No residents found"
-            description={
-              activeTab === 'OUT'
-                ? 'No residents are currently marked outside.'
-                : activeTab === 'IN'
-                ? 'No residents are currently marked inside.'
-                : 'No active residents registered in this property.'
-            }
-          />
+          normalizedSearch ? (
+            <EmptyState
+              title="No matching residents"
+              description={`No residents match "${searchQuery.trim()}".`}
+              actionLabel="Clear search"
+              onAction={() => setSearchQuery('')}
+            />
+          ) : activeResidentFilterId ? (
+            <EmptyState
+              title="No matching resident in this filter"
+              description={`Switch tabs or show all residents to view the full roster.`}
+              actionLabel="Show all"
+              onAction={handleClearResidentFilter}
+            />
+          ) : (
+            <EmptyState
+              title="No residents found"
+              description={
+                activeTab === 'OUT'
+                  ? 'No residents are currently marked outside.'
+                  : activeTab === 'IN'
+                  ? 'No residents are currently marked inside.'
+                  : 'No active residents registered in this property.'
+              }
+            />
+          )
         ) : (
           <View style={styles.residentsList}>
             {filteredResidents.map((resident) => {
@@ -433,106 +577,158 @@ export default function StudentInOutScreen() {
               const isLate = Boolean(
                 isOutside && latestLog && isLateReturn(latestLog.expected_return_time)
               );
+              const isSavingMovement = savingResidentIds.includes(resident.id);
+              const nextDirection: ResidentStatus = isInside ? 'OUT' : 'IN';
 
               return (
-                <Pressable
+                <View
                   key={resident.id}
-                  accessibilityRole="button"
-                  style={({ pressed }) => [
+                  style={[
                     styles.residentCard,
                     isLate && styles.residentCardLate,
-                    pressed && styles.cardPressed,
-                  ]}
-                  onPress={() =>
-                    router.push({
-                      pathname: '/edit-resident',
-                      params: { id: resident.id },
-                    })
-                  }>
-                  <View style={styles.residentCardHeader}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.residentName}>
-                        {resident.full_name}
-                      </Text>
-                      <Text style={styles.residentRoom}>
-                        Room {resident.room_number}
-                      </Text>
+                  ]}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open profile for ${resident.full_name}`}
+                    style={({ pressed }) => [pressed && styles.cardPressed]}
+                    onPress={() =>
+                      router.push({
+                        pathname: '/resident-profile',
+                        params: { id: resident.id },
+                      } as Href)
+                    }>
+                    <View style={styles.residentCardHeader}>
+                      <View style={{ flex: 1, paddingRight: 8 }}>
+                        <Text style={styles.residentName}>
+                          {resident.full_name}
+                        </Text>
+                        <Text style={styles.residentRoom}>
+                          Room {resident.room_number}
+                        </Text>
+                      </View>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        {isLate && (
+                          <StatusBadge
+                            label={toSentenceCaseStatus('late')}
+                            variant="danger"
+                            size="sm"
+                          />
+                        )}
+                        <StatusBadge
+                          label={toSentenceCaseStatus(isInside ? 'inside' : 'outside')}
+                          variant={isInside ? 'success' : 'warning'}
+                          size="sm"
+                        />
+                      </View>
                     </View>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                      {isLate && (
-                        <StatusBadge label="LATE" variant="danger" size="sm" />
-                      )}
-                      <StatusBadge
-                        label={isInside ? 'INSIDE' : 'OUTSIDE'}
-                        variant={isInside ? 'success' : 'warning'}
-                        size="sm"
-                      />
-                    </View>
-                  </View>
 
-                  {/* Clean information rows */}
-                  {isOutside && latestLog ? (
-                    <View style={styles.detailsBox}>
-                      <View style={styles.detailRow}>
-                        <Text style={styles.detailLabel}>Left at:</Text>
-                        <Text style={styles.detailValue}>
-                          {formatEventTime(latestLog.event_time)}
-                        </Text>
-                      </View>
-                      {latestLog.purpose ? (
+                    {/* Clean information rows */}
+                    {isOutside && latestLog ? (
+                      <View style={styles.detailsBox}>
                         <View style={styles.detailRow}>
-                          <Text style={styles.detailLabel}>Purpose:</Text>
-                          <Text style={styles.detailValueBold}>
-                            {latestLog.purpose}
-                          </Text>
-                        </View>
-                      ) : null}
-                      {latestLog.expected_return_time ? (
-                        <View style={styles.detailRow}>
-                          <Text style={styles.detailLabel}>
-                            Expected return:
-                          </Text>
+                          <Text style={styles.detailLabel}>Checked out:</Text>
                           <Text style={styles.detailValue}>
-                            {latestLog.expected_return_time}
+                            {formatGateEventTimestamp(latestLog.event_time)}
                           </Text>
                         </View>
-                      ) : null}
-                      <View style={styles.detailRow}>
-                        <Text style={styles.detailLabel}>Dinner:</Text>
-                        <Text
-                          style={[
-                            styles.dinnerText,
-                            latestLog.food_required
-                              ? { color: OwnerTheme.colors.success }
-                              : { color: OwnerTheme.colors.textMuted },
-                          ]}>
-                          {latestLog.food_required ? 'Required' : 'Not required'}
-                        </Text>
+                        {latestLog.purpose ? (
+                          <View style={styles.detailRow}>
+                            <Text style={styles.detailLabel}>Purpose:</Text>
+                            <Text style={styles.detailValueBold}>
+                              {latestLog.purpose}
+                            </Text>
+                          </View>
+                        ) : null}
+                        {latestLog.expected_return_time ? (
+                          <View style={styles.detailRow}>
+                            <Text style={styles.detailLabel}>
+                              Expected return:
+                            </Text>
+                            <Text style={styles.detailValue}>
+                              {latestLog.expected_return_time}
+                            </Text>
+                          </View>
+                        ) : null}
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Dinner:</Text>
+                          <Text
+                            style={[
+                              styles.dinnerText,
+                              latestLog.food_required
+                                ? { color: OwnerTheme.colors.success }
+                                : { color: OwnerTheme.colors.textMuted },
+                            ]}>
+                            {latestLog.food_required ? 'Required' : 'Not required'}
+                          </Text>
+                        </View>
                       </View>
-                    </View>
-                  ) : (
-                    <View style={styles.detailsBox}>
-                      <View style={styles.detailRow}>
-                        <Text style={styles.detailLabel}>Checked in:</Text>
-                        <Text style={styles.detailValue}>
-                          {latestLog
-                            ? formatEventTime(latestLog.event_time)
-                            : 'Inside PG'}
-                        </Text>
+                    ) : (
+                      <View style={styles.detailsBox}>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Checked in:</Text>
+                          <Text
+                            style={[
+                              styles.detailValue,
+                              !latestLog && { color: OwnerTheme.colors.textMuted },
+                            ]}>
+                            {latestLog
+                              ? formatGateEventTimestamp(latestLog.event_time)
+                              : 'No gate logs yet'}
+                          </Text>
+                        </View>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Dinner:</Text>
+                          <Text
+                            style={[
+                              styles.dinnerText,
+                              { color: OwnerTheme.colors.success },
+                            ]}>
+                            Included (Inside PG)
+                          </Text>
+                        </View>
                       </View>
-                      <View style={styles.detailRow}>
-                        <Text style={styles.detailLabel}>Dinner:</Text>
-                        <Text
-                          style={[
-                            styles.dinnerText,
-                            { color: OwnerTheme.colors.success },
-                          ]}>
-                          Included (Inside PG)
-                        </Text>
-                      </View>
-                    </View>
-                  )}
-                </Pressable>
+                    )}
+                  </Pressable>
+
+                  <View style={styles.cardActionRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`${isInside ? 'Mark Out' : 'Mark In'} ${resident.full_name}`}
+                      disabled={isSavingMovement}
+                      style={({ pressed }) => [
+                        styles.quickGateBtn,
+                        isInside
+                          ? styles.quickGateBtnOut
+                          : styles.quickGateBtnIn,
+                        isSavingMovement && styles.quickGateBtnDisabled,
+                        pressed && !isSavingMovement && styles.cardPressed,
+                      ]}
+                      onPress={(e) => {
+                        e?.stopPropagation?.();
+                        void handleQuickToggleGate(resident, nextDirection);
+                      }}>
+                      {isSavingMovement ? (
+                        <ActivityIndicator
+                          size="small"
+                          color={isInside ? '#B45309' : OwnerTheme.colors.success}
+                        />
+                      ) : isInside ? (
+                        <LogOut size={14} color="#B45309" />
+                      ) : (
+                        <LogIn size={14} color={OwnerTheme.colors.success} />
+                      )}
+                      <Text
+                        style={[
+                          styles.quickGateBtnText,
+                          isInside
+                            ? styles.quickGateBtnTextOut
+                            : styles.quickGateBtnTextIn,
+                        ]}>
+                        {isInside ? 'Mark Out' : 'Mark In'}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
               );
             })}
           </View>
@@ -543,7 +739,10 @@ export default function StudentInOutScreen() {
           <Text style={styles.historySectionTitle}>Recent Event History</Text>
           <Pressable
             accessibilityRole="button"
-            onPress={() => setFullHistoryVisible(true)}>
+            onPress={() => {
+              setReferenceTimeMs(Date.now());
+              setFullHistoryVisible(true);
+            }}>
             <Text style={styles.viewAllText}>View All ›</Text>
           </Pressable>
         </View>
@@ -553,13 +752,13 @@ export default function StudentInOutScreen() {
             <View style={{ padding: 16, alignItems: 'center' }}>
               <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
             </View>
-          ) : logs.length === 0 ? (
+          ) : scopedLogs.length === 0 ? (
             <EmptyState
               title="No movement records"
-              description="When students check in or out, records will appear here."
+              description="When residents check in or out, records will appear here."
             />
           ) : (
-            groupLogsByLocalDay(logs.slice(0, 3)).map((group) => (
+            groupLogsByLocalDay(scopedLogs.slice(0, 3)).map((group) => (
               <View key={group.dateKey}>
                 <Text style={styles.historyDayLabel}>{group.dateTitle}</Text>
                 {group.items.map((item, index) => {
@@ -595,7 +794,7 @@ export default function StudentInOutScreen() {
                           {resident ? `(Room ${resident.room_number})` : ''}
                         </Text>
                         <Text style={styles.historyItemSub}>
-                          marked {item.direction}
+                          {isEntry ? 'Checked in' : 'Checked out'}
                           {item.purpose ? ` • ${item.purpose}` : ''}
                         </Text>
                       </View>
@@ -647,7 +846,11 @@ export default function StudentInOutScreen() {
                       historyDirectionFilter === dir &&
                         styles.filterChipTextActive,
                     ]}>
-                    {dir}
+                    {dir === 'ALL'
+                      ? 'All'
+                      : dir === 'IN'
+                      ? 'Checked in'
+                      : 'Checked out'}
                   </Text>
                 </Pressable>
               ))}
@@ -727,7 +930,7 @@ export default function StudentInOutScreen() {
                           </View>
                           <View style={{ alignItems: 'flex-end' }}>
                             <StatusBadge
-                              label={isEntry ? 'IN' : 'OUT'}
+                              label={isEntry ? 'Checked in' : 'Checked out'}
                               variant={isEntry ? 'success' : 'warning'}
                               size="sm"
                             />
@@ -819,44 +1022,62 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
   },
-  summaryStrip: {
+  lateAlertRow: {
     marginTop: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    flexWrap: 'wrap',
-    gap: 8,
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  summaryStripLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    flex: 1,
-  },
-  summaryStripText: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-  },
-  summaryStripBold: {
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
   },
   lateChip: {
     backgroundColor: '#FEE2E2',
     borderRadius: OwnerTheme.radius.full,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
   },
   lateChipText: {
     fontSize: 11,
     fontWeight: '700',
     color: '#B91C1C',
+  },
+  residentFilterBanner: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: OwnerTheme.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  residentFilterBannerText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  residentFilterBannerAction: {
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  searchBarWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.md,
+    paddingHorizontal: 12,
+    height: 44,
+    marginBottom: 12,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    color: OwnerTheme.colors.textPrimary,
+    paddingVertical: 0,
   },
   residentCardLate: {
     borderColor: '#FCA5A5',
@@ -919,6 +1140,41 @@ const styles = StyleSheet.create({
   dinnerText: {
     fontSize: 13,
     fontWeight: '600',
+  },
+  cardActionRow: {
+    marginTop: 10,
+    flexDirection: 'row',
+  },
+  quickGateBtn: {
+    flex: 1,
+    height: 38,
+    borderRadius: OwnerTheme.radius.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderWidth: 1,
+  },
+  quickGateBtnOut: {
+    backgroundColor: OwnerTheme.colors.warningLight,
+    borderColor: '#FDE68A',
+  },
+  quickGateBtnIn: {
+    backgroundColor: OwnerTheme.colors.successLight,
+    borderColor: '#BBF7D0',
+  },
+  quickGateBtnDisabled: {
+    opacity: 0.65,
+  },
+  quickGateBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  quickGateBtnTextOut: {
+    color: '#B45309',
+  },
+  quickGateBtnTextIn: {
+    color: OwnerTheme.colors.success,
   },
   historySectionHeader: {
     flexDirection: 'row',
@@ -1033,6 +1289,7 @@ const styles = StyleSheet.create({
   modalFilterRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 8,
   },
   filterGroupLabel: {

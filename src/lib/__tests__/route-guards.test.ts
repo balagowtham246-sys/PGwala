@@ -168,6 +168,18 @@ describe('navigation-guards', () => {
         evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'student-food-updates' })
       ).toBeNull();
       expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'residents-directory' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'resident-profile' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'residents-directory' })
+      ).toBe('/resident-tabs');
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: 'resident-profile' })
+      ).toBe('/warden-dashboard');
+      expect(
         evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'owner-wardens' })
       ).toBe('/resident-tabs');
     });

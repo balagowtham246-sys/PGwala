@@ -2,27 +2,31 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Modal,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import * as Notifications from 'expo-notifications';
-import {
-  Bell,
-  ChevronRight,
-  Clock,
-  Disc3,
-  X,
-} from 'lucide-react-native';
+import { ChevronRight, Disc3 } from 'lucide-react-native';
 
 import { supabase } from '@/lib/supabase';
 import { OwnerTheme } from '@/constants/theme';
+import {
+  fetchWashingMachineStatus,
+  getRemainingWashSeconds,
+  releaseWashingMachineUnit,
+  requestWashingMachineAccess,
+  startWashingMachineUnit,
+  WashingMachineRequestStatus,
+  WashingMachineStatusData,
+  WashingMachineUnitData,
+} from '@/services/washing-machine.service';
+import { MachineBookingModal } from '@/components/washing-machine/MachineBookingModal';
+import { MachineSlotRow } from '@/components/washing-machine/MachineSlotRow';
 
-const CYCLE_DURATION_MINUTES = 45;
+export type { WashingMachineStatusData, WashingMachineUnitData };
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -34,30 +38,6 @@ Notifications.setNotificationHandler({
   }),
 });
 
-export interface WashingMachineStatusData {
-  property_id: string;
-  status: 'free' | 'in_use';
-  current_resident_id: string | null;
-  current_resident_name: string | null;
-  current_resident_room: string | null;
-  started_at: string | null;
-  updated_at: string;
-}
-
-export interface WashingMachineUnitData {
-  id: string;
-  property_id: string;
-  machine_number: number;
-  machine_name: string;
-  is_active: boolean;
-  status: 'free' | 'in_use';
-  current_resident_id: string | null;
-  current_resident_name: string | null;
-  current_resident_room: string | null;
-  started_at: string | null;
-  updated_at: string;
-}
-
 interface WashingMachineCardProps {
   propertyId: string | null;
   userRole: 'owner' | 'student';
@@ -68,30 +48,6 @@ interface WashingMachineCardProps {
 
 let wmChannelSequence = 0;
 
-function formatCountdown(
-  startedAtIso: string | null,
-  nowMs: number
-): { label: string; remainingSeconds: number } {
-  if (!startedAtIso) {
-    return { label: `${CYCLE_DURATION_MINUTES}m left`, remainingSeconds: CYCLE_DURATION_MINUTES * 60 };
-  }
-  try {
-    const startedMs = new Date(startedAtIso).getTime();
-    if (Number.isNaN(startedMs)) {
-      return { label: `${CYCLE_DURATION_MINUTES}m left`, remainingSeconds: CYCLE_DURATION_MINUTES * 60 };
-    }
-    const elapsedSeconds = Math.max(0, Math.floor((nowMs - startedMs) / 1000));
-    const remainingSeconds = Math.max(0, CYCLE_DURATION_MINUTES * 60 - elapsedSeconds);
-    if (remainingSeconds === 0) {
-      return { label: 'Finishing soon', remainingSeconds: 0 };
-    }
-    const mins = Math.ceil(remainingSeconds / 60);
-    return { label: `~${mins}m left`, remainingSeconds };
-  } catch {
-    return { label: `${CYCLE_DURATION_MINUTES}m left`, remainingSeconds: CYCLE_DURATION_MINUTES * 60 };
-  }
-}
-
 export function WashingMachineCard({
   propertyId,
   userRole,
@@ -101,7 +57,8 @@ export function WashingMachineCard({
 }: WashingMachineCardProps) {
   const [machines, setMachines] = useState<WashingMachineUnitData[]>([]);
   const [residentEnabled, setResidentEnabled] = useState(true);
-  const [requestStatus, setRequestStatus] = useState<'none' | 'pending' | 'accepted' | 'rejected'>('none');
+  const [requestStatus, setRequestStatus] =
+    useState<WashingMachineRequestStatus>('none');
   const [requestingAccess, setRequestingAccess] = useState(false);
   const [popupVisible, setPopupVisible] = useState(false);
 
@@ -130,27 +87,42 @@ export function WashingMachineCard({
   useEffect(() => {
     const notifiedIds = Object.keys(notifyMap);
     if (notifiedIds.length === 0) return;
-    for (const unit of machines) {
-      if (unit.status === 'free' && notifyMap[unit.id]) {
+
+    const freedUnits = machines.filter(
+      (unit) => unit.status === 'free' && Boolean(notifyMap[unit.id])
+    );
+    if (freedUnits.length === 0) return;
+
+    const timer = setTimeout(() => {
+      for (const unit of freedUnits) {
         const notifId = notifyMap[unit.id];
-        if (notifId !== 'in_app_only') {
+        if (notifId && notifId !== 'in_app_only') {
           Notifications.cancelScheduledNotificationAsync(notifId).catch(() => {});
         }
-        setNotifyMap((prev) => {
-          const next = { ...prev };
-          delete next[unit.id];
-          return next;
-        });
-        Alert.alert('Washing Machine Free', `${unit.machine_name} is now free to use.`);
+        Alert.alert(
+          'Washing Machine Free',
+          `${unit.machine_name} is now free to use.`
+        );
       }
-    }
+      setNotifyMap((prev) => {
+        const next = { ...prev };
+        for (const unit of freedUnits) {
+          delete next[unit.id];
+        }
+        return next;
+      });
+    }, 0);
+
+    return () => clearTimeout(timer);
   }, [machines, notifyMap]);
 
   const handleToggleNotify = async (unit: WashingMachineUnitData) => {
     const existingId = notifyMap[unit.id];
     if (existingId) {
       if (existingId !== 'in_app_only') {
-        await Notifications.cancelScheduledNotificationAsync(existingId).catch(() => {});
+        await Notifications.cancelScheduledNotificationAsync(existingId).catch(
+          () => {}
+        );
       }
       setNotifyMap((prev) => {
         const next = { ...prev };
@@ -160,7 +132,7 @@ export function WashingMachineCard({
       return;
     }
 
-    const { remainingSeconds } = formatCountdown(unit.started_at, Date.now());
+    const remainingSeconds = getRemainingWashSeconds(unit.started_at);
     const triggerSeconds = Math.max(10, remainingSeconds);
 
     try {
@@ -198,82 +170,48 @@ export function WashingMachineCard({
   };
 
   // Fetch authoritative multi-unit state from the server
-  const fetchStatus = useCallback(async (isInitial = false) => {
-    if (!propertyId) {
-      if (isMountedRef.current) setLoading(false);
-      return;
-    }
+  const fetchStatus = useCallback(
+    async (isInitial = false) => {
+      if (!propertyId) {
+        if (isMountedRef.current) setLoading(false);
+        return;
+      }
 
-    if (isInitial && isMountedRef.current) {
-      setLoading(true);
-    }
-    setErrorMessage(null);
+      if (isInitial && isMountedRef.current) {
+        setLoading(true);
+      }
+      setErrorMessage(null);
 
-    try {
-      // 1. Try multi-unit RPC
-      const { data: rpcRes, error } = await supabase.rpc('get_or_create_wm_units', {
-        p_property_id: propertyId,
-      });
+      try {
+        const result = await fetchWashingMachineStatus(propertyId, userRole);
+        if (!result.ok) {
+          throw new Error(result.error.message);
+        }
 
-      if (!error && rpcRes && rpcRes.success) {
-        if (isMountedRef.current) {
-          const unitList: WashingMachineUnitData[] = (rpcRes.machines ?? []).map((m: any) => ({
-            id: m.id,
-            property_id: m.property_id,
-            machine_number: m.machine_number ?? 1,
-            machine_name: m.machine_name ?? `Machine ${m.machine_number ?? 1}`,
-            is_active: m.is_active ?? true,
-            status: m.status ?? 'free',
-            current_resident_id: m.current_resident_id,
-            current_resident_name: m.current_resident_name,
-            current_resident_room: m.current_resident_room,
-            started_at: m.started_at,
-            updated_at: m.updated_at,
-          }));
-
-          setMachines(unitList);
+        if (isMountedRef.current && result.data.machines !== null) {
+          setMachines(result.data.machines);
           if (userRole === 'student') {
-            setResidentEnabled(rpcRes.resident_enabled ?? true);
-            setRequestStatus(rpcRes.request_status ?? 'none');
+            if (typeof result.data.residentEnabled === 'boolean') {
+              setResidentEnabled(result.data.residentEnabled);
+            }
+            if (result.data.requestStatus) {
+              setRequestStatus(result.data.requestStatus);
+            }
           }
         }
-      } else {
-        // Fallback to legacy single-unit RPC if migration not yet applied
-        const { data: legacyRes, error: legacyErr } = await supabase.rpc('get_or_create_wm_status', {
-          p_property_id: propertyId,
-        });
-
-        if (legacyErr) throw new Error(legacyErr.message);
-
-        if (legacyRes && legacyRes.success && isMountedRef.current) {
-          setMachines([
-            {
-              id: legacyRes.property_id,
-              property_id: legacyRes.property_id,
-              machine_number: 1,
-              machine_name: 'Washing Machine 1',
-              is_active: true,
-              status: legacyRes.status,
-              current_resident_id: legacyRes.current_resident_id,
-              current_resident_name: legacyRes.current_resident_name,
-              current_resident_room: legacyRes.current_resident_room,
-              started_at: legacyRes.started_at,
-              updated_at: legacyRes.updated_at,
-            },
-          ]);
+      } catch (err: any) {
+        console.warn('[WashingMachine] Fetch error:', err.message);
+        if (isMountedRef.current) {
+          setErrorMessage(err.message || 'Could not load washing machine status.');
+        }
+      } finally {
+        if (isMountedRef.current) {
+          setLoading(false);
         }
       }
-    } catch (err: any) {
-      console.warn('[WashingMachine] Fetch error:', err.message);
-      if (isMountedRef.current) {
-        setErrorMessage(err.message || 'Could not load washing machine status.');
-      }
-    } finally {
-      if (isMountedRef.current) {
-        setLoading(false);
-      }
-    }
-  }, [propertyId, userRole]);
+    },
+    [propertyId, userRole]
+  );
 
   // Set up Realtime subscription scoped to this property
   useEffect(() => {
@@ -287,7 +225,11 @@ export function WashingMachineCard({
       };
     }
 
-    fetchStatus(true);
+    const initialFetchTimer = setTimeout(() => {
+      if (isEffectActive && isMountedRef.current) {
+        void fetchStatus(true);
+      }
+    }, 0);
 
     if (channelRef.current) {
       const oldChannel = channelRef.current;
@@ -354,6 +296,7 @@ export function WashingMachineCard({
     channelRef.current = channel;
 
     return () => {
+      clearTimeout(initialFetchTimer);
       isMountedRef.current = false;
       isEffectActive = false;
       setIsSubscribed(false);
@@ -364,24 +307,20 @@ export function WashingMachineCard({
     };
   }, [propertyId, userRole, currentResidentId, fetchStatus]);
 
-  // Request Access from Owner
+  // Request Access from Owner (strictly online)
   const handleRequestAccess = async () => {
     if (!propertyId || requestingAccess) return;
     try {
       setRequestingAccess(true);
-      const { data: res, error } = await supabase.rpc('request_wm_access', {
-        p_property_id: propertyId,
-      });
-      if (error) throw error;
-      if (res?.success) {
-        setRequestStatus('pending');
-        Alert.alert(
-          'Request Submitted',
-          'Your request for washing machine access has been sent to the PG owner. Once approved in your monthly bill, you can use any machine.'
-        );
-      } else {
-        throw new Error(res?.error || 'Could not send request.');
+      const result = await requestWashingMachineAccess(propertyId);
+      if (!result.ok) {
+        throw new Error(result.error.message);
       }
+      setRequestStatus('pending');
+      Alert.alert(
+        'Request Submitted',
+        'Your request for washing machine access has been sent to the PG owner. Once approved in your monthly bill, you can use any machine.'
+      );
     } catch (err: any) {
       Alert.alert('Request Failed', err.message || 'Could not submit request.');
     } finally {
@@ -389,7 +328,7 @@ export function WashingMachineCard({
     }
   };
 
-  // Action: Start washing machine session
+  // Action: Start washing machine session (strictly online)
   const handleStartUsing = async (targetMachineId?: string) => {
     if (!propertyId || actionLoading) return;
 
@@ -410,40 +349,35 @@ export function WashingMachineCard({
       if (targetMachineId) setActionUnitId(targetMachineId);
       setErrorMessage(null);
 
-      // Try multi-unit RPC
-      const { data: rpcRes, error } = await supabase.rpc('start_washing_machine_unit', {
-        p_property_id: propertyId,
-        p_machine_id: targetMachineId || null,
-      });
-
-      if (!error && rpcRes && rpcRes.success) {
-        await fetchStatus(false);
-        Alert.alert(
-          'Wash Started',
-          `Session active on ${rpcRes.machine?.machine_name || 'selected machine'}. Please mark it free when your laundry is done.`
-        );
-        return;
+      const result = await startWashingMachineUnit(propertyId, targetMachineId);
+      if (!result.ok) {
+        throw new Error(result.error.message);
       }
 
-      if (rpcRes?.not_enabled) {
+      if (result.data.status === 'not_enabled') {
         setResidentEnabled(false);
-        Alert.alert('Access Not Enabled', rpcRes.error || 'Please request access from owner.');
+        Alert.alert('Access Not Enabled', result.data.errorMessage);
         return;
       }
-
-      // Legacy fallback
-      const { data: legacyRes, error: legacyErr } = await supabase.rpc('start_washing_machine', {
-        p_property_id: propertyId,
-      });
-
-      if (legacyErr) throw new Error(legacyErr.message);
-      if (!legacyRes?.success) throw new Error(legacyRes?.error || 'Could not start machine.');
 
       await fetchStatus(false);
-      Alert.alert('Wash Started', 'Machine is now marked in use. Please mark it free when done.');
+      if (result.data.usedLegacyFallback) {
+        Alert.alert(
+          'Wash Started',
+          'Machine is now marked in use. Please mark it free when done.'
+        );
+      } else {
+        Alert.alert(
+          'Wash Started',
+          `Session active on ${result.data.machineName || 'selected machine'}. Please mark it free when your laundry is done.`
+        );
+      }
     } catch (err: any) {
       console.warn('[WashingMachine] Start error:', err.message);
-      Alert.alert('Could Not Start', err.message || 'Washing machine could not be started.');
+      Alert.alert(
+        'Could Not Start',
+        err.message || 'Washing machine could not be started.'
+      );
       await fetchStatus(false);
     } finally {
       if (isMountedRef.current) {
@@ -453,7 +387,7 @@ export function WashingMachineCard({
     }
   };
 
-  // Action: Release washing machine session
+  // Action: Release washing machine session (strictly online)
   const handleMarkFree = async (targetMachineId?: string) => {
     if (!propertyId || actionLoading) return;
 
@@ -471,30 +405,25 @@ export function WashingMachineCard({
               if (targetMachineId) setActionUnitId(targetMachineId);
               setErrorMessage(null);
 
-              const { data: rpcRes, error } = await supabase.rpc('release_washing_machine_unit', {
-                p_property_id: propertyId,
-                p_machine_id: targetMachineId || null,
-              });
-
-              if (!error && rpcRes && rpcRes.success) {
-                await fetchStatus(false);
-                Alert.alert('Session Finished', 'Machine is now marked free for fellow residents.');
-                return;
+              const result = await releaseWashingMachineUnit(
+                propertyId,
+                targetMachineId
+              );
+              if (!result.ok) {
+                throw new Error(result.error.message);
               }
 
-              // Legacy fallback
-              const { data: legacyRes, error: legacyErr } = await supabase.rpc('release_washing_machine', {
-                p_property_id: propertyId,
-              });
-
-              if (legacyErr) throw new Error(legacyErr.message);
-              if (!legacyRes?.success) throw new Error(legacyRes?.error || 'Could not mark free.');
-
               await fetchStatus(false);
-              Alert.alert('Session Finished', 'Machine is now marked free for fellow residents.');
+              Alert.alert(
+                'Session Finished',
+                'Machine is now marked free for fellow residents.'
+              );
             } catch (err: any) {
               console.warn('[WashingMachine] Release error:', err.message);
-              Alert.alert('Error', err.message || 'Could not mark machine free.');
+              Alert.alert(
+                'Error',
+                err.message || 'Could not mark machine free.'
+              );
               await fetchStatus(false);
             } finally {
               if (isMountedRef.current) {
@@ -520,249 +449,28 @@ export function WashingMachineCard({
     (m) => currentResidentId && m.current_resident_id === currentResidentId
   );
 
-  // ---------------------------------------------------------------------------
-  // INTERACTIVE POPUP MODAL (Shared between Compact and Full modes)
-  // ---------------------------------------------------------------------------
-  const renderPopupModal = () => (
-    <Modal
+  const modalElement = (
+    <MachineBookingModal
       visible={popupVisible}
-      transparent
-      animationType="fade"
-      onRequestClose={() => setPopupVisible(false)}>
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
-          {/* Header */}
-          <View style={styles.modalHeader}>
-            <View style={{ flex: 1 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Disc3 size={18} color="#0284C7" />
-                <Text style={styles.modalTitle}>Washing Machine Units</Text>
-              </View>
-              <Text style={styles.modalSubtitle} numberOfLines={1}>
-                {loading
-                  ? 'Loading units...'
-                  : `${activeMachines.length} units • ${freeMachines.length} free, ${inUseMachines.length} in use`}
-              </Text>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close washing machine modal"
-              hitSlop={8}
-              onPress={() => setPopupVisible(false)}
-              style={styles.modalCloseBtn}>
-              <X size={20} color="#64748B" />
-            </Pressable>
-          </View>
-
-          {/* Un-enabled Resident Notice */}
-          {userRole === 'student' && !residentEnabled && (
-            <View style={styles.modalGatingBanner}>
-              <Text style={styles.modalGatingTitle}>Access Not Enabled</Text>
-              <Text style={styles.modalGatingSub}>
-                Washing machine service is ₹500/month added to your monthly bill. Request access from your owner to start using machines.
-              </Text>
-              {requestStatus === 'pending' ? (
-                <View style={styles.modalPendingCard}>
-                  <Text style={styles.modalPendingText}>⏳ Access request pending owner approval</Text>
-                </View>
-              ) : (
-                <Pressable
-                  style={({ pressed }) => [
-                    styles.modalRequestBtn,
-                    pressed && styles.btnPressed,
-                    requestingAccess && styles.btnDisabled,
-                  ]}
-                  disabled={requestingAccess}
-                  onPress={handleRequestAccess}>
-                  {requestingAccess ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <Text style={styles.modalRequestBtnText}>Request Access from Owner</Text>
-                  )}
-                </Pressable>
-              )}
-            </View>
-          )}
-
-          {/* Unit List */}
-          <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
-            {activeMachines.length === 0 ? (
-              <View style={styles.modalEmptyBox}>
-                <Text style={styles.modalEmptyText}>
-                  {loading ? 'Checking available units...' : 'No washing machine units configured.'}
-                </Text>
-              </View>
-            ) : (
-              activeMachines.map((unit) => {
-                const isUnitFree = unit.status === 'free';
-                const isMySession = Boolean(
-                  currentResidentId && unit.current_resident_id === currentResidentId
-                );
-                const isThisLoading = actionLoading && actionUnitId === unit.id;
-
-                return (
-                  <View
-                    key={unit.id}
-                    style={[
-                      styles.modalUnitRow,
-                      isMySession && styles.modalUnitRowMySession,
-                    ]}>
-                    <View style={{ flex: 1, marginRight: 10 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <Text style={styles.modalUnitName}>{unit.machine_name}</Text>
-                        <View
-                          style={[
-                            styles.modalStatusBadge,
-                            isMySession
-                              ? styles.badgeMySession
-                              : isUnitFree
-                              ? styles.badgeFree
-                              : styles.badgeInUse,
-                          ]}>
-                          <View
-                            style={[
-                              styles.modalStatusDot,
-                              {
-                                backgroundColor: isMySession
-                                  ? '#0284C7'
-                                  : isUnitFree
-                                  ? '#16A34A'
-                                  : '#DC2626',
-                              },
-                            ]}
-                          />
-                          <Text
-                            style={[
-                              styles.modalStatusText,
-                              {
-                                color: isMySession
-                                  ? '#0369A1'
-                                  : isUnitFree
-                                  ? '#15803D'
-                                  : '#B91C1C',
-                              },
-                            ]}>
-                            {isMySession
-                              ? 'Your Wash'
-                              : isUnitFree
-                              ? 'Free'
-                              : 'In Use'}
-                          </Text>
-                        </View>
-                      </View>
-
-                      {isUnitFree ? (
-                        <Text style={styles.modalUnitSubFree}>Available</Text>
-                      ) : (
-                        <View style={{ marginTop: 3 }}>
-                          <Text style={styles.modalUnitOccupant} numberOfLines={1}>
-                            {unit.current_resident_name || 'Resident'}
-                            {unit.current_resident_room ? ` (Room ${unit.current_resident_room})` : ''}
-                          </Text>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                            <Clock size={11} color="#D97706" />
-                            <Text style={styles.modalUnitDuration}>
-                              {formatCountdown(unit.started_at, nowMs).label}
-                            </Text>
-                          </View>
-                        </View>
-                      )}
-                    </View>
-
-                    {/* Action Button */}
-                    <View style={{ justifyContent: 'center' }}>
-                      {isMySession ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={`Mark ${unit.machine_name} free`}
-                          style={({ pressed }) => [
-                            styles.modalRowBtn,
-                            styles.modalReleaseBtn,
-                            pressed && styles.btnPressed,
-                            isThisLoading && styles.btnDisabled,
-                          ]}
-                          disabled={actionLoading}
-                          onPress={() => handleMarkFree(unit.id)}>
-                          {isThisLoading ? (
-                            <ActivityIndicator size="small" color="#FFFFFF" />
-                          ) : (
-                            <Text style={styles.modalRowBtnText}>Mark Free</Text>
-                          )}
-                        </Pressable>
-                      ) : isUnitFree && userRole === 'student' ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={`Start washing on ${unit.machine_name}`}
-                          style={({ pressed }) => [
-                            styles.modalRowBtn,
-                            residentEnabled ? styles.modalStartBtn : styles.modalDisabledBtn,
-                            pressed && styles.btnPressed,
-                            isThisLoading && styles.btnDisabled,
-                          ]}
-                          disabled={actionLoading || !residentEnabled}
-                          onPress={() => {
-                            if (!residentEnabled) {
-                              Alert.alert(
-                                'Access Required',
-                                'Washing machine access is not enabled. Please request access from the owner.',
-                                [
-                                  { text: 'Cancel', style: 'cancel' },
-                                  { text: 'Request Access', onPress: handleRequestAccess },
-                                ]
-                              );
-                              return;
-                            }
-                            handleStartUsing(unit.id);
-                          }}>
-                          {isThisLoading ? (
-                            <ActivityIndicator size="small" color="#FFFFFF" />
-                          ) : (
-                            <Text style={styles.modalRowBtnText}>
-                              {residentEnabled ? 'Start Wash' : 'Disabled'}
-                            </Text>
-                          )}
-                        </Pressable>
-                      ) : !isUnitFree ? (
-                        <Pressable
-                          accessibilityRole="button"
-                          onPress={() => handleToggleNotify(unit)}
-                          style={[
-                            styles.notifyBtn,
-                            Boolean(notifyMap[unit.id]) && styles.notifyBtnActive,
-                          ]}>
-                          <Bell
-                            size={12}
-                            color={notifyMap[unit.id] ? '#0284C7' : '#475569'}
-                          />
-                          <Text
-                            style={[
-                              styles.notifyBtnText,
-                              Boolean(notifyMap[unit.id]) && styles.notifyBtnTextActive,
-                            ]}>
-                            {notifyMap[unit.id] ? 'Notified' : 'Notify me'}
-                          </Text>
-                        </Pressable>
-                      ) : null}
-                    </View>
-                  </View>
-                );
-              })
-            )}
-          </ScrollView>
-
-          {/* Footer */}
-          <View style={styles.modalFooter}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close dialog"
-              style={styles.modalDismissBtn}
-              onPress={() => setPopupVisible(false)}>
-              <Text style={styles.modalDismissBtnText}>Close</Text>
-            </Pressable>
-          </View>
-        </View>
-      </View>
-    </Modal>
+      loading={loading}
+      activeMachines={activeMachines}
+      freeCount={freeMachines.length}
+      inUseCount={inUseMachines.length}
+      userRole={userRole}
+      currentResidentId={currentResidentId}
+      residentEnabled={residentEnabled}
+      requestStatus={requestStatus}
+      requestingAccess={requestingAccess}
+      actionLoading={actionLoading}
+      actionUnitId={actionUnitId}
+      nowMs={nowMs}
+      notifyMap={notifyMap}
+      onClose={() => setPopupVisible(false)}
+      onRequestAccess={handleRequestAccess}
+      onStartUsing={handleStartUsing}
+      onMarkFree={handleMarkFree}
+      onToggleNotify={handleToggleNotify}
+    />
   );
 
   // ---------------------------------------------------------------------------
@@ -865,7 +573,7 @@ export function WashingMachineCard({
         </View>
 
         {/* Attach the interactive popup modal */}
-        {renderPopupModal()}
+        {modalElement}
       </Pressable>
     );
   }
@@ -939,7 +647,9 @@ export function WashingMachineCard({
               {requestingAccess ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
-                <Text style={styles.requestAccessBtnText}>Request Access from Owner</Text>
+                <Text style={styles.requestAccessBtnText}>
+                  Request Access from Owner
+                </Text>
               )}
             </Pressable>
           )}
@@ -961,109 +671,29 @@ export function WashingMachineCard({
         </View>
       ) : (
         <View style={styles.contentBox}>
-          {activeMachines.map((m) => {
-            const isUnitFree = m.status === 'free';
-            const isMySession = Boolean(
-              currentResidentId && m.current_resident_id === currentResidentId
-            );
-            const isThisLoading = actionLoading && actionUnitId === m.id;
-
-            return (
-              <View key={m.id} style={styles.fullUnitRow}>
-                <View style={{ flex: 1 }}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.selectedMachineTitle}>{m.machine_name}</Text>
-                    <View
-                      style={[
-                        styles.dropdownItemBadge,
-                        isMySession
-                          ? styles.badgeMySession
-                          : isUnitFree
-                          ? styles.badgeFree
-                          : styles.badgeInUse,
-                      ]}>
-                      <Text
-                        style={[
-                          styles.dropdownItemBadgeText,
-                          isMySession
-                            ? styles.badgeTextMySession
-                            : isUnitFree
-                            ? styles.badgeTextFree
-                            : styles.badgeTextInUse,
-                        ]}>
-                        {isMySession ? 'Your Wash' : isUnitFree ? 'Free' : 'In Use'}
-                      </Text>
-                    </View>
-                  </View>
-                  <Text style={styles.infoText}>
-                    {isUnitFree
-                      ? 'Available'
-                      : `Used by ${m.current_resident_name || 'Resident'}${
-                          m.current_resident_room ? ` (${m.current_resident_room})` : ''
-                        } • ${formatCountdown(m.started_at, nowMs).label}`}
-                  </Text>
-                </View>
-
-                {isMySession ? (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.actionBtn,
-                      styles.releaseBtn,
-                      pressed && styles.btnPressed,
-                      isThisLoading && styles.btnDisabled,
-                    ]}
-                    disabled={actionLoading}
-                    onPress={() => handleMarkFree(m.id)}>
-                    {isThisLoading ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <Text style={styles.actionBtnText}>Mark Free</Text>
-                    )}
-                  </Pressable>
-                ) : isUnitFree && userRole === 'student' && residentEnabled ? (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.actionBtn,
-                      styles.startBtn,
-                      pressed && styles.btnPressed,
-                      isThisLoading && styles.btnDisabled,
-                    ]}
-                    disabled={actionLoading}
-                    onPress={() => handleStartUsing(m.id)}>
-                    {isThisLoading ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <Text style={styles.actionBtnText}>Start Wash</Text>
-                    )}
-                  </Pressable>
-                ) : !isUnitFree ? (
-                  <Pressable
-                    style={[
-                      styles.notifyBtn,
-                      Boolean(notifyMap[m.id]) && styles.notifyBtnActive,
-                    ]}
-                    onPress={() => handleToggleNotify(m)}>
-                    <Bell
-                      size={12}
-                      color={notifyMap[m.id] ? '#0284C7' : '#475569'}
-                    />
-                    <Text
-                      style={[
-                        styles.notifyBtnText,
-                        Boolean(notifyMap[m.id]) && styles.notifyBtnTextActive,
-                      ]}>
-                      {notifyMap[m.id] ? 'Notified' : 'Notify me when done'}
-                    </Text>
-                  </Pressable>
-                ) : null}
-              </View>
-            );
-          })}
+          {activeMachines.map((m) => (
+            <MachineSlotRow
+              key={m.id}
+              unit={m}
+              variant="full"
+              userRole={userRole}
+              currentResidentId={currentResidentId}
+              residentEnabled={residentEnabled}
+              actionLoading={actionLoading}
+              actionUnitId={actionUnitId}
+              nowMs={nowMs}
+              isNotified={Boolean(notifyMap[m.id])}
+              onStartUsing={handleStartUsing}
+              onMarkFree={handleMarkFree}
+              onToggleNotify={handleToggleNotify}
+              onRequestAccess={handleRequestAccess}
+            />
+          ))}
         </View>
       )}
 
       {/* Attach Modal to full mode as well */}
-      {renderPopupModal()}
+      {modalElement}
     </View>
   );
 }
@@ -1183,9 +813,6 @@ const styles = StyleSheet.create({
   iconWrapDisabled: {
     backgroundColor: '#F1F5F9',
   },
-  machineIcon: {
-    fontSize: 22,
-  },
   titleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1294,71 +921,6 @@ const styles = StyleSheet.create({
     borderColor: '#F1F5F9',
     gap: 8,
   },
-  fullUnitRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: '#FFFFFF',
-    borderRadius: 10,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  selectedMachineTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  infoText: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  actionBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  startBtn: {
-    backgroundColor: '#16A34A',
-  },
-  releaseBtn: {
-    backgroundColor: '#0284C7',
-  },
-  actionBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  dropdownItemBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  dropdownItemBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  badgeFree: {
-    backgroundColor: '#DCFCE7',
-  },
-  badgeInUse: {
-    backgroundColor: '#FEE2E2',
-  },
-  badgeMySession: {
-    backgroundColor: '#E0F2FE',
-  },
-  badgeTextFree: {
-    color: '#15803D',
-  },
-  badgeTextInUse: {
-    color: '#DC2626',
-  },
-  badgeTextMySession: {
-    color: '#0284C7',
-  },
   loadingBox: {
     paddingVertical: 16,
     alignItems: 'center',
@@ -1394,224 +956,5 @@ const styles = StyleSheet.create({
   },
   btnDisabled: {
     opacity: 0.5,
-  },
-
-  // Modal Styles (Matches Owner Dashboard Popup Design)
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.6)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    width: '100%',
-    maxWidth: 420,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    padding: 18,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.25,
-    shadowRadius: 20,
-    elevation: 8,
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-    marginBottom: 12,
-  },
-  modalTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  modalSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  modalCloseBtn: {
-    padding: 4,
-  },
-  modalGatingBanner: {
-    backgroundColor: '#FFFBEB',
-    borderRadius: 12,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    marginBottom: 14,
-  },
-  modalGatingTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#92400E',
-    marginBottom: 4,
-  },
-  modalGatingSub: {
-    fontSize: 11,
-    color: '#78350F',
-    lineHeight: 16,
-    marginBottom: 10,
-  },
-  modalPendingCard: {
-    backgroundColor: '#FEF3C7',
-    padding: 8,
-    borderRadius: 6,
-    alignItems: 'center',
-  },
-  modalPendingText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#B45309',
-  },
-  modalRequestBtn: {
-    backgroundColor: '#D97706',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalRequestBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  modalEmptyBox: {
-    paddingVertical: 24,
-    alignItems: 'center',
-  },
-  modalEmptyText: {
-    fontSize: 13,
-    color: '#64748B',
-  },
-  modalUnitRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 8,
-  },
-  modalUnitRowMySession: {
-    backgroundColor: '#F0F9FF',
-    borderColor: '#BAE6FD',
-  },
-  modalUnitName: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  modalStatusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 8,
-  },
-  modalStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  modalStatusText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  modalUnitSubFree: {
-    fontSize: 11,
-    color: '#15803D',
-    marginTop: 2,
-  },
-  modalUnitOccupant: {
-    fontSize: 11,
-    color: '#334155',
-    fontWeight: '600',
-  },
-  modalUnitDuration: {
-    fontSize: 10,
-    color: '#64748B',
-  },
-  modalRowBtn: {
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: 80,
-  },
-  modalStartBtn: {
-    backgroundColor: '#16A34A',
-  },
-  modalReleaseBtn: {
-    backgroundColor: '#0284C7',
-  },
-  modalDisabledBtn: {
-    backgroundColor: '#94A3B8',
-  },
-  modalRowBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  modalBusyPill: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 6,
-    backgroundColor: '#FEE2E2',
-  },
-  modalBusyText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#DC2626',
-  },
-  notifyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: '#F1F5F9',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-  },
-  notifyBtnActive: {
-    backgroundColor: '#E0F2FE',
-    borderColor: '#7DD3FC',
-  },
-  notifyBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#475569',
-  },
-  notifyBtnTextActive: {
-    color: '#0284C7',
-  },
-  modalFooter: {
-    marginTop: 14,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F1F5F9',
-  },
-  modalDismissBtn: {
-    backgroundColor: '#F1F5F9',
-    paddingVertical: 10,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  modalDismissBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#475569',
   },
 });

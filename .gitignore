@@ -33,6 +33,7 @@ desktop.ini
 
 # local env files
 .env
+.env.test
 .env*.local
 
 # typescript

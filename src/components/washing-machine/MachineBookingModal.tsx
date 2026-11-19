@@ -1,0 +1,291 @@
+import React from 'react';
+import {
+  ActivityIndicator,
+  Modal,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { Disc3, X } from 'lucide-react-native';
+
+import {
+  WashingMachineRequestStatus,
+  WashingMachineUnitData,
+} from '@/services/washing-machine.service';
+import { MachineSlotRow } from '@/components/washing-machine/MachineSlotRow';
+
+export interface MachineBookingModalProps {
+  visible: boolean;
+  loading: boolean;
+  activeMachines: WashingMachineUnitData[];
+  freeCount: number;
+  inUseCount: number;
+  userRole: 'owner' | 'student';
+  currentResidentId?: string | null;
+  residentEnabled: boolean;
+  requestStatus: WashingMachineRequestStatus;
+  requestingAccess: boolean;
+  actionLoading: boolean;
+  actionUnitId: string | null;
+  nowMs: number;
+  notifyMap: Record<string, string>;
+  onClose: () => void;
+  onRequestAccess: () => void;
+  onStartUsing: (machineId: string) => void;
+  onMarkFree: (machineId: string) => void;
+  onToggleNotify: (unit: WashingMachineUnitData) => void;
+}
+
+export function MachineBookingModal({
+  visible,
+  loading,
+  activeMachines,
+  freeCount,
+  inUseCount,
+  userRole,
+  currentResidentId,
+  residentEnabled,
+  requestStatus,
+  requestingAccess,
+  actionLoading,
+  actionUnitId,
+  nowMs,
+  notifyMap,
+  onClose,
+  onRequestAccess,
+  onStartUsing,
+  onMarkFree,
+  onToggleNotify,
+}: MachineBookingModalProps) {
+  return (
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={onClose}>
+      <View style={styles.modalOverlay}>
+        <View style={styles.modalContent}>
+          {/* Header */}
+          <View style={styles.modalHeader}>
+            <View style={{ flex: 1 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Disc3 size={18} color="#0284C7" />
+                <Text style={styles.modalTitle}>Washing Machine Units</Text>
+              </View>
+              <Text style={styles.modalSubtitle} numberOfLines={1}>
+                {loading
+                  ? 'Loading units...'
+                  : `${activeMachines.length} units • ${freeCount} free, ${inUseCount} in use`}
+              </Text>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close washing machine modal"
+              hitSlop={8}
+              onPress={onClose}
+              style={styles.modalCloseBtn}>
+              <X size={20} color="#64748B" />
+            </Pressable>
+          </View>
+
+          {/* Un-enabled Resident Notice */}
+          {userRole === 'student' && !residentEnabled && (
+            <View style={styles.modalGatingBanner}>
+              <Text style={styles.modalGatingTitle}>Access Not Enabled</Text>
+              <Text style={styles.modalGatingSub}>
+                Washing machine service is ₹500/month added to your monthly bill. Request access from your owner to start using machines.
+              </Text>
+              {requestStatus === 'pending' ? (
+                <View style={styles.modalPendingCard}>
+                  <Text style={styles.modalPendingText}>
+                    ⏳ Access request pending owner approval
+                  </Text>
+                </View>
+              ) : (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.modalRequestBtn,
+                    pressed && styles.btnPressed,
+                    requestingAccess && styles.btnDisabled,
+                  ]}
+                  disabled={requestingAccess}
+                  onPress={onRequestAccess}>
+                  {requestingAccess ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.modalRequestBtnText}>
+                      Request Access from Owner
+                    </Text>
+                  )}
+                </Pressable>
+              )}
+            </View>
+          )}
+
+          {/* Unit List */}
+          <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+            {activeMachines.length === 0 ? (
+              <View style={styles.modalEmptyBox}>
+                <Text style={styles.modalEmptyText}>
+                  {loading
+                    ? 'Checking available units...'
+                    : 'No washing machine units configured.'}
+                </Text>
+              </View>
+            ) : (
+              activeMachines.map((unit) => (
+                <MachineSlotRow
+                  key={unit.id}
+                  unit={unit}
+                  variant="modal"
+                  userRole={userRole}
+                  currentResidentId={currentResidentId}
+                  residentEnabled={residentEnabled}
+                  actionLoading={actionLoading}
+                  actionUnitId={actionUnitId}
+                  nowMs={nowMs}
+                  isNotified={Boolean(notifyMap[unit.id])}
+                  onStartUsing={onStartUsing}
+                  onMarkFree={onMarkFree}
+                  onToggleNotify={onToggleNotify}
+                  onRequestAccess={onRequestAccess}
+                />
+              ))
+            )}
+          </ScrollView>
+
+          {/* Footer */}
+          <View style={styles.modalFooter}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Close dialog"
+              style={styles.modalDismissBtn}
+              onPress={onClose}>
+              <Text style={styles.modalDismissBtnText}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalContent: {
+    width: '100%',
+    maxWidth: 420,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 8,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingBottom: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+    marginBottom: 12,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  modalSubtitle: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  modalCloseBtn: {
+    padding: 4,
+  },
+  modalGatingBanner: {
+    backgroundColor: '#FFFBEB',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    marginBottom: 14,
+  },
+  modalGatingTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#92400E',
+    marginBottom: 4,
+  },
+  modalGatingSub: {
+    fontSize: 11,
+    color: '#78350F',
+    lineHeight: 16,
+    marginBottom: 10,
+  },
+  modalPendingCard: {
+    backgroundColor: '#FEF3C7',
+    padding: 8,
+    borderRadius: 6,
+    alignItems: 'center',
+  },
+  modalPendingText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#B45309',
+  },
+  modalRequestBtn: {
+    backgroundColor: '#D97706',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  modalRequestBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  btnPressed: {
+    opacity: 0.8,
+  },
+  btnDisabled: {
+    opacity: 0.5,
+  },
+  modalEmptyBox: {
+    paddingVertical: 24,
+    alignItems: 'center',
+  },
+  modalEmptyText: {
+    fontSize: 13,
+    color: '#64748B',
+  },
+  modalFooter: {
+    marginTop: 14,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  modalDismissBtn: {
+    backgroundColor: '#F1F5F9',
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  modalDismissBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#475569',
+  },
+});

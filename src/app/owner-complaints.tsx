@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -14,11 +15,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Href, router, useLocalSearchParams } from 'expo-router';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
-import { router } from 'expo-router';
 import {
+  Check,
   CheckCircle2,
   Camera,
+  SlidersHorizontal,
   X,
   Droplets,
   Zap,
@@ -33,6 +36,8 @@ import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { supabase, getSignedComplaintPhotoUrl } from '@/lib/supabase';
 import { sortComplaintsByUrgencyThenDate } from '@/lib/complaint-utils';
+import { sortRoomCodes, toSentenceCaseStatus } from '@/lib/ux-utils';
+import { ownerCreateComplaint } from '@/services/residents.service';
 import { OwnerHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 
@@ -48,6 +53,12 @@ export type ComplaintCategory =
 export type ComplaintPriority = 'low' | 'medium' | 'high' | 'urgent';
 
 export type ComplaintStatus = 'open' | 'in_progress' | 'resolved' | 'rejected';
+
+export interface ActiveResidentOption {
+  id: string;
+  full_name: string;
+  room_number: string;
+}
 
 export interface OwnerComplaintItem {
   id: string;
@@ -75,7 +86,7 @@ const CATEGORY_CONFIG: Record<
 > = {
   plumbing: { label: 'Plumbing', Icon: Droplets },
   electrical: { label: 'Electrical', Icon: Zap },
-  wifi_internet: { label: 'Wi-Fi / Net', Icon: Wifi },
+  wifi_internet: { label: 'Wi-Fi / Internet', Icon: Wifi },
   cleaning: { label: 'Cleaning', Icon: Sparkles },
   food_mess: { label: 'Food & Mess', Icon: Utensils },
   carpentry_furniture: { label: 'Furniture', Icon: Armchair },
@@ -86,36 +97,80 @@ const PRIORITY_CONFIG: Record<
   ComplaintPriority,
   { label: string; color: string; bgColor: string }
 > = {
-  urgent: { label: 'URGENT', color: '#DC2626', bgColor: '#FEE2E2' },
-  high: { label: 'HIGH', color: '#EA580C', bgColor: '#FFEDD5' },
-  medium: { label: 'MEDIUM', color: '#D97706', bgColor: '#FEF3C7' },
-  low: { label: 'LOW', color: '#64748B', bgColor: '#F1F5F9' },
+  urgent: { label: toSentenceCaseStatus('urgent'), color: '#DC2626', bgColor: '#FEE2E2' },
+  high: { label: toSentenceCaseStatus('high'), color: '#EA580C', bgColor: '#FFEDD5' },
+  medium: { label: toSentenceCaseStatus('medium'), color: '#D97706', bgColor: '#FEF3C7' },
+  low: { label: toSentenceCaseStatus('low'), color: '#64748B', bgColor: '#F1F5F9' },
 };
 
 const STATUS_CONFIG: Record<
   ComplaintStatus,
   { label: string; color: string; bgColor: string }
 > = {
-  open: { label: 'OPEN', color: '#0284C7', bgColor: '#E0F2FE' },
-  in_progress: { label: 'IN PROGRESS', color: '#D97706', bgColor: '#FEF3C7' },
-  resolved: { label: 'RESOLVED', color: '#16A34A', bgColor: '#DCFCE7' },
-  rejected: { label: 'REJECTED', color: '#DC2626', bgColor: '#FEE2E2' },
+  open: { label: toSentenceCaseStatus('open'), color: '#0284C7', bgColor: '#E0F2FE' },
+  in_progress: { label: toSentenceCaseStatus('in_progress'), color: '#D97706', bgColor: '#FEF3C7' },
+  resolved: { label: toSentenceCaseStatus('resolved'), color: '#16A34A', bgColor: '#DCFCE7' },
+  rejected: { label: toSentenceCaseStatus('rejected'), color: '#DC2626', bgColor: '#FEE2E2' },
 };
 
 export default function OwnerComplaintsScreen() {
   const { user } = useAuth();
   const { selectedProperty, selectedPropertyId } = useProperty();
+  const params = useLocalSearchParams<{ residentId?: string | string[] }>();
+  const rawParamResidentId = Array.isArray(params.residentId)
+    ? params.residentId[0]
+    : params.residentId;
+  const paramResidentId = rawParamResidentId?.trim() || null;
+
+  const userId = user?.id;
+  const activeSelectedPropertyId = selectedPropertyId;
+  const activeSelectedPropertyName = selectedProperty?.name;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [propertyId, setPropertyId] = useState<string | null>(null);
   const [propertyName, setPropertyName] = useState('My PG');
   const [complaints, setComplaints] = useState<OwnerComplaintItem[]>([]);
+  const [activeResidents, setActiveResidents] = useState<ActiveResidentOption[]>([]);
+  const [clearedResidentId, setClearedResidentId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (paramResidentId) return;
+    const timer = setTimeout(() => {
+      setClearedResidentId(null);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [paramResidentId]);
+
+  const activeResidentFilterId =
+    paramResidentId && paramResidentId !== clearedResidentId
+      ? paramResidentId
+      : null;
+
+  const handleClearResidentFilter = () => {
+    setClearedResidentId(paramResidentId);
+    try {
+      router.setParams({ residentId: undefined });
+    } catch {
+      // Non-fatal in pager context
+    }
+  };
 
   // Filters
   const [statusFilter, setStatusFilter] = useState<'all' | ComplaintStatus>('all');
   const [categoryFilter, setCategoryFilter] = useState<'all' | ComplaintCategory>('all');
   const [priorityFilter, setPriorityFilter] = useState<'all' | ComplaintPriority>('all');
+  const [filterSheetVisible, setFilterSheetVisible] = useState(false);
+
+  // Log New Complaint Modal
+  const [createModalVisible, setCreateModalVisible] = useState(false);
+  const [createResidentId, setCreateResidentId] = useState('');
+  const [residentSearch, setResidentSearch] = useState('');
+  const [createCategory, setCreateCategory] = useState<ComplaintCategory>('plumbing');
+  const [createPriority, setCreatePriority] = useState<ComplaintPriority>('medium');
+  const [createTitle, setCreateTitle] = useState('');
+  const [createDescription, setCreateDescription] = useState('');
+  const [creatingComplaint, setCreatingComplaint] = useState(false);
 
   // Edit / Action Modal
   const [selectedComplaint, setSelectedComplaint] = useState<OwnerComplaintItem | null>(null);
@@ -141,19 +196,19 @@ export default function OwnerComplaintsScreen() {
   };
 
   const loadData = useCallback(async () => {
-    if (!user?.id) return;
+    if (!userId) return;
     try {
       setLoading(true);
 
       // 1. Resolve active property ID and name
-      let activePropId = selectedPropertyId;
-      let activePropName = selectedProperty?.name;
+      let activePropId = activeSelectedPropertyId;
+      let activePropName = activeSelectedPropertyName;
 
       if (!activePropId) {
         const { data: propData, error: propError } = await supabase
           .from('properties')
           .select('id, name')
-          .eq('owner_id', user.id)
+          .eq('owner_id', userId)
           .eq('is_active', true)
           .order('created_at', { ascending: true })
           .limit(1);
@@ -162,6 +217,7 @@ export default function OwnerComplaintsScreen() {
         if (!propData || propData.length === 0) {
           setPropertyId(null);
           setComplaints([]);
+          setActiveResidents([]);
           setLoading(false);
           return;
         }
@@ -173,36 +229,57 @@ export default function OwnerComplaintsScreen() {
       setPropertyId(activePropId);
       setPropertyName(activePropName || 'My PG');
 
-      // 2. Fetch complaints for this property
-      const { data: compData, error: compError } = await supabase
-        .from('complaints')
-        .select(`
-          id,
-          property_id,
-          resident_id,
-          category,
-          priority,
-          status,
-          title,
-          description,
-          photo_url,
-          owner_notes,
-          resolved_at,
-          created_at,
-          resident:residents (
-            full_name,
-            room_number,
-            phone_number
-          )
-        `)
-        .eq('property_id', activePropId)
-        .order('created_at', { ascending: false });
+      // 2. Fetch complaints & active residents in parallel
+      const [compRes, residentsRes] = await Promise.all([
+        supabase
+          .from('complaints')
+          .select(`
+            id,
+            property_id,
+            resident_id,
+            category,
+            priority,
+            status,
+            title,
+            description,
+            photo_url,
+            owner_notes,
+            resolved_at,
+            created_at,
+            resident:residents (
+              full_name,
+              room_number,
+              phone_number
+            )
+          `)
+          .eq('property_id', activePropId)
+          .order('created_at', { ascending: false }),
+        supabase
+          .from('residents')
+          .select('id, full_name, room_number')
+          .eq('property_id', activePropId)
+          .eq('is_active', true),
+      ]);
 
-      if (compError) {
-        console.warn('[OwnerComplaints] Could not fetch complaints:', compError.message);
+      if (compRes.error) {
+        console.warn('[OwnerComplaints] Could not fetch complaints:', compRes.error.message);
         setComplaints([]);
       } else {
-        setComplaints((compData as any) || []);
+        setComplaints((compRes.data as unknown as OwnerComplaintItem[]) || []);
+      }
+
+      if (residentsRes.error) {
+        console.warn('[OwnerComplaints] Could not fetch residents:', residentsRes.error.message);
+        setActiveResidents([]);
+      } else {
+        const sortedResidents = [...((residentsRes.data as ActiveResidentOption[]) || [])].sort(
+          (a, b) => {
+            const roomCmp = sortRoomCodes(a.room_number, b.room_number);
+            if (roomCmp !== 0) return roomCmp;
+            return a.full_name.localeCompare(b.full_name);
+          }
+        );
+        setActiveResidents(sortedResidents);
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -212,11 +289,73 @@ export default function OwnerComplaintsScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id, selectedPropertyId, selectedProperty?.name]);
+  }, [userId, activeSelectedPropertyId, activeSelectedPropertyName]);
 
   useEffect(() => {
-    loadData();
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (!cancelled) {
+        void loadData();
+      }
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [loadData]);
+
+  const handleOpenCreateModal = () => {
+    const defaultResidentId =
+      activeResidentFilterId &&
+      activeResidents.some((r) => r.id === activeResidentFilterId)
+        ? activeResidentFilterId
+        : activeResidents[0]?.id || '';
+    setCreateResidentId(defaultResidentId);
+    setResidentSearch('');
+    setCreateCategory('plumbing');
+    setCreatePriority('medium');
+    setCreateTitle('');
+    setCreateDescription('');
+    setCreateModalVisible(true);
+  };
+
+  const handleCreateComplaint = async () => {
+    if (!propertyId || creatingComplaint) return;
+    if (!createResidentId) {
+      Alert.alert('Resident Required', 'Please select a resident for this issue.');
+      return;
+    }
+    const trimmedTitle = createTitle.trim();
+    const trimmedDesc = createDescription.trim();
+    if (!trimmedTitle) {
+      Alert.alert('Title Required', 'Please enter a short title for this complaint.');
+      return;
+    }
+    if (!trimmedDesc) {
+      Alert.alert('Description Required', 'Please describe the issue.');
+      return;
+    }
+
+    setCreatingComplaint(true);
+    const res = await ownerCreateComplaint(propertyId, createResidentId, {
+      category: createCategory,
+      priority: createPriority,
+      title: trimmedTitle,
+      description: trimmedDesc,
+    });
+    setCreatingComplaint(false);
+
+    if (!res.ok) {
+      Alert.alert('Could Not Log', res.error.message);
+      return;
+    }
+
+    setCreateModalVisible(false);
+    setCreateTitle('');
+    setCreateDescription('');
+    Alert.alert('Complaint Logged', 'Maintenance ticket has been created.');
+    await loadData();
+  };
 
   const handleOpenActionModal = (item: OwnerComplaintItem) => {
     setSelectedComplaint(item);
@@ -247,7 +386,7 @@ export default function OwnerComplaintsScreen() {
 
       Alert.alert('Updated', `Complaint marked as ${STATUS_CONFIG[newStatus].label}.`);
       setSelectedComplaint(null);
-      loadData();
+      void loadData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[OwnerComplaints] Update error:', err);
@@ -257,19 +396,52 @@ export default function OwnerComplaintsScreen() {
     }
   };
 
-  const openCount = complaints.filter((c) => c.status === 'open').length;
-  const inProgressCount = complaints.filter((c) => c.status === 'in_progress').length;
-  const resolvedCount = complaints.filter((c) => c.status === 'resolved').length;
+  const residentScopedComplaints = useMemo(() => {
+    if (!activeResidentFilterId) return complaints;
+    return complaints.filter((c) => c.resident_id === activeResidentFilterId);
+  }, [complaints, activeResidentFilterId]);
+
+  const filteredResidentName = useMemo(() => {
+    if (!activeResidentFilterId) return '';
+    const fromActive = activeResidents.find((r) => r.id === activeResidentFilterId);
+    if (fromActive) return fromActive.full_name;
+    const fromComplaint = complaints.find((c) => c.resident_id === activeResidentFilterId);
+    if (fromComplaint?.resident?.full_name) return fromComplaint.resident.full_name;
+    return 'Resident';
+  }, [activeResidentFilterId, activeResidents, complaints]);
+
+  const modalFilteredResidents = useMemo(() => {
+    const q = residentSearch.trim().toLowerCase();
+    if (!q) return activeResidents;
+    return activeResidents.filter(
+      (r) =>
+        r.full_name.toLowerCase().includes(q) ||
+        r.room_number.toLowerCase().includes(q)
+    );
+  }, [activeResidents, residentSearch]);
+
+  const openCount = residentScopedComplaints.filter((c) => c.status === 'open').length;
+  const inProgressCount = residentScopedComplaints.filter(
+    (c) => c.status === 'in_progress'
+  ).length;
+  const resolvedCount = residentScopedComplaints.filter((c) => c.status === 'resolved').length;
+  const activeFilterCount =
+    (categoryFilter !== 'all' ? 1 : 0) + (priorityFilter !== 'all' ? 1 : 0);
+
+  const resetSecondaryFilters = () => {
+    setCategoryFilter('all');
+    setPriorityFilter('all');
+  };
 
   const filteredComplaints = useMemo(() => {
-    const filtered = complaints.filter((c) => {
+    const filtered = residentScopedComplaints.filter((c) => {
       if (statusFilter !== 'all' && c.status !== statusFilter) return false;
       if (categoryFilter !== 'all' && c.category !== categoryFilter) return false;
       if (priorityFilter !== 'all' && c.priority !== priorityFilter) return false;
       return true;
     });
     return sortComplaintsByUrgencyThenDate(filtered);
-  }, [complaints, statusFilter, categoryFilter, priorityFilter]);
+  }, [residentScopedComplaints, statusFilter, categoryFilter, priorityFilter]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -277,6 +449,20 @@ export default function OwnerComplaintsScreen() {
         title="Maintenance & Issues"
         subtitle={`${propertyName} • Complaints`}
         showBack
+        rightAction={
+          propertyId ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Log complaint"
+              style={({ pressed }) => [
+                styles.headerLogBtn,
+                pressed && { opacity: 0.85 },
+              ]}
+              onPress={handleOpenCreateModal}>
+              <Text style={styles.headerLogBtnText}>+ Log</Text>
+            </Pressable>
+          ) : undefined
+        }
       />
       <ScrollView
         contentContainerStyle={styles.scrollContent}
@@ -285,7 +471,7 @@ export default function OwnerComplaintsScreen() {
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
-              loadData();
+              void loadData();
             }}
             colors={[OwnerTheme.colors.primary]}
           />
@@ -303,133 +489,112 @@ export default function OwnerComplaintsScreen() {
           </View>
         ) : (
           <>
-            {/* KPI Cards */}
-            <View style={styles.kpiRow}>
-              <View style={[styles.kpiCard, { borderLeftColor: '#0284C7' }]}>
-                <Text style={[styles.kpiValue, { color: '#0284C7' }]}>{openCount}</Text>
-                <Text style={styles.kpiLabel}>Open Issues</Text>
-              </View>
-              <View style={[styles.kpiCard, { borderLeftColor: '#D97706' }]}>
-                <Text style={[styles.kpiValue, { color: '#D97706' }]}>{inProgressCount}</Text>
-                <Text style={styles.kpiLabel}>In Progress</Text>
-              </View>
-              <View style={[styles.kpiCard, { borderLeftColor: '#16A34A' }]}>
-                <Text style={[styles.kpiValue, { color: '#16A34A' }]}>{resolvedCount}</Text>
-                <Text style={styles.kpiLabel}>Resolved</Text>
-              </View>
+            {/* Resident Filter Banner */}
+            {activeResidentFilterId && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Filtered to ${filteredResidentName}. Show all`}
+                style={({ pressed }) => [
+                  styles.residentFilterBanner,
+                  pressed && { opacity: 0.85 },
+                ]}
+                onPress={handleClearResidentFilter}>
+                <Text style={styles.residentFilterBannerText} numberOfLines={1}>
+                  Filtered to {filteredResidentName} ·{' '}
+                  <Text style={styles.residentFilterBannerAction}>Show all</Text>
+                </Text>
+                <X size={15} color={OwnerTheme.colors.primary} />
+              </Pressable>
+            )}
+
+            {/* Unified Sentence-case Status Filter Bar */}
+            <View style={styles.statusFilterRow}>
+              {(['all', 'open', 'in_progress', 'resolved'] as const).map((s) => {
+                const label =
+                  s === 'all'
+                    ? `All (${residentScopedComplaints.length})`
+                    : s === 'open'
+                    ? `Open (${openCount})`
+                    : s === 'in_progress'
+                    ? `In progress (${inProgressCount})`
+                    : `Resolved (${resolvedCount})`;
+                const isActive = statusFilter === s;
+                return (
+                  <Pressable
+                    key={s}
+                    accessibilityRole="tab"
+                    accessibilityState={{ selected: isActive }}
+                    style={[
+                      styles.statusFilterBtn,
+                      s === 'in_progress' && styles.statusFilterBtnWide,
+                      isActive && styles.statusFilterBtnActive,
+                    ]}
+                    onPress={() => setStatusFilter(s)}>
+                    <Text
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                      style={[
+                        styles.statusFilterBtnText,
+                        isActive && styles.statusFilterBtnTextActive,
+                      ]}>
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
 
-            {/* Status Filter */}
-            <View style={styles.statusFilterRow}>
-              {(['all', 'open', 'in_progress', 'resolved'] as const).map((s) => (
+            {/* Compact Filter Trigger Row */}
+            <View style={styles.filterToolbarRow}>
+              <View style={styles.filterToolbarLeft}>
                 <Pressable
-                  key={s}
+                  accessibilityRole="button"
                   style={[
-                    styles.statusFilterBtn,
-                    statusFilter === s && styles.statusFilterBtnActive,
+                    styles.filtersBtn,
+                    activeFilterCount > 0 && styles.filtersBtnActive,
                   ]}
-                  onPress={() => setStatusFilter(s)}>
+                  onPress={() => setFilterSheetVisible(true)}>
+                  <SlidersHorizontal
+                    size={14}
+                    color={
+                      activeFilterCount > 0
+                        ? OwnerTheme.colors.primary
+                        : '#475569'
+                    }
+                  />
                   <Text
                     style={[
-                      styles.statusFilterBtnText,
-                      statusFilter === s && styles.statusFilterBtnTextActive,
+                      styles.filtersBtnText,
+                      activeFilterCount > 0 && styles.filtersBtnTextActive,
                     ]}>
-                    {s === 'all'
-                      ? `ALL (${complaints.length})`
-                      : s === 'open'
-                      ? `OPEN (${openCount})`
-                      : s === 'in_progress'
-                      ? `IN PROGRESS (${inProgressCount})`
-                      : `RESOLVED (${resolvedCount})`}
+                    Filters
                   </Text>
+                  {activeFilterCount > 0 && (
+                    <View style={styles.filterCountBadge}>
+                      <Text style={styles.filterCountBadgeText}>
+                        {activeFilterCount}
+                      </Text>
+                    </View>
+                  )}
                 </Pressable>
-              ))}
+
+                {activeFilterCount > 0 && (
+                  <Pressable
+                    accessibilityRole="button"
+                    hitSlop={8}
+                    style={styles.resetFiltersBtn}
+                    onPress={resetSecondaryFilters}>
+                    <Text style={styles.resetFiltersText}>Reset</Text>
+                  </Pressable>
+                )}
+              </View>
+
+              <Text style={styles.issueCountMeta}>
+                {filteredComplaints.length} issue
+                {filteredComplaints.length === 1 ? '' : 's'}
+              </Text>
             </View>
-
-            {/* Category Filter Scroll */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.catScroll}>
-              <Pressable
-                style={[
-                  styles.catPill,
-                  categoryFilter === 'all' && styles.catPillActive,
-                ]}
-                onPress={() => setCategoryFilter('all')}>
-                <Text
-                  style={[
-                    styles.catPillText,
-                    categoryFilter === 'all' && styles.catPillTextActive,
-                  ]}>
-                  All Categories
-                </Text>
-              </Pressable>
-              {(Object.keys(CATEGORY_CONFIG) as ComplaintCategory[]).map((catKey) => {
-                const config = CATEGORY_CONFIG[catKey];
-                const isActive = categoryFilter === catKey;
-                return (
-                  <Pressable
-                    key={catKey}
-                    style={[styles.catPill, isActive && styles.catPillActive, { flexDirection: 'row', alignItems: 'center', gap: 5 }]}
-                    onPress={() => setCategoryFilter(catKey)}>
-                    <config.Icon size={13} color={isActive ? '#FFFFFF' : '#475569'} />
-                    <Text
-                      style={[
-                        styles.catPillText,
-                        isActive && styles.catPillTextActive,
-                      ]}>
-                      {config.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-
-            {/* Priority Filter Scroll */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.catScroll}>
-              <Pressable
-                style={[
-                  styles.catPill,
-                  priorityFilter === 'all' && styles.catPillActive,
-                ]}
-                onPress={() => setPriorityFilter('all')}>
-                <Text
-                  style={[
-                    styles.catPillText,
-                    priorityFilter === 'all' && styles.catPillTextActive,
-                  ]}>
-                  All Priorities
-                </Text>
-              </Pressable>
-              {(['urgent', 'high', 'medium', 'low'] as ComplaintPriority[]).map((prioKey) => {
-                const pConfig = PRIORITY_CONFIG[prioKey];
-                const isActive = priorityFilter === prioKey;
-                return (
-                  <Pressable
-                    key={prioKey}
-                    style={[
-                      styles.catPill,
-                      isActive && {
-                        backgroundColor: pConfig.bgColor,
-                        borderColor: pConfig.color,
-                      },
-                    ]}
-                    onPress={() => setPriorityFilter(prioKey)}>
-                    <Text
-                      style={[
-                        styles.catPillText,
-                        isActive && { color: pConfig.color },
-                      ]}>
-                      {pConfig.label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
 
             {/* Complaints List */}
             {filteredComplaints.length === 0 ? (
@@ -438,15 +603,37 @@ export default function OwnerComplaintsScreen() {
                   <CheckCircle2 size={26} color="#16A34A" />
                 </View>
                 <Text style={styles.emptyTitle}>
-                  {complaints.length === 0 || statusFilter === 'open'
+                  {activeFilterCount === 0 &&
+                  (residentScopedComplaints.length === 0 || statusFilter === 'open')
                     ? 'All clear'
                     : 'No matching requests'}
                 </Text>
                 <Text style={styles.emptySub}>
-                  {complaints.length === 0 || statusFilter === 'open'
+                  {activeFilterCount === 0 &&
+                  (residentScopedComplaints.length === 0 || statusFilter === 'open')
                     ? 'Everything at the property is running smoothly.'
                     : 'Try clearing a filter to see other maintenance tickets.'}
                 </Text>
+                {(activeFilterCount > 0 || activeResidentFilterId) && (
+                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    {activeFilterCount > 0 && (
+                      <Pressable
+                        accessibilityRole="button"
+                        style={styles.emptyResetBtn}
+                        onPress={resetSecondaryFilters}>
+                        <Text style={styles.emptyResetBtnText}>Reset filters</Text>
+                      </Pressable>
+                    )}
+                    {activeResidentFilterId && (
+                      <Pressable
+                        accessibilityRole="button"
+                        style={styles.emptyResetBtn}
+                        onPress={handleClearResidentFilter}>
+                        <Text style={styles.emptyResetBtnText}>Show all</Text>
+                      </Pressable>
+                    )}
+                  </View>
+                )}
               </View>
             ) : (
               filteredComplaints.map((item) => {
@@ -466,10 +653,26 @@ export default function OwnerComplaintsScreen() {
                   <View key={item.id} style={styles.complaintCard}>
                     {/* Header: Resident & Room info */}
                     <View style={styles.cardTopRow}>
-                      <View>
-                        <Text style={styles.residentName}>
-                          {item.resident?.full_name || 'Resident'}
-                        </Text>
+                      <View style={{ flex: 1, paddingRight: 8 }}>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`View profile for ${item.resident?.full_name || 'Resident'}`}
+                          hitSlop={6}
+                          style={({ pressed }) => [
+                            styles.residentNameBtn,
+                            pressed && { opacity: 0.7 },
+                          ]}
+                          onPress={() => {
+                            if (!item.resident_id) return;
+                            router.push({
+                              pathname: '/resident-profile',
+                              params: { id: item.resident_id },
+                            } as Href);
+                          }}>
+                          <Text style={styles.residentName}>
+                            {item.resident?.full_name || 'Resident'}
+                          </Text>
+                        </Pressable>
                         <Text style={styles.roomMeta}>
                           Room {item.resident?.room_number || 'N/A'}{' '}
                           {item.resident?.phone_number ? `• ${item.resident.phone_number}` : ''}
@@ -541,6 +744,148 @@ export default function OwnerComplaintsScreen() {
         )}
       </ScrollView>
 
+      {/* Filter Bottom Sheet Modal */}
+      <Modal
+        visible={filterSheetVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setFilterSheetVisible(false)}>
+        <View style={styles.sheetOverlay}>
+          <Pressable
+            style={styles.sheetBackdrop}
+            onPress={() => setFilterSheetVisible(false)}
+          />
+          <View style={styles.sheetCard}>
+            <View style={styles.sheetHandle} />
+            <View style={styles.sheetHeaderRow}>
+              <Text style={styles.sheetTitle}>Filter Issues</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close filters"
+                hitSlop={8}
+                onPress={() => setFilterSheetVisible(false)}>
+                <X size={20} color="#64748B" />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              style={styles.sheetScroll}
+              showsVerticalScrollIndicator={false}>
+              <Text style={styles.sheetSectionLabel}>Category</Text>
+              <View style={styles.wrappedChipsContainer}>
+                <Pressable
+                  accessibilityRole="button"
+                  style={[
+                    styles.filterChip,
+                    categoryFilter === 'all' && styles.filterChipActive,
+                  ]}
+                  onPress={() => setCategoryFilter('all')}>
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      categoryFilter === 'all' && styles.filterChipTextActive,
+                    ]}>
+                    All Categories
+                  </Text>
+                </Pressable>
+                {(Object.keys(CATEGORY_CONFIG) as ComplaintCategory[]).map((catKey) => {
+                  const config = CATEGORY_CONFIG[catKey];
+                  const isActive = categoryFilter === catKey;
+                  return (
+                    <Pressable
+                      key={catKey}
+                      accessibilityRole="button"
+                      style={[
+                        styles.filterChip,
+                        isActive && styles.filterChipActive,
+                      ]}
+                      onPress={() => setCategoryFilter(catKey)}>
+                      <config.Icon
+                        size={14}
+                        color={isActive ? '#FFFFFF' : '#475569'}
+                      />
+                      <Text
+                        style={[
+                          styles.filterChipText,
+                          isActive && styles.filterChipTextActive,
+                        ]}>
+                        {config.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text style={[styles.sheetSectionLabel, { marginTop: 18 }]}>
+                Priority
+              </Text>
+              <View style={styles.wrappedChipsContainer}>
+                <Pressable
+                  accessibilityRole="button"
+                  style={[
+                    styles.filterChip,
+                    priorityFilter === 'all' && styles.filterChipActive,
+                  ]}
+                  onPress={() => setPriorityFilter('all')}>
+                  <Text
+                    style={[
+                      styles.filterChipText,
+                      priorityFilter === 'all' && styles.filterChipTextActive,
+                    ]}>
+                    All Priorities
+                  </Text>
+                </Pressable>
+                {(['urgent', 'high', 'medium', 'low'] as ComplaintPriority[]).map(
+                  (prioKey) => {
+                    const pConfig = PRIORITY_CONFIG[prioKey];
+                    const isActive = priorityFilter === prioKey;
+                    return (
+                      <Pressable
+                        key={prioKey}
+                        accessibilityRole="button"
+                        style={[
+                          styles.filterChip,
+                          isActive && {
+                            backgroundColor: pConfig.bgColor,
+                            borderColor: pConfig.color,
+                          },
+                        ]}
+                        onPress={() => setPriorityFilter(prioKey)}>
+                        <Text
+                          style={[
+                            styles.filterChipText,
+                            isActive && { color: pConfig.color, fontWeight: '700' },
+                          ]}>
+                          {pConfig.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  }
+                )}
+              </View>
+            </ScrollView>
+
+            <View style={styles.sheetFooter}>
+              <Pressable
+                accessibilityRole="button"
+                style={styles.sheetResetBtn}
+                onPress={resetSecondaryFilters}>
+                <Text style={styles.sheetResetBtnText}>Reset</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                style={styles.sheetApplyBtn}
+                onPress={() => setFilterSheetVisible(false)}>
+                <Text style={styles.sheetApplyBtnText}>
+                  Show {filteredComplaints.length} issue
+                  {filteredComplaints.length === 1 ? '' : 's'}
+                </Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {/* Action / Resolution Modal */}
       <Modal
         visible={!!selectedComplaint}
@@ -581,9 +926,12 @@ export default function OwnerComplaintsScreen() {
                       ]}
                       onPress={() => setNewStatus(stKey)}>
                       <Text
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.85}
                         style={[
                           styles.statusSelectText,
-                          isSelected && { color: sConfig.color, fontWeight: '800' },
+                          isSelected && { color: sConfig.color, fontWeight: '700' },
                         ]}>
                         {sConfig.label}
                       </Text>
@@ -595,7 +943,7 @@ export default function OwnerComplaintsScreen() {
 
             {/* Management Notes */}
             <Text style={[styles.inputLabel, { marginTop: 14 }]}>
-              Resolution / Vendor Notes (Visible to Student)
+              Resolution / Vendor Notes (Visible to Resident)
             </Text>
             <TextInput
               style={styles.modalInput}
@@ -627,6 +975,216 @@ export default function OwnerComplaintsScreen() {
             </View>
           </View>
         </View>
+      </Modal>
+
+      {/* Log New Complaint Modal */}
+      <Modal
+        visible={createModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => {
+          if (!creatingComplaint) setCreateModalVisible(false);
+        }}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          style={styles.modalOverlay}>
+          <View style={styles.createModalContent}>
+            <View style={styles.createModalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.modalTitle}>Log Maintenance Issue</Text>
+                <Text style={styles.modalSub}>{propertyName}</Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close log complaint modal"
+                hitSlop={8}
+                disabled={creatingComplaint}
+                onPress={() => setCreateModalVisible(false)}>
+                <X size={20} color="#64748B" />
+              </Pressable>
+            </View>
+
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              style={styles.createModalScroll}>
+              <Text style={styles.inputLabel}>Resident *</Text>
+              {activeResidents.length === 0 ? (
+                <View style={styles.noResidentsNotice}>
+                  <Text style={styles.noResidentsNoticeText}>
+                    No active residents found in this property. Add a resident first.
+                  </Text>
+                </View>
+              ) : (
+                <>
+                  {activeResidents.length > 5 && (
+                    <TextInput
+                      style={styles.residentSearchInput}
+                      placeholder="Filter resident by name or room..."
+                      placeholderTextColor="#94A3B8"
+                      value={residentSearch}
+                      onChangeText={setResidentSearch}
+                      autoCorrect={false}
+                    />
+                  )}
+                  <ScrollView
+                    nestedScrollEnabled
+                    style={styles.residentPickerList}
+                    showsVerticalScrollIndicator={false}>
+                    {modalFilteredResidents.length === 0 ? (
+                      <Text style={styles.noResidentsNoticeText}>
+                        No matching residents.
+                      </Text>
+                    ) : (
+                      modalFilteredResidents.map((res) => {
+                        const isSelected = createResidentId === res.id;
+                        return (
+                          <Pressable
+                            key={res.id}
+                            accessibilityRole="button"
+                            style={[
+                              styles.residentPickerRow,
+                              isSelected && styles.residentPickerRowSelected,
+                            ]}
+                            onPress={() => setCreateResidentId(res.id)}>
+                            <View style={{ flex: 1 }}>
+                              <Text
+                                style={[
+                                  styles.residentPickerName,
+                                  isSelected && styles.residentPickerNameSelected,
+                                ]}>
+                                {res.full_name}
+                              </Text>
+                              <Text style={styles.residentPickerRoom}>
+                                Room {res.room_number}
+                              </Text>
+                            </View>
+                            {isSelected && (
+                              <Check size={16} color={OwnerTheme.colors.primary} />
+                            )}
+                          </Pressable>
+                        );
+                      })
+                    )}
+                  </ScrollView>
+                </>
+              )}
+
+              <Text style={[styles.inputLabel, { marginTop: 14 }]}>Category</Text>
+              <View style={styles.wrappedChipsContainer}>
+                {(Object.keys(CATEGORY_CONFIG) as ComplaintCategory[]).map((catKey) => {
+                  const config = CATEGORY_CONFIG[catKey];
+                  const isActive = createCategory === catKey;
+                  return (
+                    <Pressable
+                      key={catKey}
+                      accessibilityRole="button"
+                      style={[
+                        styles.filterChip,
+                        isActive && styles.filterChipActive,
+                      ]}
+                      onPress={() => setCreateCategory(catKey)}>
+                      <config.Icon
+                        size={13}
+                        color={isActive ? '#FFFFFF' : '#475569'}
+                      />
+                      <Text
+                        style={[
+                          styles.filterChipText,
+                          isActive && styles.filterChipTextActive,
+                        ]}>
+                        {config.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text style={[styles.inputLabel, { marginTop: 14 }]}>Priority</Text>
+              <View style={styles.statusSelectRow}>
+                {(['low', 'medium', 'high', 'urgent'] as ComplaintPriority[]).map(
+                  (prioKey) => {
+                    const pConfig = PRIORITY_CONFIG[prioKey];
+                    const isSelected = createPriority === prioKey;
+                    return (
+                      <Pressable
+                        key={prioKey}
+                        accessibilityRole="button"
+                        style={[
+                          styles.statusSelectBtn,
+                          isSelected && {
+                            backgroundColor: pConfig.bgColor,
+                            borderColor: pConfig.color,
+                          },
+                        ]}
+                        onPress={() => setCreatePriority(prioKey)}>
+                        <Text
+                          numberOfLines={1}
+                          adjustsFontSizeToFit
+                          minimumFontScale={0.85}
+                          style={[
+                            styles.statusSelectText,
+                            isSelected && {
+                              color: pConfig.color,
+                              fontWeight: '700',
+                            },
+                          ]}>
+                          {pConfig.label}
+                        </Text>
+                      </Pressable>
+                    );
+                  }
+                )}
+              </View>
+
+              <Text style={[styles.inputLabel, { marginTop: 10 }]}>Title *</Text>
+              <TextInput
+                style={styles.createTitleInput}
+                placeholder="e.g. Bathroom tap leaking"
+                placeholderTextColor="#94A3B8"
+                value={createTitle}
+                onChangeText={setCreateTitle}
+                maxLength={120}
+              />
+
+              <Text style={[styles.inputLabel, { marginTop: 12 }]}>
+                Description *
+              </Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="Describe the issue and room/area details..."
+                placeholderTextColor="#94A3B8"
+                value={createDescription}
+                onChangeText={setCreateDescription}
+                multiline
+                numberOfLines={3}
+              />
+            </ScrollView>
+
+            <View style={styles.modalBtnRow}>
+              <Pressable
+                disabled={creatingComplaint}
+                style={styles.modalCancelBtn}
+                onPress={() => setCreateModalVisible(false)}>
+                <Text style={styles.modalCancelText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                disabled={creatingComplaint || activeResidents.length === 0}
+                style={[
+                  styles.modalSaveBtn,
+                  (creatingComplaint || activeResidents.length === 0) &&
+                    styles.btnDisabled,
+                ]}
+                onPress={() => void handleCreateComplaint()}>
+                {creatingComplaint ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.modalSaveText}>Log Complaint</Text>
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Full-Screen Image Viewer Modal */}
@@ -669,40 +1227,44 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 40,
   },
-  topBar: {
+  headerLogBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
-  },
-  backButton: {
-    paddingHorizontal: 10,
+    justifyContent: 'center',
     paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
+    paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.primaryLight,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginRight: 10,
+    borderColor: '#BAE6FD',
   },
-  backButtonPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  backButtonText: {
-    fontSize: 16,
+  headerLogBtnText: {
+    fontSize: 13,
     fontWeight: '700',
-    color: '#0284C7',
+    color: OwnerTheme.colors.primary,
   },
-  headerTitleWrap: {
+  residentFilterBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: OwnerTheme.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 10,
+  },
+  residentFilterBannerText: {
     flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    color: OwnerTheme.colors.textPrimary,
   },
-  screenTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  screenSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
+  residentFilterBannerAction: {
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
   },
   loadingBox: {
     paddingVertical: 40,
@@ -732,11 +1294,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
-  emptyIcon: {
-    fontSize: 32,
-    marginBottom: 8,
-    color: '#16A34A',
-  },
   emptyTitle: {
     fontSize: 16,
     fontWeight: '700',
@@ -748,80 +1305,222 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 4,
   },
-  kpiRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 14,
-  },
-  kpiCard: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 12,
+  emptyResetBtn: {
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: '#F0F9FF',
     borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderLeftWidth: 4,
-    alignItems: 'center',
+    borderColor: '#BAE6FD',
   },
-  kpiValue: {
-    fontSize: 22,
-    fontWeight: '800',
-  },
-  kpiLabel: {
-    fontSize: 11,
-    color: '#64748B',
-    fontWeight: '600',
-    marginTop: 2,
+  emptyResetBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
   },
   statusFilterRow: {
     flexDirection: 'row',
     backgroundColor: '#E2E8F0',
-    borderRadius: 8,
-    padding: 2,
+    borderRadius: 10,
+    padding: 3,
     marginBottom: 10,
   },
   statusFilterBtn: {
     flex: 1,
-    paddingVertical: 6,
+    paddingVertical: 7,
+    paddingHorizontal: 4,
     alignItems: 'center',
-    borderRadius: 6,
+    justifyContent: 'center',
+    borderRadius: 7,
+  },
+  statusFilterBtnWide: {
+    flex: 1.25,
   },
   statusFilterBtnActive: {
     backgroundColor: '#FFFFFF',
   },
   statusFilterBtnText: {
-    fontSize: 10,
+    fontSize: 11,
     color: '#64748B',
-    fontWeight: '700',
+    fontWeight: '600',
   },
   statusFilterBtnTextActive: {
     color: '#0F172A',
+    fontWeight: '700',
   },
-  catScroll: {
-    paddingBottom: 8,
+  filterToolbarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  filterToolbarLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
-    marginBottom: 8,
   },
-  catPill: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
+  filtersBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#FFFFFF',
     borderWidth: 1,
     borderColor: '#E2E8F0',
+    borderRadius: 20,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
   },
-  catPillActive: {
-    backgroundColor: '#0284C7',
-    borderColor: '#0284C7',
+  filtersBtnActive: {
+    borderColor: OwnerTheme.colors.primary,
+    backgroundColor: OwnerTheme.colors.primaryLight,
   },
-  catPillText: {
-    fontSize: 11,
+  filtersBtnText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#334155',
+  },
+  filtersBtnTextActive: {
+    color: OwnerTheme.colors.primary,
+  },
+  filterCountBadge: {
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: OwnerTheme.colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
+  },
+  filterCountBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  resetFiltersBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: '#F1F5F9',
+  },
+  resetFiltersText: {
+    fontSize: 12,
     fontWeight: '600',
     color: '#475569',
   },
-  catPillTextActive: {
+  issueCountMeta: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#64748B',
+  },
+  // Filter Bottom Sheet Modal
+  sheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  sheetBackdrop: {
+    flex: 1,
+  },
+  sheetCard: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 26,
+    maxHeight: '80%',
+  },
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#CBD5E1',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  sheetHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  sheetTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  sheetScroll: {
+    maxHeight: 380,
+  },
+  sheetSectionLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 10,
+  },
+  wrappedChipsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  filterChipActive: {
+    backgroundColor: '#0284C7',
+    borderColor: '#0284C7',
+  },
+  filterChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  filterChipTextActive: {
     color: '#FFFFFF',
     fontWeight: '700',
+  },
+  sheetFooter: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 18,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+  },
+  sheetResetBtn: {
+    flex: 1,
+    height: 46,
+    borderRadius: 10,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetResetBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  sheetApplyBtn: {
+    flex: 2,
+    height: 46,
+    borderRadius: 10,
+    backgroundColor: OwnerTheme.colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetApplyBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   complaintCard: {
     backgroundColor: '#FFFFFF',
@@ -837,6 +1536,9 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: 6,
   },
+  residentNameBtn: {
+    alignSelf: 'flex-start',
+  },
   residentName: {
     fontSize: 15,
     fontWeight: '700',
@@ -848,22 +1550,22 @@ const styles = StyleSheet.create({
     marginTop: 1,
   },
   prioBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 9999,
   },
   prioText: {
-    fontSize: 9,
-    fontWeight: '800',
+    fontSize: 11,
+    fontWeight: '700',
   },
   statusBadge: {
     paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
+    paddingVertical: 3,
+    borderRadius: 9999,
   },
   statusText: {
-    fontSize: 10,
-    fontWeight: '800',
+    fontSize: 11,
+    fontWeight: '700',
   },
   catRow: {
     flexDirection: 'row',
@@ -931,8 +1633,87 @@ const styles = StyleSheet.create({
   },
   modalContent: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 16,
+    borderRadius: OwnerTheme.radius.card,
     padding: 20,
+  },
+  createModalContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    padding: 20,
+    maxHeight: '88%',
+  },
+  createModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+  },
+  createModalScroll: {
+    maxHeight: 460,
+  },
+  residentSearchInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: OwnerTheme.radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#0F172A',
+    marginBottom: 8,
+  },
+  residentPickerList: {
+    maxHeight: 135,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: OwnerTheme.radius.sm,
+    backgroundColor: '#F8FAFC',
+    padding: 4,
+  },
+  residentPickerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: OwnerTheme.radius.sm,
+  },
+  residentPickerRowSelected: {
+    backgroundColor: OwnerTheme.colors.primaryLight,
+  },
+  residentPickerName: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  residentPickerNameSelected: {
+    color: OwnerTheme.colors.primary,
+    fontWeight: '700',
+  },
+  residentPickerRoom: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  noResidentsNotice: {
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: OwnerTheme.radius.sm,
+    padding: 10,
+  },
+  noResidentsNoticeText: {
+    fontSize: 12,
+    color: '#92400E',
+    padding: 6,
+  },
+  createTitleInput: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: OwnerTheme.radius.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 13,
+    color: '#0F172A',
   },
   modalTitle: {
     fontSize: 18,
@@ -978,6 +1759,7 @@ const styles = StyleSheet.create({
   statusSelectBtn: {
     flex: 1,
     paddingVertical: 8,
+    paddingHorizontal: 4,
     backgroundColor: '#F8FAFC',
     borderRadius: 6,
     borderWidth: 1,
@@ -985,8 +1767,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   statusSelectText: {
-    fontSize: 9,
-    fontWeight: '700',
+    fontSize: 11,
+    fontWeight: '600',
     color: '#64748B',
   },
   modalInput: {

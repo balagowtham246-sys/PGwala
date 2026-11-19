@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   Platform,
   Pressable,
@@ -18,17 +19,24 @@ import * as Notifications from 'expo-notifications';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { supabase } from '@/lib/supabase';
-import { registerForPushNotifications } from '@/lib/push-notifications';
+import { useOfflineMutation } from '@/hooks/use-offline-mutation';
 import { extractErrorMessage } from '@/lib/error-utils';
-import { OwnerHeader } from '@/components/ui/owner';
-import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import {
   FoodAlertStatus,
   FoodMealType,
   alertHeadline,
   formatAlertTime,
 } from '@/lib/food-alert-utils';
+import { flushOfflineQueue, getPendingCount } from '@/lib/offline-queue';
+import { registerForPushNotifications } from '@/lib/push-notifications';
+import { supabase } from '@/lib/supabase';
+import { defaultOfflineExecutors } from '@/services/offline-executors';
+import { OwnerHeader } from '@/components/ui/owner';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
+
+type FoodOptInPayload = {
+  value: boolean;
+};
 
 interface FoodUpdate {
   id: string;
@@ -52,16 +60,29 @@ function propertyName(p: FoodUpdate['properties']): string {
 
 export default function StudentFoodUpdatesScreen() {
   const { user } = useAuth();
+  const userId = user?.id;
   const [updates, setUpdates] = useState<FoodUpdate[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [optIn, setOptIn] = useState(true);
-  const [savingOptIn, setSavingOptIn] = useState(false);
   const [pushState, setPushState] = useState<'unknown' | 'granted' | 'denied'>('unknown');
+  const [pendingOfflineCount, setPendingOfflineCount] = useState(0);
+
+  const executeFoodOptIn = useCallback(async (payload: FoodOptInPayload) => {
+    const { error } = await supabase.rpc('set_my_meal_opt_in', { p_value: payload.value });
+    if (error) throw error;
+  }, []);
+
+  const { mutate: mutateOptIn, isMutating: savingOptIn } = useOfflineMutation<
+    FoodOptInPayload,
+    void
+  >({
+    operation: 'food_opt_in',
+    execute: executeFoodOptIn,
+  });
 
   const load = useCallback(async () => {
-    setErrorMessage(null);
     try {
       const [updatesRes, residentRes, perms] = await Promise.all([
         supabase
@@ -69,15 +90,19 @@ export default function StudentFoodUpdatesScreen() {
           .select('id, meal_type, status, message, created_at, properties(name)')
           .order('created_at', { ascending: false })
           .limit(50),
-        user?.id
-          ? supabase.from('residents').select('meal_opt_in').eq('profile_id', user.id).maybeSingle()
+        userId
+          ? supabase.from('residents').select('meal_opt_in').eq('profile_id', userId).maybeSingle()
           : Promise.resolve({ data: null, error: null }),
         Platform.OS === 'web' ? Promise.resolve(null) : Notifications.getPermissionsAsync(),
       ]);
       if (updatesRes.error) throw updatesRes.error;
+      setErrorMessage(null);
       setUpdates((updatesRes.data ?? []) as unknown as FoodUpdate[]);
-      if (residentRes.data && typeof (residentRes.data as any).meal_opt_in === 'boolean') {
-        setOptIn((residentRes.data as any).meal_opt_in);
+      if (
+        residentRes.data &&
+        typeof (residentRes.data as { meal_opt_in?: unknown }).meal_opt_in === 'boolean'
+      ) {
+        setOptIn((residentRes.data as { meal_opt_in: boolean }).meal_opt_in);
       }
       setPushState(perms ? (perms.granted ? 'granted' : 'denied') : 'unknown');
     } catch (err) {
@@ -86,24 +111,49 @@ export default function StudentFoodUpdatesScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id]);
+  }, [userId]);
 
   useFocusEffect(
     useCallback(() => {
-      load();
+      let active = true;
+      void (async () => {
+        await flushOfflineQueue(defaultOfflineExecutors);
+        const pending = await getPendingCount();
+        if (active) {
+          setPendingOfflineCount(pending);
+          await load();
+        }
+      })();
+      return () => {
+        active = false;
+      };
     }, [load])
   );
 
   const toggleOptIn = async (value: boolean) => {
     if (savingOptIn) return;
-    setSavingOptIn(true);
+    setErrorMessage(null);
     setOptIn(value);
-    const { error } = await supabase.rpc('set_my_meal_opt_in', { p_value: value });
-    if (error) {
+
+    const outcome = await mutateOptIn(
+      { value },
+      `food-opt-in-${userId || 'anon'}-${Date.now()}`
+    );
+
+    if (!outcome.ok) {
+      // Revert optimistic toggle on non-network errors
       setOptIn(!value);
-      setErrorMessage(extractErrorMessage(error, 'Could not update your preference.'));
+      setErrorMessage(outcome.error.message || 'Could not update your preference.');
+      return;
     }
-    setSavingOptIn(false);
+
+    if (outcome.queued) {
+      setPendingOfflineCount(await getPendingCount());
+      Alert.alert(
+        'Saved Offline',
+        'You appear to be offline. Your meal alert preference has been queued and will sync automatically when you reconnect.'
+      );
+    }
   };
 
   const enableNotifications = async () => {
@@ -125,7 +175,11 @@ export default function StudentFoodUpdatesScreen() {
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
-              load();
+              void (async () => {
+                await flushOfflineQueue(defaultOfflineExecutors);
+                setPendingOfflineCount(await getPendingCount());
+                await load();
+              })();
             }}
           />
         }>
@@ -148,6 +202,14 @@ export default function StudentFoodUpdatesScreen() {
           </View>
           <Switch value={optIn} onValueChange={toggleOptIn} disabled={savingOptIn} />
         </View>
+
+        {pendingOfflineCount > 0 && (
+          <View style={styles.offlineBanner}>
+            <Text style={styles.offlineBannerText}>
+              {pendingOfflineCount} offline update{pendingOfflineCount > 1 ? 's' : ''} queued — will sync automatically when connected
+            </Text>
+          </View>
+        )}
 
         {errorMessage && <Text style={styles.errorText}>{errorMessage}</Text>}
 
@@ -222,6 +284,13 @@ const styles = StyleSheet.create({
   },
   optTitle: { fontSize: 15, fontWeight: '600', color: OwnerTheme.colors.textPrimary },
   optText: { fontSize: 12, color: OwnerTheme.colors.textSecondary, marginTop: 2 },
+  offlineBanner: {
+    backgroundColor: OwnerTheme.colors.warningLight,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  offlineBannerText: { fontSize: 12, fontWeight: '600', color: '#92400E' },
   errorText: { color: OwnerTheme.colors.danger, fontSize: 13 },
   emptyText: { textAlign: 'center', color: OwnerTheme.colors.textMuted, marginTop: 32, fontSize: 14 },
   card: {

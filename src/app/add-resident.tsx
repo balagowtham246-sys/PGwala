@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -11,18 +11,41 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, useFocusEffect } from 'expo-router';
+import { Href, router, useFocusEffect } from 'expo-router';
 import {
+  AlertTriangle,
+  Building2,
+  Calendar,
+  CheckCircle2,
   Eye,
   EyeOff,
-  CheckCircle2,
   RefreshCw,
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { EdgeFunctionError, invokeEdgeFunction } from '@/lib/edge-functions';
+import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
+import { invalidatePrefix } from '@/lib/query-cache';
+import { normalizeAppError } from '@/lib/service-result';
 import { supabase } from '@/lib/supabase';
+import {
+  formatIsoDateDisplay,
+  formatPropertyGenderLabel,
+  inferPropertyGender,
+  isPropertyCompatibleWithGender,
+  normalizeIndianPhoneDigits,
+  PropertyGenderType,
+  ResidentGender,
+  validateIndianPhone,
+} from '@/lib/ux-utils';
+import {
+  RESIDENTS_CACHE_PREFIX,
+  writeLocalResidentMeta,
+} from '@/services/residents.service';
+import { RoomBedPicker } from '@/components/residents/RoomBedPicker';
+import { CalendarDatePickerModal } from '@/components/ui/calendar-date-picker-modal';
 import {
   OwnerHeader,
   PrimaryButton,
@@ -31,10 +54,24 @@ import {
   ErrorState,
 } from '@/components/ui/owner';
 
-interface PropertyInfo {
+interface PropertyOption {
   id: string;
   name: string;
+  gender_type?: PropertyGenderType | null;
 }
+
+interface ExistingResidentRow {
+  id: string;
+  room_number: string;
+  phone_number: string | null;
+  full_name: string;
+}
+
+const RESIDENT_GENDER_OPTIONS: { value: ResidentGender; label: string }[] = [
+  { value: 'male', label: 'Male' },
+  { value: 'female', label: 'Female' },
+  { value: 'other', label: 'Other' },
+];
 
 function generateRandomPassword(length = 8): string {
   const chars =
@@ -46,29 +83,150 @@ function generateRandomPassword(length = 8): string {
   return res;
 }
 
+function getTodayIsoDate(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function isValidIsoDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [yStr, mStr, dStr] = value.split('-');
+  const year = Number(yStr);
+  const month = Number(mStr);
+  const day = Number(dStr);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(year, month - 1, day);
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
+  );
+}
+
+function parseRupeesToPaise(raw: string): { valid: boolean; paise?: number } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { valid: true, paise: undefined };
+  const num = Number(trimmed);
+  if (!Number.isFinite(num) || num < 0) {
+    return { valid: false };
+  }
+  return { valid: true, paise: Math.round(num * 100) };
+}
+
+function isMissingColumnError(
+  err: { code?: string; message?: string } | null
+): boolean {
+  if (!err) return false;
+  const msg = (err.message || '').toLowerCase();
+  return (
+    err.code === '42703' ||
+    err.code === 'PGRST204' ||
+    msg.includes('does not exist') ||
+    msg.includes('column') ||
+    msg.includes('schema cache')
+  );
+}
+
+async function persistExtendedResidentFields(
+  residentId: string,
+  fields: Record<string, unknown>
+): Promise<void> {
+  const entries = Object.entries(fields).filter(
+    ([, val]) => val !== undefined
+  );
+  if (entries.length === 0) return;
+
+  const fullPayload = Object.fromEntries(entries);
+  try {
+    const { error } = await supabase
+      .from('residents')
+      .update(fullPayload)
+      .eq('id', residentId);
+
+    if (!error) return;
+    if (!isMissingColumnError(error)) {
+      console.warn(
+        '[AddResident] Non-fatal extended fields update error:',
+        error.message
+      );
+      return;
+    }
+
+    // Fallback: apply each field independently so existing columns (e.g. monthly_rent_paise) still persist
+    for (const [key, value] of entries) {
+      try {
+        await supabase
+          .from('residents')
+          .update({ [key]: value })
+          .eq('id', residentId);
+      } catch {
+        // Ignore missing columns on older schemas
+      }
+    }
+  } catch {
+    // Non-fatal best-effort persistence
+  }
+}
+
 export default function AddResidentScreen() {
   const { user, profile } = useAuth();
-  const { selectedProperty } = useProperty();
+  const { properties, selectedProperty } = useProperty();
+  const ownerId = user?.id;
 
-  const [loadingProperty, setLoadingProperty] = useState(true);
-  const [property, setProperty] = useState<PropertyInfo | null>(null);
+  const [fallbackProperties, setFallbackProperties] = useState<
+    PropertyOption[]
+  >([]);
 
   // Form Step: 1 = Resident Details, 2 = Account Setup, 3 = Success Screen
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
 
+  // Gender & Property Selection
+  const [gender, setGender] = useState<ResidentGender>(() => {
+    if (selectedProperty) {
+      const pgGender = inferPropertyGender(
+        selectedProperty.name,
+        selectedProperty.gender_type
+      );
+      if (pgGender === 'girls') return 'female';
+    }
+    return 'male';
+  });
+  const [selectedTargetPropertyId, setSelectedTargetPropertyId] = useState<
+    string | null
+  >(() => selectedProperty?.id ?? null);
+
   // Form Fields
   const [fullName, setFullName] = useState('');
   const [roomNumber, setRoomNumber] = useState('');
+  const [bedLabel, setBedLabel] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
+  const [joiningDate, setJoiningDate] = useState(() => getTodayIsoDate());
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [monthlyRent, setMonthlyRent] = useState('');
+  const [depositAmount, setDepositAmount] = useState('');
+  const [emergencyContact, setEmergencyContact] = useState('');
   const [email, setEmail] = useState('');
   const [temporaryPassword, setTemporaryPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [roomRefreshSignal, setRoomRefreshSignal] = useState(0);
+
+  // Duplicate-phone lookup for active target property
+  const [residentSnapshot, setResidentSnapshot] = useState<{
+    propertyId: string;
+    rows: ExistingResidentRow[];
+  }>({ propertyId: '', rows: [] });
 
   // Created Resident summary for Step 3
   const [createdSummary, setCreatedSummary] = useState<{
     id: string;
     fullName: string;
+    propertyName: string;
     roomNumber: string;
+    bedLabel?: string;
+    joiningDate: string;
     email: string;
   } | null>(null);
 
@@ -76,65 +234,224 @@ export default function AddResidentScreen() {
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // 1. Fetch authenticated owner's active property
-  const loadOwnerProperty = useCallback(async () => {
-    try {
-      setErrorMessage(null);
-      setLoadingProperty(true);
+  // Load properties fallback if PropertyContext hasn't populated any
+  const loadFallbackProperties = useCallback(async () => {
+    if (properties.length > 0) return;
 
-      if (selectedProperty) {
-        setProperty({ id: selectedProperty.id, name: selectedProperty.name });
+    try {
+      let query = supabase
+        .from('properties')
+        .select('id, name, gender_type')
+        .eq('is_active', true);
+
+      if (ownerId) {
+        query = query.eq('owner_id', ownerId);
+      }
+
+      const richRes = await query;
+      if (richRes.error && isMissingColumnError(richRes.error)) {
+        let basicQuery = supabase
+          .from('properties')
+          .select('id, name')
+          .eq('is_active', true);
+        if (ownerId) {
+          basicQuery = basicQuery.eq('owner_id', ownerId);
+        }
+        const basicRes = await basicQuery;
+        if (basicRes.error) {
+          throw new Error(`Failed to load property: ${basicRes.error.message}`);
+        }
+        setFallbackProperties((basicRes.data as PropertyOption[]) ?? []);
         return;
       }
 
-      let query = supabase
-        .from('properties')
-        .select('id, name')
-        .eq('is_active', true);
-
-      if (user?.id) {
-        query = query.eq('owner_id', user.id);
+      if (richRes.error) {
+        throw new Error(`Failed to load property: ${richRes.error.message}`);
       }
 
-      const { data, error } = await query.limit(1);
-
-      if (error) {
-        throw new Error(`Failed to load property: ${error.message}`);
-      }
-
-      if (!data || data.length === 0) {
-        setProperty(null);
+      const rows = (richRes.data as PropertyOption[]) ?? [];
+      if (rows.length === 0) {
         setErrorMessage(
           'No active PG property found for your account. Please set up a property first.'
         );
-      } else {
-        setProperty(data[0]);
       }
+      setFallbackProperties(rows);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('[AddResident] Error loading property:', err);
+      console.error('[AddResident] Error loading properties:', err);
       setErrorMessage(msg);
-    } finally {
-      setLoadingProperty(false);
     }
-  }, [user?.id, selectedProperty]);
+  }, [ownerId, properties.length]);
 
   useFocusEffect(
     useCallback(() => {
-      loadOwnerProperty();
-    }, [loadOwnerProperty])
+      loadFallbackProperties();
+      setRoomRefreshSignal((n) => n + 1);
+    }, [loadFallbackProperties])
   );
+
+  const allProperties: PropertyOption[] = useMemo(() => {
+    if (properties.length > 0) {
+      return properties.map((p) => ({
+        id: p.id,
+        name: p.name,
+        gender_type: p.gender_type,
+      }));
+    }
+    return fallbackProperties;
+  }, [properties, fallbackProperties]);
+
+  const compatibleProperties = useMemo(
+    () =>
+      allProperties.filter((p) =>
+        isPropertyCompatibleWithGender(
+          inferPropertyGender(p.name, p.gender_type),
+          gender
+        )
+      ),
+    [allProperties, gender]
+  );
+
+  const activeProperty: PropertyOption | null = useMemo(() => {
+    if (compatibleProperties.length === 0) return null;
+    if (selectedTargetPropertyId) {
+      const chosen = compatibleProperties.find(
+        (p) => p.id === selectedTargetPropertyId
+      );
+      if (chosen) return chosen;
+    }
+    if (selectedProperty) {
+      const activeMatch = compatibleProperties.find(
+        (p) => p.id === selectedProperty.id
+      );
+      if (activeMatch) return activeMatch;
+    }
+    return compatibleProperties[0];
+  }, [compatibleProperties, selectedTargetPropertyId, selectedProperty]);
+
+  const activePropertyId = activeProperty?.id ?? null;
+
+  const existingResidents = useMemo(
+    () =>
+      activePropertyId && residentSnapshot.propertyId === activePropertyId
+        ? residentSnapshot.rows
+        : [],
+    [activePropertyId, residentSnapshot]
+  );
+
+  const fetchPropertyResidents = useCallback(async (propertyId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('residents')
+        .select('id, room_number, phone_number, full_name')
+        .eq('property_id', propertyId)
+        .eq('is_active', true);
+
+      if (error) {
+        console.warn('[AddResident] Could not fetch residents:', error.message);
+        setResidentSnapshot({ propertyId, rows: [] });
+        return;
+      }
+
+      setResidentSnapshot({
+        propertyId,
+        rows: (data as ExistingResidentRow[]) ?? [],
+      });
+    } catch {
+      setResidentSnapshot({ propertyId, rows: [] });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!activePropertyId) return;
+    let active = true;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('residents')
+          .select('id, room_number, phone_number, full_name')
+          .eq('property_id', activePropertyId)
+          .eq('is_active', true);
+
+        if (!active) return;
+        if (error) {
+          console.warn('[AddResident] Could not fetch rooms:', error.message);
+          setResidentSnapshot({ propertyId: activePropertyId, rows: [] });
+          return;
+        }
+        setResidentSnapshot({
+          propertyId: activePropertyId,
+          rows: (data as ExistingResidentRow[]) ?? [],
+        });
+      } catch {
+        if (active) {
+          setResidentSnapshot({ propertyId: activePropertyId, rows: [] });
+        }
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [activePropertyId]);
+
+  const duplicatePhoneResident = useMemo(() => {
+    const normalized = normalizeIndianPhoneDigits(phoneNumber);
+    if (!normalized) return null;
+    return (
+      existingResidents.find(
+        (r) => normalizeIndianPhoneDigits(r.phone_number) === normalized
+      ) ?? null
+    );
+  }, [existingResidents, phoneNumber]);
+
+  const handleSelectGender = (nextGender: ResidentGender) => {
+    if (nextGender === gender) return;
+    setGender(nextGender);
+    setRoomNumber('');
+    setBedLabel('');
+    if (errorMessage) setErrorMessage(null);
+
+    const nextCompatible = allProperties.filter((p) =>
+      isPropertyCompatibleWithGender(
+        inferPropertyGender(p.name, p.gender_type),
+        nextGender
+      )
+    );
+    const currentStillValid = nextCompatible.some(
+      (p) => p.id === activeProperty?.id
+    );
+    if (!currentStillValid) {
+      setSelectedTargetPropertyId(nextCompatible[0]?.id ?? null);
+    }
+  };
+
+  const handleSelectProperty = (propId: string) => {
+    if (propId === activeProperty?.id) return;
+    setSelectedTargetPropertyId(propId);
+    setRoomNumber('');
+    setBedLabel('');
+    if (errorMessage) setErrorMessage(null);
+  };
 
   const resetForm = () => {
     setFullName('');
     setRoomNumber('');
+    setBedLabel('');
     setPhoneNumber('');
+    setJoiningDate(getTodayIsoDate());
+    setMonthlyRent('');
+    setDepositAmount('');
+    setEmergencyContact('');
     setEmail('');
     setTemporaryPassword('');
     setShowPassword(false);
     setCreatedSummary(null);
     setErrorMessage(null);
     setCurrentStep(1);
+    setRoomRefreshSignal((n) => n + 1);
+    if (activeProperty?.id) {
+      void fetchPropertyResidents(activeProperty.id);
+    }
   };
 
   const handleGeneratePassword = () => {
@@ -145,20 +462,46 @@ export default function AddResidentScreen() {
 
   // Validate Step 1 before moving to Step 2
   const handleProceedToStep2 = () => {
+    if (!activeProperty?.id) {
+      setErrorMessage(
+        'Please select a compatible PG property before continuing.'
+      );
+      return;
+    }
+
     const trimmedName = fullName.trim();
     const trimmedRoom = roomNumber.trim();
-    const trimmedPhone = phoneNumber.trim();
+    const trimmedBed = bedLabel.trim();
+    const trimmedJoiningDate = joiningDate.trim();
+    const phoneValidation = validateIndianPhone(phoneNumber);
+    const rentParsed = parseRupeesToPaise(monthlyRent);
+    const depositParsed = parseRupeesToPaise(depositAmount);
 
     if (!trimmedName) {
       setErrorMessage("Please enter the resident's full name.");
       return;
     }
-    if (!trimmedRoom) {
-      setErrorMessage('Please enter a room number.');
+    if (!trimmedRoom || !trimmedBed) {
+      setErrorMessage('Please select a room and free bed.');
       return;
     }
-    if (trimmedPhone && trimmedPhone.length < 10) {
-      setErrorMessage('Phone number should be at least 10 digits.');
+    if (!phoneValidation.valid) {
+      setErrorMessage(
+        phoneValidation.error ||
+          'Please enter a valid 10-digit Indian mobile number.'
+      );
+      return;
+    }
+    if (!isValidIsoDate(trimmedJoiningDate)) {
+      setErrorMessage('Please select a valid joining date.');
+      return;
+    }
+    if (!rentParsed.valid) {
+      setErrorMessage('Please enter a valid monthly rent amount in ₹.');
+      return;
+    }
+    if (!depositParsed.valid) {
+      setErrorMessage('Please enter a valid security deposit amount in ₹.');
       return;
     }
 
@@ -176,19 +519,32 @@ export default function AddResidentScreen() {
       return;
     }
 
-    if (!property?.id) {
+    if (!activeProperty?.id) {
       Alert.alert(
         'Property Required',
-        'Cannot add resident without an active PG property.'
+        'Cannot add resident without a compatible active PG property.'
       );
       return;
     }
 
     const trimmedName = fullName.trim();
     const trimmedRoom = roomNumber.trim();
-    const trimmedPhone = phoneNumber.trim();
+    const trimmedBed = bedLabel.trim();
+    const phoneValidation = validateIndianPhone(phoneNumber);
+    const trimmedJoiningDate = joiningDate.trim();
+    const rentParsed = parseRupeesToPaise(monthlyRent);
+    const depositParsed = parseRupeesToPaise(depositAmount);
+    const trimmedEmergency = emergencyContact.trim();
     const trimmedEmail = email.trim().toLowerCase();
     const trimmedPassword = temporaryPassword.trim();
+
+    if (!phoneValidation.valid) {
+      setErrorMessage(
+        phoneValidation.error ||
+          'Please enter a valid 10-digit Indian mobile number.'
+      );
+      return;
+    }
 
     if (!trimmedEmail) {
       setErrorMessage("Please enter the resident's login email.");
@@ -213,6 +569,8 @@ export default function AddResidentScreen() {
 
     setSaving(true);
     setErrorMessage(null);
+    const traceLabel = 'add-resident:create';
+    startTrace(traceLabel);
 
     try {
       const { data: sessionData, error: sessionError } =
@@ -245,43 +603,30 @@ export default function AddResidentScreen() {
         );
       }
 
-      // Invoke the protected create-resident Edge Function
-      const {
-        data: edgeData,
-        error: edgeError,
-        response: edgeResponse,
-      } = await supabase.functions.invoke('create-resident', {
-        headers: {
-          Authorization: `Bearer ${activeSession.access_token}`,
-        },
-        body: {
-          property_id: property.id,
-          full_name: trimmedName,
-          room_number: trimmedRoom,
-          phone_number: trimmedPhone || undefined,
-          email: trimmedEmail,
-          temporary_password: trimmedPassword,
-        },
+      // Invoke the protected create-resident Edge Function (strictly online)
+      const edgeData = await invokeEdgeFunction<{
+        success: boolean;
+        resident_id?: string;
+        id?: string;
+        full_name?: string;
+        room_number?: string;
+        email?: string;
+        error?: string;
+      }>('create-resident', {
+        property_id: activeProperty.id,
+        full_name: trimmedName,
+        room_number: trimmedRoom,
+        phone_number: phoneValidation.normalized10,
+        email: trimmedEmail,
+        temporary_password: trimmedPassword,
+        gender,
+        joining_date: trimmedJoiningDate,
+        monthly_rent_paise: rentParsed.paise,
+        deposit_paise: depositParsed.paise,
+        ...(trimmedBed ? { bed_label: trimmedBed } : {}),
+        ...(trimmedEmergency ? { emergency_contact: trimmedEmergency } : {}),
       });
-
-      if (edgeError) {
-        const httpStatus: number | undefined =
-          edgeResponse?.status ?? (edgeError as any)?.context?.status;
-        let serverMessage: string | undefined;
-
-        if (httpStatus === 409) {
-          serverMessage = `A resident or account with email "${trimmedEmail}" already exists.`;
-        } else if (httpStatus === 400) {
-          serverMessage = 'Invalid resident details provided (400).';
-        } else if (httpStatus === 404) {
-          serverMessage =
-            'The resident setup service is currently unavailable. Please contact support.';
-        } else {
-          serverMessage = edgeError.message;
-        }
-
-        throw new Error(serverMessage || 'Failed to create resident.');
-      }
+      recordRoundTrip(traceLabel);
 
       if (!edgeData || !edgeData.success) {
         throw new Error(
@@ -289,19 +634,81 @@ export default function AddResidentScreen() {
         );
       }
 
-      // Save created summary for confirmation screen
+      const createdResidentId = edgeData.resident_id || edgeData.id || '';
+
+      if (createdResidentId) {
+        await persistExtendedResidentFields(createdResidentId, {
+          gender,
+          joining_date: trimmedJoiningDate,
+          monthly_rent_paise: rentParsed.paise,
+          deposit_paise: depositParsed.paise,
+          ...(trimmedBed ? { bed_label: trimmedBed } : {}),
+          ...(trimmedEmergency ? { emergency_contact: trimmedEmergency } : {}),
+        });
+        await writeLocalResidentMeta(createdResidentId, {
+          bed_label: trimmedBed || null,
+          gender,
+          joining_date: trimmedJoiningDate,
+          deposit_paise: depositParsed.paise,
+          emergency_contact: trimmedEmergency || null,
+        });
+        await Promise.all([
+          invalidatePrefix(RESIDENTS_CACHE_PREFIX),
+          invalidatePrefix('dashboard:'),
+        ]);
+
+        router.replace({
+          pathname: '/resident-profile',
+          params: { id: createdResidentId },
+        } as unknown as Href);
+        return;
+      }
+
+      // Fallback Step 3 summary if Edge Function did not return a resident ID
       setCreatedSummary({
-        id: edgeData.resident_id || edgeData.id || '',
+        id: createdResidentId,
         fullName: edgeData.full_name || trimmedName,
+        propertyName: activeProperty.name,
         roomNumber: edgeData.room_number || trimmedRoom,
+        bedLabel: trimmedBed || undefined,
+        joiningDate: trimmedJoiningDate,
         email: edgeData.email || trimmedEmail,
       });
 
       setCurrentStep(3);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      let msg: string;
+      if (err instanceof EdgeFunctionError) {
+        if (err.status === 409) {
+          msg =
+            err.code === 'DUPLICATE_RESIDENT' && err.message
+              ? err.message
+              : `A resident or account with email "${trimmedEmail}" already exists.`;
+        } else if (err.status === 400) {
+          msg =
+            err.message && !err.message.startsWith('Request failed (HTTP')
+              ? err.message
+              : 'Invalid resident details provided (400).';
+        } else if (err.status === 404) {
+          msg =
+            'The resident setup service is currently unavailable. Please contact support.';
+        } else if (!err.status) {
+          msg =
+            err.message ||
+            'Network error. Please check your connection and try again.';
+        } else {
+          msg = err.message || 'Failed to create resident.';
+        }
+      } else {
+        const normalized = normalizeAppError(err, 'Failed to create resident.');
+        msg = normalized.isNetworkError
+          ? normalized.message ||
+            'Network error. Please check your connection and try again.'
+          : normalized.message;
+      }
       setErrorMessage(msg);
     } finally {
+      endTrace(traceLabel);
       setSaving(false);
     }
   };
@@ -310,13 +717,15 @@ export default function AddResidentScreen() {
     <SafeAreaView style={styles.safeArea}>
       <OwnerHeader
         title="Add Resident"
-        subtitle={property?.name || 'Property'}
+        subtitle={activeProperty?.name || 'Property'}
         showBack
         onBack={() => {
           if (currentStep === 2) {
             setCurrentStep(1);
-          } else {
+          } else if (router.canGoBack()) {
             router.back();
+          } else {
+            router.replace('/(tabs)');
           }
         }}
       />
@@ -357,9 +766,24 @@ export default function AddResidentScreen() {
                   </Text>
                 </View>
                 <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Room</Text>
+                  <Text style={styles.summaryLabel}>PG Property</Text>
+                  <Text style={styles.summaryValue}>
+                    {createdSummary.propertyName}
+                  </Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Room & Bed</Text>
                   <Text style={styles.summaryValue}>
                     Room {createdSummary.roomNumber}
+                    {createdSummary.bedLabel
+                      ? ` · ${createdSummary.bedLabel}`
+                      : ''}
+                  </Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Joining Date</Text>
+                  <Text style={styles.summaryValue}>
+                    {formatIsoDateDisplay(createdSummary.joiningDate)}
                   </Text>
                 </View>
                 <View style={styles.summaryRow}>
@@ -380,9 +804,9 @@ export default function AddResidentScreen() {
                   onPress={() => {
                     if (createdSummary.id) {
                       router.replace({
-                        pathname: '/edit-resident',
+                        pathname: '/resident-profile',
                         params: { id: createdSummary.id },
-                      });
+                      } as unknown as Href);
                     } else {
                       router.replace('/(tabs)');
                     }
@@ -400,10 +824,7 @@ export default function AddResidentScreen() {
               {/* Step Progress Indicator */}
               <View style={styles.progressRow}>
                 <View
-                  style={[
-                    styles.progressStep,
-                    styles.progressStepActive,
-                  ]}>
+                  style={[styles.progressStep, styles.progressStepActive]}>
                   <Text style={styles.progressStepTextActive}>1</Text>
                   <Text style={styles.progressStepLabelActive}>
                     Resident Info
@@ -439,6 +860,7 @@ export default function AddResidentScreen() {
                     Personal & Room Details
                   </Text>
 
+                  {/* Full Name */}
                   <View style={styles.inputGroup}>
                     <Text style={styles.label}>Full Name *</Text>
                     <TextInput
@@ -454,47 +876,264 @@ export default function AddResidentScreen() {
                     />
                   </View>
 
+                  {/* Gender Selector */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Room Number *</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="e.g. 101 or A"
-                      placeholderTextColor={OwnerTheme.colors.textMuted}
-                      value={roomNumber}
-                      onChangeText={(val) => {
-                        setRoomNumber(val);
-                        if (errorMessage) setErrorMessage(null);
-                      }}
-                      autoCapitalize="characters"
-                    />
+                    <Text style={styles.label}>Gender *</Text>
+                    <View style={styles.chipRow}>
+                      {RESIDENT_GENDER_OPTIONS.map((opt) => {
+                        const isSelected = gender === opt.value;
+                        return (
+                          <Pressable
+                            key={opt.value}
+                            accessibilityRole="radio"
+                            accessibilityState={{ selected: isSelected }}
+                            onPress={() => handleSelectGender(opt.value)}
+                            style={[
+                              styles.segmentChip,
+                              isSelected && styles.segmentChipActive,
+                            ]}>
+                            <Text
+                              style={[
+                                styles.segmentChipText,
+                                isSelected && styles.segmentChipTextActive,
+                              ]}>
+                              {opt.label}
+                            </Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
                   </View>
 
+                  {/* Property Selector (filtered by gender) */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Phone Number (Optional)</Text>
+                    <Text style={styles.label}>PG Property *</Text>
+                    {compatibleProperties.length > 0 ? (
+                      <View style={styles.propertyChipWrap}>
+                        {compatibleProperties.map((prop) => {
+                          const isSelected = prop.id === activeProperty?.id;
+                          const pgGenderLabel = formatPropertyGenderLabel(
+                            inferPropertyGender(prop.name, prop.gender_type)
+                          );
+                          return (
+                            <Pressable
+                              key={prop.id}
+                              accessibilityRole="radio"
+                              accessibilityState={{ selected: isSelected }}
+                              onPress={() => handleSelectProperty(prop.id)}
+                              style={[
+                                styles.propertyChip,
+                                isSelected && styles.propertyChipActive,
+                              ]}>
+                              <Building2
+                                size={14}
+                                color={
+                                  isSelected
+                                    ? OwnerTheme.colors.primary
+                                    : OwnerTheme.colors.textSecondary
+                                }
+                              />
+                              <Text
+                                style={[
+                                  styles.propertyChipText,
+                                  isSelected && styles.propertyChipTextActive,
+                                ]}
+                                numberOfLines={1}>
+                                {prop.name}
+                              </Text>
+                              <View style={styles.propertyTag}>
+                                <Text style={styles.propertyTagText}>
+                                  {pgGenderLabel}
+                                </Text>
+                              </View>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    ) : (
+                      <View style={styles.warningBox}>
+                        <AlertTriangle
+                          size={16}
+                          color={OwnerTheme.colors.warning}
+                          style={{ marginTop: 1 }}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.warningText}>
+                            No compatible PG property matches{' '}
+                            {gender === 'female'
+                              ? 'Female'
+                              : gender === 'male'
+                                ? 'Male'
+                                : 'Other'}{' '}
+                            residents. Update a property&apos;s gender type or
+                            add a Co-ed property in PG Properties.
+                          </Text>
+                          <Pressable
+                            onPress={() => router.push('/owner-properties')}
+                            style={{ marginTop: 6 }}>
+                            <Text style={styles.warningActionLink}>
+                              Open PG Properties →
+                            </Text>
+                          </Pressable>
+                        </View>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Unified Room & Bed Picker */}
+                  {activeProperty ? (
+                    <View style={styles.pickerGroup}>
+                      <RoomBedPicker
+                        propertyId={activeProperty.id}
+                        propertyGender={inferPropertyGender(
+                          activeProperty.name,
+                          activeProperty.gender_type
+                        )}
+                        residentGender={gender}
+                        selectedRoomNumber={roomNumber}
+                        selectedBedLabel={bedLabel}
+                        refreshSignal={roomRefreshSignal}
+                        onSelect={(room, bed) => {
+                          setRoomNumber(room);
+                          setBedLabel(bed);
+                          if (errorMessage) setErrorMessage(null);
+                        }}
+                      />
+                    </View>
+                  ) : null}
+
+                  {/* Phone Number (Required, +91 prefix) */}
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Phone Number *</Text>
+                    <View style={styles.prefixedInputWrap}>
+                      <View style={styles.prefixBadge}>
+                        <Text style={styles.prefixText}>+91</Text>
+                      </View>
+                      <TextInput
+                        style={styles.prefixedTextInput}
+                        placeholder="9876543210"
+                        placeholderTextColor={OwnerTheme.colors.textMuted}
+                        value={phoneNumber}
+                        onChangeText={(val) => {
+                          setPhoneNumber(val);
+                          if (errorMessage) setErrorMessage(null);
+                        }}
+                        keyboardType="phone-pad"
+                        maxLength={14}
+                      />
+                    </View>
+
+                    {duplicatePhoneResident && (
+                      <View style={[styles.warningBox, { marginTop: 8 }]}>
+                        <AlertTriangle
+                          size={15}
+                          color={OwnerTheme.colors.warning}
+                          style={{ marginTop: 1 }}
+                        />
+                        <Text style={styles.warningText}>
+                          Duplicate phone warning: Already registered to{' '}
+                          {duplicatePhoneResident.full_name} (Room{' '}
+                          {duplicatePhoneResident.room_number}) in this
+                          property.
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Joining Date */}
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Joining Date *</Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Select joining date"
+                      onPress={() => setShowDatePicker(true)}
+                      style={({ pressed }) => [
+                        styles.datePickerBtn,
+                        pressed && styles.datePickerBtnPressed,
+                      ]}>
+                      <View style={styles.datePickerBtnLeft}>
+                        <Calendar
+                          size={18}
+                          color={OwnerTheme.colors.primary}
+                        />
+                        <Text style={styles.datePickerBtnText}>
+                          {formatIsoDateDisplay(joiningDate)}
+                        </Text>
+                      </View>
+                      <Text style={styles.datePickerChangeText}>Select</Text>
+                    </Pressable>
+                  </View>
+
+                  {/* Monthly Rent & Security Deposit */}
+                  <View style={styles.twoColRow}>
+                    <View style={[styles.inputGroup, { flex: 1 }]}>
+                      <Text style={styles.label}>Monthly Rent (₹)</Text>
+                      <View style={styles.prefixedInputWrap}>
+                        <View style={styles.prefixBadge}>
+                          <Text style={styles.prefixText}>₹</Text>
+                        </View>
+                        <TextInput
+                          style={styles.prefixedTextInput}
+                          placeholder="8000"
+                          placeholderTextColor={OwnerTheme.colors.textMuted}
+                          value={monthlyRent}
+                          onChangeText={(val) => {
+                            setMonthlyRent(val.replace(/[^0-9.]/g, ''));
+                            if (errorMessage) setErrorMessage(null);
+                          }}
+                          keyboardType="decimal-pad"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={[styles.inputGroup, { flex: 1 }]}>
+                      <Text style={styles.label}>Security Deposit (₹)</Text>
+                      <View style={styles.prefixedInputWrap}>
+                        <View style={styles.prefixBadge}>
+                          <Text style={styles.prefixText}>₹</Text>
+                        </View>
+                        <TextInput
+                          style={styles.prefixedTextInput}
+                          placeholder="10000"
+                          placeholderTextColor={OwnerTheme.colors.textMuted}
+                          value={depositAmount}
+                          onChangeText={(val) => {
+                            setDepositAmount(val.replace(/[^0-9.]/g, ''));
+                            if (errorMessage) setErrorMessage(null);
+                          }}
+                          keyboardType="decimal-pad"
+                        />
+                      </View>
+                    </View>
+                  </View>
+
+                  {/* Emergency Contact (Optional) */}
+                  <View style={styles.inputGroup}>
+                    <Text style={styles.label}>Emergency Contact</Text>
                     <TextInput
                       style={styles.textInput}
-                      placeholder="e.g. 9876543210"
+                      placeholder="Parent / guardian phone or name (optional)"
                       placeholderTextColor={OwnerTheme.colors.textMuted}
-                      value={phoneNumber}
+                      value={emergencyContact}
                       onChangeText={(val) => {
-                        setPhoneNumber(val);
+                        setEmergencyContact(val);
                         if (errorMessage) setErrorMessage(null);
                       }}
-                      keyboardType="phone-pad"
                     />
                   </View>
 
                   <PrimaryButton
                     label="Next: Account Setup"
                     onPress={handleProceedToStep2}
-                    style={{ marginTop: 12 }}
+                    disabled={!activeProperty}
+                    style={{ marginTop: 8 }}
                   />
                 </View>
               ) : (
                 /* Step 2: Account Setup */
                 <View style={styles.formCard}>
                   <Text style={styles.formSectionTitle}>
-                    Student Portal Login
+                    Resident Portal Login
                   </Text>
                   <Text style={styles.formSectionSubtitle}>
                     Provide the email and temporary password for the resident to
@@ -588,6 +1227,17 @@ export default function AddResidentScreen() {
           <View style={{ height: 40 }} />
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <CalendarDatePickerModal
+        visible={showDatePicker}
+        value={joiningDate}
+        title="Select Joining Date"
+        onSelect={(iso) => {
+          setJoiningDate(iso);
+          if (errorMessage) setErrorMessage(null);
+        }}
+        onClose={() => setShowDatePicker(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -676,6 +1326,9 @@ const styles = StyleSheet.create({
   inputGroup: {
     marginBottom: 16,
   },
+  pickerGroup: {
+    marginBottom: 16,
+  },
   labelRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -697,6 +1350,161 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: OwnerTheme.colors.textPrimary,
     backgroundColor: '#FFFFFF',
+  },
+  datePickerBtn: {
+    height: 50,
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    paddingHorizontal: 14,
+    backgroundColor: '#FFFFFF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  datePickerBtnPressed: {
+    backgroundColor: '#F8FAFC',
+    borderColor: OwnerTheme.colors.primary,
+  },
+  datePickerBtnLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  datePickerBtnText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  datePickerChangeText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
+  },
+  prefixedInputWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 50,
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#FFFFFF',
+    overflow: 'hidden',
+  },
+  prefixBadge: {
+    height: '100%',
+    paddingHorizontal: 12,
+    backgroundColor: '#F1F5F9',
+    borderRightWidth: 1,
+    borderRightColor: OwnerTheme.colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  prefixText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  prefixedTextInput: {
+    flex: 1,
+    height: '100%',
+    paddingHorizontal: 12,
+    fontSize: 15,
+    color: OwnerTheme.colors.textPrimary,
+  },
+  chipRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  segmentChip: {
+    flex: 1,
+    height: 42,
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#FAFAFA',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  segmentChipActive: {
+    borderColor: OwnerTheme.colors.primary,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+  },
+  segmentChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  segmentChipTextActive: {
+    color: OwnerTheme.colors.primary,
+    fontWeight: '700',
+  },
+  propertyChipWrap: {
+    gap: 8,
+  },
+  propertyChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: OwnerTheme.radius.md,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#FAFAFA',
+  },
+  propertyChipActive: {
+    borderColor: OwnerTheme.colors.primary,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+  },
+  propertyChipText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  propertyChipTextActive: {
+    color: OwnerTheme.colors.primary,
+    fontWeight: '700',
+  },
+  propertyTag: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.full,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  propertyTagText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  warningBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    padding: 12,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.warningLight,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  warningText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#92400E',
+    lineHeight: 17,
+    fontWeight: '500',
+  },
+  warningActionLink: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  twoColRow: {
+    flexDirection: 'row',
+    gap: 10,
   },
   passwordInputWrap: {
     flexDirection: 'row',

@@ -2,15 +2,18 @@ import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
 import {
   Building2,
@@ -34,6 +37,15 @@ import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader } from '@/components/ui/owner';
 import { BiometricSettingsRow } from '@/components/biometric-settings-row';
 
+interface WashingMachineRow {
+  id: string;
+  machine_number: number;
+  machine_name: string | null;
+}
+
+const getWmNamesStorageKey = (propertyId: string) =>
+  `@pgwala_wm_names:${propertyId}`;
+
 export default function OwnerSettingsScreen() {
   const { user, profile, signOut } = useAuth();
   const { selectedProperty, properties } = useProperty();
@@ -42,36 +54,125 @@ export default function OwnerSettingsScreen() {
 
   const [wmModalVisible, setWmModalVisible] = useState(false);
   const [wmCount, setWmCount] = useState<number>(2);
+  const [initialWmCount, setInitialWmCount] = useState<number>(2);
+  const [wmNames, setWmNames] = useState<Record<number, string>>({
+    1: 'Washing Machine 1',
+    2: 'Washing Machine 2',
+  });
   const [wmCountLoading, setWmCountLoading] = useState(false);
   const [savingWm, setSavingWm] = useState(false);
 
-  const loadWmCount = useCallback(async () => {
-    if (!selectedProperty?.id) return;
+  const selectedPropertyId = selectedProperty?.id ?? null;
+
+  const fetchWmDataForProperty = useCallback(async (propertyId: string) => {
+    let storedNames: Record<string, string> = {};
+    try {
+      const raw = await AsyncStorage.getItem(getWmNamesStorageKey(propertyId));
+      if (raw) {
+        storedNames = JSON.parse(raw) as Record<string, string>;
+      }
+    } catch {
+      // Ignore AsyncStorage read errors
+    }
+
+    const { data, count, error } = await supabase
+      .from('washing_machines')
+      .select('id, machine_number, machine_name', { count: 'exact' })
+      .eq('property_id', propertyId)
+      .eq('is_active', true)
+      .order('machine_number', { ascending: true });
+
+    if (error) return null;
+
+    const rows = (data ?? []) as WashingMachineRow[];
+    const resolvedCount =
+      rows.length > 0
+        ? rows.length
+        : typeof count === 'number' && count > 0
+          ? count
+          : 2;
+
+    const nextNames: Record<number, string> = {};
+    for (const [k, v] of Object.entries(storedNames)) {
+      const parsedNum = Number(k);
+      if (Number.isInteger(parsedNum) && parsedNum >= 1 && v?.trim()) {
+        nextNames[parsedNum] = v.trim();
+      }
+    }
+
+    for (const row of rows) {
+      const defaultLabel = `Washing Machine ${row.machine_number}`;
+      const dbName = row.machine_name?.trim();
+      const fallbackName = storedNames[String(row.machine_number)]?.trim();
+      nextNames[row.machine_number] =
+        dbName && dbName !== defaultLabel
+          ? dbName
+          : fallbackName || dbName || defaultLabel;
+    }
+
+    for (let num = 1; num <= resolvedCount; num++) {
+      if (!nextNames[num]) {
+        nextNames[num] = `Washing Machine ${num}`;
+      }
+    }
+
+    return { resolvedCount, nextNames };
+  }, []);
+
+  const loadWmData = useCallback(async () => {
+    if (!selectedPropertyId) return;
     try {
       setWmCountLoading(true);
-      const { count, error } = await supabase
-        .from('washing_machines')
-        .select('*', { count: 'exact', head: true })
-        .eq('property_id', selectedProperty.id)
-        .eq('is_active', true);
-      if (!error && typeof count === 'number' && count > 0) {
-        setWmCount(count);
+      const res = await fetchWmDataForProperty(selectedPropertyId);
+      if (res) {
+        setWmCount(res.resolvedCount);
+        setInitialWmCount(res.resolvedCount);
+        setWmNames(res.nextNames);
       }
     } catch {
       // Graceful fallback
     } finally {
       setWmCountLoading(false);
     }
-  }, [selectedProperty?.id]);
+  }, [fetchWmDataForProperty, selectedPropertyId]);
 
   useEffect(() => {
-    loadWmCount();
-  }, [loadWmCount]);
+    if (!selectedPropertyId) return;
+    let active = true;
+    (async () => {
+      try {
+        const res = await fetchWmDataForProperty(selectedPropertyId);
+        if (!active || !res) return;
+        setWmCount(res.resolvedCount);
+        setInitialWmCount(res.resolvedCount);
+        setWmNames(res.nextNames);
+      } catch {
+        // Graceful fallback
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [fetchWmDataForProperty, selectedPropertyId]);
 
-  const handleSaveWmCount = async () => {
+  const openWmModal = () => {
+    setWmModalVisible(true);
+    void loadWmData();
+  };
+
+  const executeSaveWmCount = async () => {
     if (!selectedProperty?.id) return;
     try {
       setSavingWm(true);
+
+      // Build finalized names for units 1..wmCount
+      const finalizedNames: Record<string, string> = {};
+      for (let num = 1; num <= wmCount; num++) {
+        const rawName = (wmNames[num] ?? '').trim();
+        finalizedNames[String(num)] = rawName || `Washing Machine ${num}`;
+      }
+
+      // 1. Update unit count via authoritative RPC first (since increasing count resets names on server)
       const { data, error } = await supabase.rpc('set_property_wm_count', {
         p_property_id: selectedProperty.id,
         p_count: wmCount,
@@ -79,14 +180,83 @@ export default function OwnerSettingsScreen() {
       if (error) throw error;
       if (data && !data.success) throw new Error(data.error);
 
-      Alert.alert('Capacity Updated', data?.message || `Configured ${wmCount} washing machines.`);
+      // 2. Persist custom machine names to AsyncStorage fallback
+      try {
+        await AsyncStorage.setItem(
+          getWmNamesStorageKey(selectedProperty.id),
+          JSON.stringify(finalizedNames)
+        );
+      } catch {
+        // Non-fatal fallback
+      }
+
+      // 3. Persist custom machine names to washing_machines.machine_name
+      await Promise.all(
+        Array.from({ length: wmCount }, (_, idx) => idx + 1).map(async (num) => {
+          const machineName = finalizedNames[String(num)];
+          const { error: updateErr } = await supabase
+            .from('washing_machines')
+            .update({ machine_name: machineName })
+            .eq('property_id', selectedProperty.id)
+            .eq('machine_number', num);
+
+          if (updateErr) {
+            console.warn(
+              `[OwnerSettings] Failed to update name for machine ${num}:`,
+              updateErr.message
+            );
+          }
+        })
+      );
+
+      Alert.alert(
+        'Capacity Updated',
+        data?.message || `Configured ${wmCount} washing machines.`
+      );
       setWmModalVisible(false);
-      await loadWmCount();
+      await loadWmData();
     } catch (err: unknown) {
-      Alert.alert('Update Failed', extractErrorMessage(err, 'Could not update washing machine capacity.'));
+      Alert.alert(
+        'Update Failed',
+        extractErrorMessage(err, 'Could not update washing machine capacity.')
+      );
     } finally {
       setSavingWm(false);
     }
+  };
+
+  const handleSaveWmCount = () => {
+    if (!selectedProperty?.id || savingWm) return;
+
+    if (wmCount < initialWmCount) {
+      const removed = initialWmCount - wmCount;
+      const message = `Reducing capacity from ${initialWmCount} to ${wmCount} unit${wmCount === 1 ? '' : 's'} will deactivate ${removed} washing machine${removed === 1 ? '' : 's'}. Are you sure you want to continue?`;
+
+      if (Platform.OS === 'web') {
+        const confirmed =
+          typeof window !== 'undefined' && typeof window.confirm === 'function'
+            ? window.confirm(message)
+            : true;
+        if (confirmed) {
+          void executeSaveWmCount();
+        }
+        return;
+      }
+
+      Alert.alert('Reduce Machine Capacity?', message, [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Reduce & Save',
+          style: 'destructive',
+          onPress: () => {
+            void executeSaveWmCount();
+          },
+        },
+      ]);
+      return;
+    }
+
+    void executeSaveWmCount();
   };
 
   const handleLogout = async () => {
@@ -122,15 +292,23 @@ export default function OwnerSettingsScreen() {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
+  const unitNumbers = Array.from({ length: wmCount }, (_, idx) => idx + 1);
+
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+    <SafeAreaView
+      style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <OwnerHeader
         title="Settings"
         subtitle={selectedProperty?.name || 'Owner Portal'}
         showBack
       />
 
-      <ScrollView contentContainerStyle={[styles.container, { flex: undefined, paddingBottom: 40 }]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.container,
+          { flex: undefined, paddingBottom: 40 },
+        ]}
+        showsVerticalScrollIndicator={false}>
         {/* Profile Card Header (Read-only Info Modal) */}
         <Pressable
           accessibilityRole="button"
@@ -227,7 +405,7 @@ export default function OwnerSettingsScreen() {
               <View style={styles.rowContent}>
                 <Text style={styles.rowTitle}>Resident Admission</Text>
                 <Text style={styles.rowSubtitle}>
-                  Register a new student & set up credentials
+                  Register a new resident & set up credentials
                 </Text>
               </View>
               <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
@@ -239,12 +417,8 @@ export default function OwnerSettingsScreen() {
                 styles.settingsRow,
                 pressed && styles.rowPressed,
               ]}
-              onPress={() => setWmModalVisible(true)}>
-              <View
-                style={[
-                  styles.iconWrap,
-                  { backgroundColor: '#E0F2FE' },
-                ]}>
+              onPress={openWmModal}>
+              <View style={[styles.iconWrap, { backgroundColor: '#E0F2FE' }]}>
                 <Disc3 size={18} color="#0284C7" />
               </View>
               <View style={styles.rowContent}>
@@ -295,11 +469,7 @@ export default function OwnerSettingsScreen() {
                 pressed && styles.rowPressed,
               ]}
               onPress={() => router.push('/owner-profile-edit')}>
-              <View
-                style={[
-                  styles.iconWrap,
-                  { backgroundColor: '#F1F5F9' },
-                ]}>
+              <View style={[styles.iconWrap, { backgroundColor: '#F1F5F9' }]}>
                 <ShieldCheck
                   size={18}
                   color={OwnerTheme.colors.textPrimary}
@@ -342,7 +512,9 @@ export default function OwnerSettingsScreen() {
           </View>
         </View>
 
-        <Text style={[styles.versionText, { color: colors.textMuted }]}>PGwala v2.0 • Owner Portal</Text>
+        <Text style={[styles.versionText, { color: colors.textMuted }]}>
+          PGwala v2.0 • Owner Portal
+        </Text>
       </ScrollView>
 
       {/* Read-only Owner Information Modal */}
@@ -352,42 +524,83 @@ export default function OwnerSettingsScreen() {
         animationType="fade"
         onRequestClose={() => setOwnerInfoVisible(false)}>
         <View style={styles.modalBackdrop}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            accessibilityLabel="Close owner information modal"
+            onPress={() => setOwnerInfoVisible(false)}
+          />
           <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Owner Information</Text>
-              <Pressable hitSlop={8} onPress={() => setOwnerInfoVisible(false)}>
+              <Text
+                style={[styles.modalTitle, { color: colors.textPrimary }]}>
+                Owner Information
+              </Text>
+              <Pressable
+                hitSlop={8}
+                onPress={() => setOwnerInfoVisible(false)}>
                 <X size={20} color={colors.textSecondary} />
               </Pressable>
             </View>
             <View style={{ gap: 10, marginTop: 12 }}>
               <View>
-                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>Full Name</Text>
-                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>{profile?.full_name || 'PG Owner'}</Text>
+                <Text
+                  style={[styles.rowSubtitle, { color: colors.textSecondary }]}>
+                  Full Name
+                </Text>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>
+                  {profile?.full_name || 'PG Owner'}
+                </Text>
               </View>
               <View>
-                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>Email</Text>
-                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>{user?.email || '—'}</Text>
+                <Text
+                  style={[styles.rowSubtitle, { color: colors.textSecondary }]}>
+                  Email
+                </Text>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>
+                  {user?.email || '—'}
+                </Text>
               </View>
               <View>
-                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>Phone</Text>
-                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>{profile?.phone_number || 'Not added'}</Text>
+                <Text
+                  style={[styles.rowSubtitle, { color: colors.textSecondary }]}>
+                  Phone
+                </Text>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>
+                  {profile?.phone_number || 'Not added'}
+                </Text>
               </View>
               <View>
-                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>Properties Managed</Text>
-                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>{properties.length}</Text>
+                <Text
+                  style={[styles.rowSubtitle, { color: colors.textSecondary }]}>
+                  Properties Managed
+                </Text>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>
+                  {properties.length}
+                </Text>
               </View>
             </View>
           </View>
         </View>
       </Modal>
 
-      {/* Configure Washing Machines Stepper Modal */}
+      {/* Configure Washing Machines Stepper & Names Modal */}
       <Modal
         visible={wmModalVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setWmModalVisible(false)}>
-        <View style={styles.modalBackdrop}>
+        onRequestClose={() => {
+          if (!savingWm) setWmModalVisible(false);
+        }}>
+        <KeyboardAvoidingView
+          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <Pressable
+            style={StyleSheet.absoluteFill}
+            accessibilityLabel="Close washing machines modal"
+            onPress={() => {
+              if (!savingWm) setWmModalVisible(false);
+            }}
+          />
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <View style={{ flex: 1 }}>
@@ -399,13 +612,16 @@ export default function OwnerSettingsScreen() {
               <Pressable
                 accessibilityRole="button"
                 hitSlop={8}
+                disabled={savingWm}
                 onPress={() => setWmModalVisible(false)}>
                 <X size={20} color={OwnerTheme.colors.textMuted} />
               </Pressable>
             </View>
 
             <Text style={styles.stepperHelpText}>
-              Set the total number of washing machines available in this PG. Residents will be able to select from these units in their portal.
+              Set the total number of washing machines available in this PG and
+              label each unit. Residents will be able to select from these units
+              in their portal.
             </Text>
 
             <View style={styles.stepperContainer}>
@@ -418,7 +634,12 @@ export default function OwnerSettingsScreen() {
                   (wmCount <= 1 || savingWm) && styles.stepperBtnDisabled,
                 ]}
                 onPress={() => setWmCount((prev) => Math.max(1, prev - 1))}>
-                <Minus size={22} color={wmCount <= 1 ? '#CBD5E1' : OwnerTheme.colors.primary} />
+                <Minus
+                  size={22}
+                  color={
+                    wmCount <= 1 ? '#CBD5E1' : OwnerTheme.colors.primary
+                  }
+                />
               </Pressable>
 
               <View style={styles.stepperCountBox}>
@@ -436,10 +657,52 @@ export default function OwnerSettingsScreen() {
                   styles.stepperBtn,
                   (wmCount >= 20 || savingWm) && styles.stepperBtnDisabled,
                 ]}
-                onPress={() => setWmCount((prev) => Math.min(20, prev + 1))}>
-                <Plus size={22} color={wmCount >= 20 ? '#CBD5E1' : OwnerTheme.colors.primary} />
+                onPress={() => {
+                  setWmCount((prev) => {
+                    const next = Math.min(20, prev + 1);
+                    setWmNames((prevNames) =>
+                      prevNames[next]
+                        ? prevNames
+                        : { ...prevNames, [next]: `Washing Machine ${next}` }
+                    );
+                    return next;
+                  });
+                }}>
+                <Plus
+                  size={22}
+                  color={
+                    wmCount >= 20 ? '#CBD5E1' : OwnerTheme.colors.primary
+                  }
+                />
               </Pressable>
             </View>
+
+            <Text style={styles.machineNamesLabel}>Machine Names</Text>
+            <ScrollView
+              style={styles.machineNamesScroll}
+              contentContainerStyle={styles.machineNamesList}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator>
+              {unitNumbers.map((num) => (
+                <View key={num} style={styles.machineNameRow}>
+                  <View style={styles.machineNumberPill}>
+                    <Text style={styles.machineNumberText}>#{num}</Text>
+                  </View>
+                  <TextInput
+                    style={styles.machineNameInput}
+                    value={wmNames[num] ?? `Washing Machine ${num}`}
+                    onChangeText={(val) =>
+                      setWmNames((prev) => ({ ...prev, [num]: val }))
+                    }
+                    placeholder={`Washing Machine ${num}`}
+                    placeholderTextColor={OwnerTheme.colors.textMuted}
+                    editable={!savingWm}
+                    maxLength={40}
+                  />
+                </View>
+              ))}
+            </ScrollView>
 
             <View style={styles.modalActionsRow}>
               <Pressable
@@ -452,7 +715,10 @@ export default function OwnerSettingsScreen() {
 
               <Pressable
                 accessibilityRole="button"
-                style={[styles.modalSaveBtn, savingWm && styles.modalSaveBtnDisabled]}
+                style={[
+                  styles.modalSaveBtn,
+                  savingWm && styles.modalSaveBtnDisabled,
+                ]}
                 disabled={savingWm}
                 onPress={handleSaveWmCount}>
                 {savingWm ? (
@@ -463,7 +729,7 @@ export default function OwnerSettingsScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -622,7 +888,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: '#64748B',
     lineHeight: 18,
-    marginVertical: 12,
+    marginVertical: 10,
   },
   stepperContainer: {
     flexDirection: 'row',
@@ -673,10 +939,55 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.textSecondary,
     marginTop: 2,
   },
+  machineNamesLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  machineNamesScroll: {
+    maxHeight: 200,
+  },
+  machineNamesList: {
+    gap: 8,
+    paddingBottom: 4,
+  },
+  machineNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  machineNumberPill: {
+    width: 34,
+    height: 40,
+    borderRadius: OwnerTheme.radius.sm,
+    backgroundColor: '#F1F5F9',
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  machineNumberText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  machineNameInput: {
+    flex: 1,
+    height: 40,
+    borderRadius: OwnerTheme.radius.sm,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: OwnerTheme.colors.textPrimary,
+    backgroundColor: '#FAFAFA',
+  },
   modalActionsRow: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 20,
+    marginTop: 16,
   },
   modalCancelBtn: {
     flex: 1,

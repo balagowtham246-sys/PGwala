@@ -2,134 +2,49 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
+  AppState,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
-import {
-  Utensils,
-  Receipt,
-  LogIn,
-  LogOut,
-  ChevronRight,
-  Settings,
-  AlertCircle,
-  MessageCircle,
-  X,
-  Check,
-  ClipboardList,
-} from 'lucide-react-native';
+import { AlertCircle, ChevronRight, ClipboardList } from 'lucide-react-native';
 
 import { BottomTabInset, OwnerTheme } from '@/constants/theme';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '@/context/auth-context';
-import { supabase } from '@/lib/supabase';
-import { triggerLightHaptic, triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
+import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
+import { flushOfflineQueue, getPendingCount } from '@/lib/offline-queue';
+import { invalidatePrefix } from '@/lib/query-cache';
+import { getFirstName, getNextUpcomingMeal } from '@/lib/resident-home-utils';
+import { defaultOfflineExecutors } from '@/services/offline-executors';
+import {
+  createEmptyResidentMenus,
+  fetchStudentDashboard,
+  getCachedStudentDashboard,
+  MealType,
+  recordStudentMovement,
+  ResidentAccommodationInfo,
+  ResidentFoodMenu,
+  ResidentMovementRecord,
+  studentDashboardCacheKey,
+} from '@/services/dashboard.service';
 import { WashingMachineCard } from '@/components/washing-machine-card';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { FoodStatusBanner } from '@/components/food-status-banner';
 import { GoingOutModal, GoingOutSubmitPayload } from '@/components/going-out-modal';
-import {
-  getChatLastSeenStorageKey,
-  getFirstName,
-  getNextUpcomingMeal,
-  hasUnreadChatMessage,
-} from '@/lib/resident-home-utils';
-import { isOutOverHours } from '@/lib/movement-utils';
+import { ResidentStatusHeader } from '@/components/student-dashboard/ResidentStatusHeader';
+import { ResidentQuickTiles } from '@/components/student-dashboard/ResidentQuickTiles';
+import { TodaysMenuPreview } from '@/components/student-dashboard/TodaysMenuPreview';
 
-// --- Types ---
-interface ResidentAccommodationInfo {
-  id: string;
-  property_id: string;
-  profile_id: string;
-  full_name: string;
-  room_number: string;
-  phone_number: string | null;
-  is_active: boolean;
-  property?: {
-    id: string;
-    name: string;
-    address: string | null;
-  } | null;
-}
-
-export type MealType = 'breakfast' | 'lunch' | 'dinner';
-
-export interface ResidentFoodMenu {
-  id: string;
-  meal_type: MealType;
-  items: string;
-  notes: string | null;
-  is_published: boolean;
-}
-
-export interface ResidentMovementRecord {
-  id: string;
-  direction: 'IN' | 'OUT';
-  event_time: string;
-  purpose: string | null;
-  expected_return_time: string | null;
-  food_required: boolean;
-  note: string | null;
-}
-
-const PURPOSE_OPTIONS = ['College', 'Work', 'Home Visit', 'Outing', 'Other'];
-const RETURN_TIME_OPTIONS = [
-  'Evening (~8:00 PM)',
-  'Night (~10:00 PM)',
-  'Late Night (~11:30 PM)',
-  'Tomorrow Morning',
-  'Custom',
-];
-
-const MEAL_CONFIG: Record<MealType, { title: string; timeHint: string }> = {
-  breakfast: {
-    title: 'Breakfast',
-    timeHint: 'Morning (7:30 AM – 9:30 AM)',
-  },
-  lunch: {
-    title: 'Lunch',
-    timeHint: 'Afternoon (12:30 PM – 2:30 PM)',
-  },
-  dinner: {
-    title: 'Dinner',
-    timeHint: 'Night (8:00 PM – 10:00 PM)',
-  },
-};
-
-function getTodayIsoDate(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function formatMovementTime(isoString: string): string {
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleTimeString('en-IN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
-  } catch {
-    return isoString;
-  }
-}
+export type { MealType, ResidentFoodMenu, ResidentMovementRecord };
 
 export default function ResidentDashboardScreen() {
   const { user, profile, refreshProfile } = useAuth();
+  const userId = user?.id;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -139,11 +54,9 @@ export default function ResidentDashboardScreen() {
   // Active Meal Tab for in-place detail view (defaults to next upcoming meal)
   const [activeMealTab, setActiveMealTab] = useState<MealType>(() => getNextUpcomingMeal());
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
-  const [menus, setMenus] = useState<Record<MealType, ResidentFoodMenu | null>>({
-    breakfast: null,
-    lunch: null,
-    dinner: null,
-  });
+  const [menus, setMenus] = useState<Record<MealType, ResidentFoodMenu | null>>(() =>
+    createEmptyResidentMenus()
+  );
 
   // Billing dues indicator
   const [pendingDuesPaise, setPendingDuesPaise] = useState<number | null>(null);
@@ -152,13 +65,7 @@ export default function ResidentDashboardScreen() {
   const [latestMovement, setLatestMovement] = useState<ResidentMovementRecord | null>(null);
   const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
   const [savingMovement, setSavingMovement] = useState(false);
-
-  // Going Out Form State
-  const [leavingPurpose, setLeavingPurpose] = useState<string>('College');
-  const [customPurpose, setCustomPurpose] = useState<string>('');
-  const [returnTime, setReturnTime] = useState<string>('Evening (~8:00 PM)');
-  const [customReturnTime, setCustomReturnTime] = useState<string>('');
-  const [foodRequired, setFoodRequired] = useState<boolean>(true);
+  const [pendingOfflineCount, setPendingOfflineCount] = useState(0);
 
   // Feedback State
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -183,232 +90,108 @@ export default function ResidentDashboardScreen() {
     }, 8000);
   };
 
-  const loadResidentData = useCallback(async () => {
-    if (!user?.id) return;
-    try {
-      setErrorMessage(null);
-
-      // 1. Fetch resident allocation record (required for property_id & resident_id)
-      const { data: resData, error: resError } = await supabase
-        .from('residents')
-        .select(`
-          id,
-          property_id,
-          profile_id,
-          full_name,
-          room_number,
-          phone_number,
-          is_active,
-          property:properties (
-            id,
-            name,
-            address
-          )
-        `)
-        .eq('profile_id', user.id)
-        .eq('is_active', true)
-        .maybeSingle();
-
-      if (resError) throw resError;
-
-      if (!resData) {
-        setResident(null);
-        setLoading(false);
-        setRefreshing(false);
-        return;
-      }
-
-      const propertyObj = Array.isArray(resData.property)
-        ? resData.property[0]
-        : resData.property;
-
-      const residentInfo: ResidentAccommodationInfo = {
-        id: resData.id,
-        property_id: resData.property_id,
-        profile_id: resData.profile_id,
-        full_name: resData.full_name,
-        room_number: resData.room_number,
-        phone_number: resData.phone_number,
-        is_active: resData.is_active,
-        property: propertyObj || null,
-      };
-
-      setResident(residentInfo);
-
-      const todayIso = getTodayIsoDate();
-      const resolvedMenus: Record<MealType, ResidentFoodMenu | null> = {
-        breakfast: null,
-        lunch: null,
-        dinner: null,
-      };
-
-      // 2. Fast Path: Composite summary RPC + outstanding dues in parallel
-      const [summaryRes, chargesRes] = await Promise.all([
-        supabase.rpc('get_student_dashboard_summary', {
-          p_property_id: residentInfo.property_id,
-          p_resident_id: residentInfo.id,
-          p_date: todayIso,
-        }),
-        supabase
-          .from('charges')
-          .select('amount_paise')
-          .eq('resident_id', residentInfo.id)
-          .eq('status', 'outstanding'),
-      ]);
-
-      let totalOut = 0;
-      if (!chargesRes.error && chargesRes.data) {
-        for (const ch of chargesRes.data) {
-          totalOut += ch.amount_paise || 0;
-        }
-        setPendingDuesPaise(totalOut);
+  const applyStudentDashboardResult = useCallback(
+    (result: Awaited<ReturnType<typeof fetchStudentDashboard>>) => {
+      if (result.ok) {
+        setErrorMessage(null);
+        setResident(result.data.resident);
+        setMenus(result.data.menus);
+        setPendingDuesPaise(result.data.pendingDuesPaise);
+        setLatestMovement(result.data.latestMovement);
+        setHasUnreadChat(result.data.hasUnreadChat);
+        setActiveMealTab(getNextUpcomingMeal());
       } else {
-        if (chargesRes.error) {
-          console.warn('[ResidentDashboard] Dues fetch error:', chargesRes.error.message);
-        }
-        setPendingDuesPaise(null);
+        console.error('[ResidentDashboard] Error loading resident data:', result.error);
+        setErrorMessage(`Failed to load resident data: ${result.error.message}`);
       }
-
-      let latestGateRecord: ResidentMovementRecord | null = null;
-
-      if (!summaryRes.error && summaryRes.data?.success) {
-        const publishedMenus = (summaryRes.data.publishedMenus ?? []) as ResidentFoodMenu[];
-        for (const item of publishedMenus) {
-          if (['breakfast', 'lunch', 'dinner'].includes(item.meal_type)) {
-            resolvedMenus[item.meal_type] = item;
-          }
-        }
-        setMenus(resolvedMenus);
-
-        const gateStatus = summaryRes.data.gateStatus;
-        if (gateStatus?.eventTime) {
-          latestGateRecord = {
-            id: 'summary-latest',
-            direction: gateStatus.direction,
-            event_time: gateStatus.eventTime,
-            purpose: gateStatus.purpose ?? null,
-            expected_return_time: gateStatus.expectedReturnTime ?? null,
-            food_required: Boolean(gateStatus.foodRequired ?? true),
-            note: null,
-          };
-        }
-        setLatestMovement(latestGateRecord);
-      } else {
-        // Fallback: Parallel queries if composite RPC is unavailable or returns an error
-        const [menuRes, movementRes] = await Promise.all([
-          supabase
-            .from('food_menus')
-            .select('id, meal_type, items, notes, is_published')
-            .eq('property_id', residentInfo.property_id)
-            .eq('menu_date', todayIso)
-            .eq('is_published', true),
-          supabase
-            .from('movement_logs')
-            .select('id, direction, event_time, purpose, expected_return_time, food_required, note')
-            .eq('resident_id', residentInfo.id)
-            .order('event_time', { ascending: false })
-            .limit(1)
-            .maybeSingle(),
-        ]);
-
-        if (menuRes.error) {
-          console.warn('[ResidentDashboard] Could not fetch food menus:', menuRes.error.message);
-        } else if (menuRes.data) {
-          for (const item of menuRes.data as ResidentFoodMenu[]) {
-            if (['breakfast', 'lunch', 'dinner'].includes(item.meal_type)) {
-              resolvedMenus[item.meal_type] = item;
-            }
-          }
-        }
-        setMenus(resolvedMenus);
-
-        if (movementRes.error) {
-          console.warn('[ResidentDashboard] Error fetching movement log:', movementRes.error.message);
-        } else {
-          latestGateRecord = (movementRes.data as ResidentMovementRecord) || null;
-          setLatestMovement(latestGateRecord);
-        }
-      }
-
-      setActiveMealTab(getNextUpcomingMeal());
-
-      // Check unread PG chat messages
-      const [latestChatRes, lastSeenIso] = await Promise.all([
-        supabase
-          .from('property_chat_messages')
-          .select('created_at, resident_id')
-          .eq('property_id', residentInfo.property_id)
-          .neq('resident_id', residentInfo.id)
-          .eq('is_deleted', false)
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .maybeSingle(),
-        AsyncStorage.getItem(getChatLastSeenStorageKey(residentInfo.property_id)),
-      ]);
-      setHasUnreadChat(
-        hasUnreadChatMessage(latestChatRes.data?.created_at, lastSeenIso)
-      );
-
-      // Cache dashboard state for 0ms loads on slow mobile networks
-      void AsyncStorage.setItem(
-        `student_dash_cache_${user?.id}`,
-        JSON.stringify({
-          resident: residentInfo,
-          menus: resolvedMenus,
-          pendingDuesPaise: totalOut,
-          latestMovement: latestGateRecord,
-        })
-      );
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[ResidentDashboard] Error loading resident data:', err);
-      setErrorMessage(`Failed to load resident data: ${msg}`);
-    } finally {
       setLoading(false);
       setRefreshing(false);
+    },
+    []
+  );
+
+  const loadResidentData = useCallback(async () => {
+    if (!userId) return;
+    const result = await fetchStudentDashboard(userId);
+    applyStudentDashboardResult(result);
+  }, [userId, applyStudentDashboardResult]);
+
+  const flushOfflineAndSync = useCallback(async () => {
+    const summary = await flushOfflineQueue(defaultOfflineExecutors);
+    setPendingOfflineCount(summary.remainingCount);
+    if (summary.succeeded > 0) {
+      if (userId) {
+        await invalidatePrefix(studentDashboardCacheKey(userId));
+      }
+      await loadResidentData();
     }
-  }, [user?.id]);
+  }, [userId, loadResidentData]);
 
   useEffect(() => {
-    loadResidentData();
-  }, [loadResidentData]);
+    if (!userId) return;
+    let cancelled = false;
+    void fetchStudentDashboard(userId).then((result) => {
+      if (!cancelled) {
+        applyStudentDashboardResult(result);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, applyStudentDashboardResult]);
 
   // Instant 0ms cache restore on slow connections
   useEffect(() => {
-    if (!user?.id) return;
-    void (async () => {
-      try {
-        const cached = await AsyncStorage.getItem(`student_dash_cache_${user.id}`);
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (parsed.resident) setResident(parsed.resident);
-          if (parsed.menus) setMenus(parsed.menus);
-          if (typeof parsed.pendingDuesPaise === 'number') setPendingDuesPaise(parsed.pendingDuesPaise);
-          if (parsed.latestMovement) setLatestMovement(parsed.latestMovement);
-          setLoading(false);
-        }
-      } catch {
-        // Cache miss
-      }
-    })();
-  }, [user?.id]);
+    if (!userId) return;
+    let cancelled = false;
+    void getCachedStudentDashboard(userId).then((cached) => {
+      if (cancelled || !cached) return;
+      if (cached.resident) setResident(cached.resident);
+      setMenus(cached.menus);
+      setPendingDuesPaise(cached.pendingDuesPaise);
+      setLatestMovement(cached.latestMovement);
+      setHasUnreadChat(cached.hasUnreadChat);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
-  // Refresh profile & credentials when returning to dashboard (skip duplicate initial mount call)
+  // Flush offline gate mutations when app returns to foreground
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        void flushOfflineAndSync();
+      }
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [flushOfflineAndSync]);
+
+  // Refresh profile & flush offline queue when returning to dashboard
   useFocusEffect(
     useCallback(() => {
+      void flushOfflineAndSync();
       if (!hasMountedRef.current) {
         hasMountedRef.current = true;
         return;
       }
       void refreshProfile();
-    }, [refreshProfile])
+    }, [flushOfflineAndSync, refreshProfile])
   );
 
   const handleRefresh = () => {
     setRefreshing(true);
     setFoodRefreshKey((k) => k + 1);
-    refreshProfile();
-    loadResidentData();
+    void refreshProfile();
+    void (async () => {
+      await flushOfflineQueue(defaultOfflineExecutors);
+      const count = await getPendingCount();
+      setPendingOfflineCount(count);
+      await loadResidentData();
+    })();
   };
 
   // 1-tap Check-In when back at PG
@@ -417,18 +200,37 @@ export default function ResidentDashboardScreen() {
     setSavingMovement(true);
 
     try {
-      const { data, error } = await supabase.rpc('record_student_movement', {
-        p_direction: 'IN',
+      const result = await recordStudentMovement({
+        direction: 'IN',
+        userId,
       });
 
-      if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Failed to update attendance.');
+      if (!result.ok) {
+        Alert.alert('Update Failed', result.error.message || 'Could not record check-in.');
+        return;
+      }
 
       triggerSuccessHaptic();
+      if (result.data.queued) {
+        setLatestMovement({
+          id: 'offline-queued',
+          direction: 'IN',
+          event_time: new Date().toISOString(),
+          purpose: null,
+          expected_return_time: null,
+          food_required: true,
+          note: null,
+        });
+        setPendingOfflineCount(await getPendingCount());
+        Alert.alert(
+          'Queued Offline',
+          'You appear to be offline. Your check-in has been saved and will sync automatically when you are back online.'
+        );
+        return;
+      }
+
       showUndoToast('Marked Inside PG', 'OUT');
       await loadResidentData();
-    } catch (err: any) {
-      Alert.alert('Update Failed', err.message || 'Could not record check-in.');
     } finally {
       setSavingMovement(false);
     }
@@ -440,22 +242,42 @@ export default function ResidentDashboardScreen() {
     setSavingMovement(true);
 
     try {
-      const { data, error } = await supabase.rpc('record_student_movement', {
-        p_direction: 'OUT',
-        p_purpose: payload.purpose,
-        p_expected_return_time: payload.expectedReturnTime || undefined,
-        p_food_required: payload.foodRequired,
+      const result = await recordStudentMovement({
+        direction: 'OUT',
+        purpose: payload.purpose,
+        expectedReturnTime: payload.expectedReturnTime || undefined,
+        foodRequired: payload.foodRequired,
+        userId,
       });
 
-      if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Failed to update attendance.');
+      if (!result.ok) {
+        Alert.alert('Update Failed', result.error.message || 'Could not record departure.');
+        return;
+      }
 
       setGoingOutModalVisible(false);
       triggerSuccessHaptic();
+
+      if (result.data.queued) {
+        setLatestMovement({
+          id: 'offline-queued',
+          direction: 'OUT',
+          event_time: new Date().toISOString(),
+          purpose: payload.purpose,
+          expected_return_time: payload.expectedReturnTime || null,
+          food_required: payload.foodRequired,
+          note: null,
+        });
+        setPendingOfflineCount(await getPendingCount());
+        Alert.alert(
+          'Queued Offline',
+          'You appear to be offline. Your departure has been saved and will sync automatically when you are back online.'
+        );
+        return;
+      }
+
       showUndoToast('Marked Outside PG', 'IN');
       await loadResidentData();
-    } catch (err: any) {
-      Alert.alert('Update Failed', err.message || 'Could not record departure.');
     } finally {
       setSavingMovement(false);
     }
@@ -469,73 +291,50 @@ export default function ResidentDashboardScreen() {
     triggerLightHaptic();
     setSavingMovement(true);
     try {
-      const { data, error } = await supabase.rpc('record_student_movement', {
-        p_direction: targetDir,
-        p_note: 'Undo previous gate tap',
+      const result = await recordStudentMovement({
+        direction: targetDir,
+        note: 'Undo previous gate tap',
+        userId,
       });
-      if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Could not undo gate status.');
+      if (!result.ok) {
+        Alert.alert('Undo Failed', result.error.message || 'Could not undo last gate action.');
+        return;
+      }
+      if (result.data.queued) {
+        setLatestMovement({
+          id: 'offline-queued',
+          direction: targetDir,
+          event_time: new Date().toISOString(),
+          purpose: null,
+          expected_return_time: null,
+          food_required: true,
+          note: 'Undo previous gate tap',
+        });
+        setPendingOfflineCount(await getPendingCount());
+        Alert.alert(
+          'Queued Offline',
+          'You appear to be offline. Your gate update has been saved and will sync automatically when you are back online.'
+        );
+        return;
+      }
       await loadResidentData();
-    } catch (err: any) {
-      Alert.alert('Undo Failed', err.message || 'Could not undo last gate action.');
     } finally {
       setSavingMovement(false);
     }
   };
 
-  const isInside = !latestMovement || latestMovement.direction === 'IN';
-  const outNudge = isOutOverHours(latestMovement?.direction, latestMovement?.event_time);
-
-  const getInitials = (name?: string | null) => {
-    if (!name) return 'RE';
-    const parts = name.trim().split(' ');
-    if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  };
-
-  const getGreeting = () => {
-    const hour = new Date().getHours();
-    if (hour < 12) return 'Good morning';
-    if (hour < 17) return 'Good afternoon';
-    return 'Good evening';
-  };
-
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       {/* Top Header: Brand + Chat Icon (with Unread Dot) + Settings Cog */}
-      <View style={styles.headerRow}>
-        <Text style={styles.brandTitle}>PGwala</Text>
-
-        <View style={styles.headerActionsRow}>
-          {resident && (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="PG Community Chat"
-              style={({ pressed }) => [
-                styles.settingsBtn,
-                pressed && styles.btnPressed,
-              ]}
-              onPress={() => {
-                setHasUnreadChat(false);
-                router.push('/student-chat');
-              }}>
-              <MessageCircle size={18} color={OwnerTheme.colors.primary} />
-              {hasUnreadChat && <View style={styles.chatUnreadDot} />}
-            </Pressable>
-          )}
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Resident Settings"
-            style={({ pressed }) => [
-              styles.settingsBtn,
-              pressed && styles.btnPressed,
-            ]}
-            onPress={() => router.push('/student-settings')}>
-            <Settings size={18} color={OwnerTheme.colors.primary} />
-          </Pressable>
-        </View>
-      </View>
+      <ResidentStatusHeader
+        showChat={Boolean(resident)}
+        hasUnreadChat={hasUnreadChat}
+        onPressChat={() => {
+          setHasUnreadChat(false);
+          router.push('/student-chat');
+        }}
+        onPressSettings={() => router.push('/student-settings')}
+      />
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
@@ -591,9 +390,17 @@ export default function ResidentDashboardScreen() {
         {errorMessage && (
           <View style={styles.errorBanner}>
             <Text style={styles.errorText}>{errorMessage}</Text>
-            <Pressable hitSlop={8} onPress={loadResidentData}>
+            <Pressable hitSlop={8} onPress={() => void loadResidentData()}>
               <Text style={styles.retryText}>Retry</Text>
             </Pressable>
+          </View>
+        )}
+
+        {pendingOfflineCount > 0 && (
+          <View style={styles.offlineQueueBanner}>
+            <Text style={styles.offlineQueueText}>
+              {pendingOfflineCount} offline update{pendingOfflineCount > 1 ? 's' : ''} queued — will sync automatically when connected
+            </Text>
           </View>
         )}
 
@@ -617,231 +424,34 @@ export default function ResidentDashboardScreen() {
             {/* Food Alerts: today's latest status per meal (delayed / cancelled highlighted) */}
             <FoodStatusBanner refreshKey={foodRefreshKey} />
 
-            {/* Lead Hero Card: Pending Rent or Next Upcoming Meal */}
-            {pendingDuesPaise !== null && pendingDuesPaise > 0 ? (
-              <Pressable
-                accessibilityRole="button"
-                style={({ pressed }) => [
-                  styles.heroFocusCard,
-                  styles.heroFocusCardDue,
-                  pressed && styles.btnPressed,
-                ]}
-                onPress={() => router.push('/student-billing')}>
-                <View style={styles.heroFocusLeft}>
-                  <Text style={styles.heroFocusLabelDue}>RENT DUE</Text>
-                  <Text style={styles.heroFocusTitle}>
-                    ₹{(pendingDuesPaise / 100).toLocaleString('en-IN')} due
-                  </Text>
-                  <Text style={styles.heroFocusSub}>
-                    Tap to view breakdown & pay ›
-                  </Text>
-                </View>
-                <Receipt size={24} color={OwnerTheme.colors.danger} />
-              </Pressable>
-            ) : (
-              (() => {
-                const nextMeal = getNextUpcomingMeal();
-                const nextMealCfg = MEAL_CONFIG[nextMeal];
-                const nextMealMenu = menus[nextMeal];
-                return (
-                  <Pressable
-                    accessibilityRole="button"
-                    style={({ pressed }) => [
-                      styles.heroFocusCard,
-                      pressed && styles.btnPressed,
-                    ]}
-                    onPress={() => router.push('/student-menu')}>
-                    <View style={styles.heroFocusLeft}>
-                      <Text style={styles.heroFocusLabel}>
-                        UP NEXT • RENT ₹0 DUE
-                      </Text>
-                      <Text style={styles.heroFocusTitle}>
-                        {nextMealCfg.title}
-                      </Text>
-                      <Text style={styles.heroFocusSub} numberOfLines={1}>
-                        {nextMealMenu
-                          ? nextMealMenu.items
-                          : 'All rent & dues settled for this month'}
-                      </Text>
-                    </View>
-                    <ChevronRight size={20} color={OwnerTheme.colors.primary} />
-                  </Pressable>
-                );
-              })()
-            )}
-
-            {/* Top 2: 1 x 2 Hero Section (Washing Machine & Gate Attendance Side-by-Side) */}
-            <View style={styles.heroRow}>
-              {/* Left Column: Washing Machine Card */}
-              <WashingMachineCard
-                propertyId={resident.property_id}
-                userRole="student"
-                currentResidentId={resident.id}
-                compact
-                style={{ flex: 1 }}
-              />
-
-              {/* Right Column: Gate Attendance Marking System */}
-              <View style={styles.gateHeroCard}>
-                <View style={styles.gateHeaderRow}>
-                  <View
-                    style={[
-                      styles.gateIconCircle,
-                      isInside ? styles.gateIconIn : styles.gateIconOut,
-                    ]}>
-                    {isInside ? (
-                      <LogIn size={18} color={OwnerTheme.colors.success} />
-                    ) : (
-                      <LogOut size={18} color={OwnerTheme.colors.warning} />
-                    )}
-                  </View>
-                  <View
-                    style={[
-                      styles.gatePill,
-                      isInside ? styles.gatePillIn : styles.gatePillOut,
-                    ]}>
-                    <Text
-                      style={[
-                        styles.gatePillText,
-                        isInside ? styles.gateTextIn : styles.gateTextOut,
-                      ]}>
-                      {isInside ? 'INSIDE' : 'OUTSIDE'}
-                    </Text>
-                  </View>
-                </View>
-
-                <Text style={styles.gateTitle}>Gate Attendance</Text>
-                <Text style={styles.gateSubtitle} numberOfLines={1}>
-                  {latestMovement?.event_time
-                    ? `${isInside ? 'In since' : 'Out at'} ${formatMovementTime(latestMovement.event_time)}`
-                    : 'Present on campus'}
-                </Text>
-                {!isInside && outNudge.isOver && (
-                  <Text style={styles.gateOverHoursNudge}>
-                    Out for {outNudge.hoursOut}+ hrs • Remember to mark Inside
-                  </Text>
-                )}
-
-                <View style={styles.gateActionWrap}>
-                  {isInside ? (
-                    <Pressable
-                      style={({ pressed }) => [
-                        styles.gateActionBtn,
-                        styles.gateOutBtn,
-                        pressed && styles.btnPressed,
-                      ]}
-                      onPress={() => {
-                        triggerLightHaptic();
-                        setFoodRequired(true);
-                        setGoingOutModalVisible(true);
-                      }}>
-                      <Text style={styles.gateOutBtnText}>Going Out</Text>
-                    </Pressable>
-                  ) : (
-                    <Pressable
-                      style={({ pressed }) => [
-                        styles.gateActionBtn,
-                        styles.gateInBtn,
-                        pressed && styles.btnPressed,
-                        savingMovement && styles.btnDisabled,
-                      ]}
-                      disabled={savingMovement}
-                      onPress={() => {
-                        triggerSuccessHaptic();
-                        handleMarkBackIn();
-                      }}>
-                      {savingMovement ? (
-                        <ActivityIndicator size="small" color="#FFFFFF" />
-                      ) : (
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                          <Check size={14} color="#FFFFFF" />
-                          <Text style={styles.gateInBtnText}>Mark Inside</Text>
-                        </View>
-                      )}
-                    </Pressable>
-                  )}
-                </View>
-              </View>
-            </View>
+            {/* Lead Hero Card + Washing Machine & Gate Attendance 1x2 Hero */}
+            <ResidentQuickTiles
+              pendingDuesPaise={pendingDuesPaise}
+              menus={menus}
+              latestMovement={latestMovement}
+              savingMovement={savingMovement}
+              washingMachineSlot={
+                <WashingMachineCard
+                  propertyId={resident.property_id}
+                  userRole="student"
+                  currentResidentId={resident.id}
+                  compact
+                  style={{ flex: 1 }}
+                />
+              }
+              onPressRentDue={() => router.push('/student-billing')}
+              onPressUpNextMeal={() => router.push('/student-menu')}
+              onOpenGoingOut={() => setGoingOutModalVisible(true)}
+              onMarkBackIn={handleMarkBackIn}
+            />
 
             {/* Section 3: Today's Food Menu (Interactive In-Place Card) */}
-            <View style={styles.menuCard}>
-              <View style={styles.menuHeader}>
-                <View style={styles.menuHeaderLeft}>
-                  <Utensils size={16} color={OwnerTheme.colors.primary} />
-                  <Text style={styles.menuTitle}>Today&apos;s Food Menu</Text>
-                </View>
-                <Pressable
-                  accessibilityRole="button"
-                  hitSlop={8}
-                  onPress={() => router.push('/student-menu')}>
-                  <Text style={styles.menuPublishedHint}>Full Menu ›</Text>
-                </Pressable>
-              </View>
-
-              {/* 3-Chip Meal Selector */}
-              <View style={styles.mealSegmentRow}>
-                {(['breakfast', 'lunch', 'dinner'] as MealType[]).map((mealKey) => {
-                  const cfg = MEAL_CONFIG[mealKey];
-                  const hasMenu = Boolean(menus[mealKey]);
-                  const isSelected = activeMealTab === mealKey;
-
-                  return (
-                    <Pressable
-                      key={mealKey}
-                      accessibilityRole="button"
-                      style={[
-                        styles.mealSegmentChip,
-                        isSelected && styles.mealSegmentChipSelected,
-                      ]}
-                      onPress={() => {
-                        triggerSelectionHaptic();
-                        setActiveMealTab(mealKey);
-                      }}>
-                      <Text
-                        style={[
-                          styles.mealChipText,
-                          isSelected && styles.mealChipTextSelected,
-                        ]}>
-                        {cfg.title}
-                      </Text>
-                      <View
-                        style={[
-                          styles.mealDot,
-                          hasMenu ? styles.mealDotActive : styles.mealDotInactive,
-                        ]}
-                      />
-                    </Pressable>
-                  );
-                })}
-              </View>
-
-              {/* In-Place Selected Meal Details */}
-              <View style={styles.mealDetailBox}>
-                <View style={styles.mealDetailTop}>
-                  <Text style={styles.mealDetailTitle}>
-                    {MEAL_CONFIG[activeMealTab].title}
-                  </Text>
-                </View>
-
-                {menus[activeMealTab] ? (
-                  <View style={styles.mealItemsContainer}>
-                    <Text style={styles.mealItemsText}>
-                      {menus[activeMealTab]!.items}
-                    </Text>
-                    {menus[activeMealTab]!.notes ? (
-                      <Text style={styles.mealNotesText}>
-                        Note: {menus[activeMealTab]!.notes}
-                      </Text>
-                    ) : null}
-                  </View>
-                ) : (
-                  <Text style={styles.noMenuText}>
-                    No menu published for {MEAL_CONFIG[activeMealTab].title.toLowerCase()} today.
-                  </Text>
-                )}
-              </View>
-            </View>
+            <TodaysMenuPreview
+              menus={menus}
+              activeMealTab={activeMealTab}
+              onSelectMealTab={setActiveMealTab}
+              onPressFullMenu={() => router.push('/student-menu')}
+            />
           </>
         ) : (
           /* Unlinked Account State */
@@ -891,66 +501,6 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: OwnerTheme.colors.background,
   },
-  headerRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: OwnerTheme.colors.border,
-    gap: 10,
-  },
-  brandTitle: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: OwnerTheme.colors.primary,
-    letterSpacing: -0.5,
-  },
-  propertyPill: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: OwnerTheme.radius.full,
-    backgroundColor: OwnerTheme.colors.background,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    maxWidth: 240,
-  },
-  propertyPillText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-    flex: 1,
-  },
-  headerActionsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  settingsBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: OwnerTheme.radius.full,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  chatUnreadDot: {
-    position: 'absolute',
-    top: 7,
-    right: 7,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: OwnerTheme.colors.danger,
-    borderWidth: 1.5,
-    borderColor: '#FFFFFF',
-  },
   greetingSimpleRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -964,54 +514,16 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.textPrimary,
     flex: 1,
   },
-  heroFocusCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    borderLeftWidth: 4,
-    borderLeftColor: OwnerTheme.colors.primary,
-    padding: 16,
-    ...OwnerTheme.shadow,
+  roomPill: {
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: OwnerTheme.radius.sm,
   },
-  heroFocusCardDue: {
-    borderLeftColor: OwnerTheme.colors.danger,
-    backgroundColor: '#FFFBFB',
-  },
-  heroFocusLeft: {
-    flex: 1,
-    gap: 3,
-  },
-  heroFocusLabel: {
+  roomPillText: {
     fontSize: 11,
     fontWeight: '700',
     color: OwnerTheme.colors.primary,
-    letterSpacing: 0.6,
-  },
-  heroFocusLabelDue: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: OwnerTheme.colors.danger,
-    letterSpacing: 0.6,
-  },
-  heroFocusTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  heroFocusSub: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-  },
-  gateOverHoursNudge: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: OwnerTheme.colors.warning,
-    marginTop: 4,
   },
   undoToast: {
     position: 'absolute',
@@ -1087,6 +599,19 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.primary,
     marginLeft: 8,
   },
+  offlineQueueBanner: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: OwnerTheme.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  offlineQueueText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#92400E',
+  },
   loadingBox: {
     paddingVertical: 40,
     alignItems: 'center',
@@ -1095,360 +620,6 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 13,
     color: OwnerTheme.colors.textSecondary,
-  },
-  residentTileCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    padding: 12,
-    gap: 12,
-  },
-  avatarCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: OwnerTheme.colors.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: {
-    fontSize: 16,
-    fontWeight: '800',
-    color: '#FFFFFF',
-    letterSpacing: 0.5,
-  },
-  residentTileInfo: {
-    flex: 1,
-  },
-  greetingText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textMuted,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginBottom: 1,
-  },
-  residentNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  residentTileName: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  roomPill: {
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: OwnerTheme.radius.sm,
-  },
-  roomPillText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  residentTileProp: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 2,
-  },
-  activeDotBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: '#F0FDF4',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: OwnerTheme.radius.full,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-  },
-  activeDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: OwnerTheme.colors.success,
-  },
-  activeDotText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: OwnerTheme.colors.success,
-  },
-  heroRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  gateHeroCard: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    justifyContent: 'space-between',
-    minHeight: 140,
-  },
-  gateHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  gateIconCircle: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  gateIconIn: {
-    backgroundColor: OwnerTheme.colors.successLight,
-  },
-  gateIconOut: {
-    backgroundColor: OwnerTheme.colors.warningLight,
-  },
-  gatePill: {
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-    borderRadius: 9999,
-  },
-  gatePillIn: {
-    backgroundColor: OwnerTheme.colors.successLight,
-  },
-  gatePillOut: {
-    backgroundColor: OwnerTheme.colors.warningLight,
-  },
-  gatePillText: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  gateTextIn: {
-    color: OwnerTheme.colors.success,
-  },
-  gateTextOut: {
-    color: OwnerTheme.colors.warning,
-  },
-  gateTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-    marginTop: 6,
-  },
-  gateSubtitle: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 1,
-  },
-  gateActionWrap: {
-    marginTop: 10,
-  },
-  gateActionBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    borderRadius: OwnerTheme.radius.sm,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  gateOutBtn: {
-    backgroundColor: OwnerTheme.colors.warning,
-  },
-  gateOutBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  gateInBtn: {
-    backgroundColor: OwnerTheme.colors.success,
-  },
-  gateInBtnText: {
-    color: '#FFFFFF',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  menuCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    padding: 12,
-  },
-  menuHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  menuHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  menuTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  menuPublishedHint: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textMuted,
-  },
-  mealSegmentRow: {
-    flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
-    borderRadius: OwnerTheme.radius.sm,
-    padding: 3,
-    gap: 4,
-  },
-  mealSegmentChip: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 6,
-    borderRadius: 6,
-    gap: 4,
-  },
-  mealSegmentChipSelected: {
-    backgroundColor: '#FFFFFF',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.08,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  mealChipEmoji: {
-    fontSize: 13,
-  },
-  mealChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  mealChipTextSelected: {
-    color: OwnerTheme.colors.textPrimary,
-    fontWeight: '700',
-  },
-  mealDot: {
-    width: 5,
-    height: 5,
-    borderRadius: 2.5,
-  },
-  mealDotActive: {
-    backgroundColor: OwnerTheme.colors.success,
-  },
-  mealDotInactive: {
-    backgroundColor: '#CBD5E1',
-  },
-  mealDetailBox: {
-    marginTop: 10,
-    padding: 10,
-    backgroundColor: '#FAFAFA',
-    borderRadius: OwnerTheme.radius.sm,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.borderLight,
-  },
-  mealDetailTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 4,
-  },
-  mealDetailTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  mealDetailTime: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textMuted,
-  },
-  mealItemsContainer: {
-    gap: 4,
-  },
-  mealItemsText: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textPrimary,
-    lineHeight: 18,
-    fontWeight: '500',
-  },
-  mealNotesText: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textSecondary,
-    fontStyle: 'italic',
-  },
-  noMenuText: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textMuted,
-    fontStyle: 'italic',
-    paddingVertical: 4,
-  },
-  sectionHeaderRow: {
-    marginTop: 2,
-    marginBottom: 2,
-  },
-  sectionHeading: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  servicesList: {
-    gap: 8,
-  },
-  serviceCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    padding: 12,
-    gap: 12,
-  },
-  serviceIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: OwnerTheme.radius.sm,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  serviceTextCol: {
-    flex: 1,
-  },
-  serviceTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  serviceSubtitle: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 1,
-  },
-  duesBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: OwnerTheme.radius.sm,
-  },
-  duesPending: {
-    backgroundColor: OwnerTheme.colors.dangerLight,
-  },
-  duesClear: {
-    backgroundColor: OwnerTheme.colors.successLight,
-  },
-  duesBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  duesPendingText: {
-    color: OwnerTheme.colors.danger,
-  },
-  duesClearText: {
-    color: OwnerTheme.colors.success,
   },
   unlinkedCard: {
     backgroundColor: '#FFFFFF',
@@ -1492,150 +663,5 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.textMuted,
     textAlign: 'center',
     lineHeight: 15,
-  },
-  btnPressed: {
-    opacity: 0.85,
-    transform: [{ scale: 0.99 }],
-  },
-  btnDisabled: {
-    opacity: 0.6,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalCard: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 20,
-    gap: 12,
-  },
-  modalHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  modalSubtitle: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-  },
-  inputSectionLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-    marginTop: 4,
-  },
-  optionChipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  optionChip: {
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    borderRadius: OwnerTheme.radius.sm,
-    backgroundColor: '#F1F5F9',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  optionChipSelected: {
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    borderColor: OwnerTheme.colors.primary,
-  },
-  optionChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  optionChipTextSelected: {
-    color: OwnerTheme.colors.primary,
-    fontWeight: '700',
-  },
-  textInput: {
-    height: 44,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    borderRadius: OwnerTheme.radius.sm,
-    paddingHorizontal: 12,
-    fontSize: 14,
-    color: OwnerTheme.colors.textPrimary,
-    backgroundColor: '#FAFAFA',
-  },
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    borderTopWidth: 1,
-    borderTopColor: OwnerTheme.colors.borderLight,
-    marginTop: 6,
-  },
-  switchLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  switchHint: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 2,
-  },
-  modalBtnRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 10,
-  },
-  modalCancelBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: '#F1F5F9',
-    alignItems: 'center',
-  },
-  modalCancelText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  modalConfirmBtn: {
-    flex: 2,
-    paddingVertical: 12,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: OwnerTheme.colors.primary,
-    alignItems: 'center',
-  },
-  modalConfirmText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  chatFab: {
-    position: 'absolute',
-    bottom: BottomTabInset + 84,
-    right: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#0284C7',
-    paddingVertical: 11,
-    paddingHorizontal: 16,
-    borderRadius: 28,
-    gap: 8,
-    shadowColor: '#0284C7',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    elevation: 6,
-    zIndex: 99,
-  },
-  chatFabText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
   },
 });

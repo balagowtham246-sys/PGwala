@@ -1,5 +1,5 @@
 import { router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -14,114 +14,88 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
-  DoorOpen,
-  Utensils,
-  Receipt,
-  Wrench,
-  User,
-  ArrowRight,
-  LogIn,
-  LogOut,
-  Building2,
-  ChevronDown,
-  Check,
-  Plus,
-  X,
   BellRing,
-  Disc3,
+  Building2,
+  Check,
+  ChevronDown,
   Clock,
+  Disc3,
+  Plus,
+  User,
+  Utensils,
+  X,
 } from 'lucide-react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { OwnerTheme } from '@/constants/theme';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
-import { supabase } from '@/lib/supabase';
-import { extractErrorMessage } from '@/lib/error-utils';
-import { formatPaiseToRupees } from '@/lib/billing-utils';
+import { useResidentTabs } from '@/context/resident-tabs-context';
 import { triggerSelectionHaptic } from '@/lib/haptics';
-import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { supabase } from '@/lib/supabase';
 import {
-  StatisticCard,
-  SectionHeader,
-  EmptyState,
-  ErrorState,
-} from '@/components/ui/owner';
+  formatPropertyGenderLabel,
+  inferPropertyGender,
+  PropertyGenderType,
+  toSentenceCaseStatus,
+} from '@/lib/ux-utils';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { ErrorState } from '@/components/ui/owner';
+import { OwnerMetricsGrid } from '@/components/owner-dashboard/OwnerMetricsGrid';
+import { OwnerQuickActions } from '@/components/owner-dashboard/OwnerQuickActions';
+import { RecentActivitySection } from '@/components/owner-dashboard/RecentActivitySection';
+import {
+  createEmptyOwnerMenus,
+  DashboardWmUnit,
+  fetchMovementAlertResident,
+  fetchOwnerDashboard,
+  getCachedOwnerDashboard,
+  MealType,
+  OwnerActivityItem,
+  OwnerDashboardStats,
+  OwnerFoodMenuRecord,
+  OwnerWmSummary,
+  releaseWashingMachineUnit,
+  setWashingMachineOutOfOrder,
+  toLocalIsoDate,
+} from '@/services/dashboard.service';
 
-// --- Types ---
-interface ResidentRecord {
-  id: string;
-  full_name: string;
-  room_number: string;
-  property_id: string;
-  is_active: boolean;
-}
+export type { MealType, OwnerFoodMenuRecord, DashboardWmUnit };
 
-interface MovementLogRecord {
+interface MovementLogRealtimePayload {
   id: string;
   resident_id: string;
   property_id?: string;
   direction: 'IN' | 'OUT';
   event_time: string;
-  note: string | null;
   purpose?: string | null;
-  expected_return_time?: string | null;
-  food_required?: boolean;
 }
 
-interface ActivityItem {
-  id: string;
-  residentName: string;
-  roomNumber: string;
-  direction: 'IN' | 'OUT';
-  purpose: string | null;
-  time: string;
-}
-
-export type MealType = 'breakfast' | 'lunch' | 'dinner';
-
-export interface OwnerFoodMenuRecord {
-  id: string;
-  meal_type: MealType;
-  items: string;
-  notes: string | null;
-  is_published: boolean;
-}
-
-const MEAL_CONFIG: Record<
-  MealType,
-  { title: string }
-> = {
+const MEAL_CONFIG: Record<MealType, { title: string }> = {
   breakfast: { title: 'Breakfast' },
   lunch: { title: 'Lunch' },
   dinner: { title: 'Dinner' },
 };
 
-function toLocalIsoDate(date: Date = new Date()): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
+function getFeaturedMealKey(
+  todayMenus: Record<MealType, OwnerFoodMenuRecord | null>
+): MealType {
+  const hour = new Date().getHours();
+  const order: MealType[] =
+    hour < 11
+      ? ['breakfast', 'lunch', 'dinner']
+      : hour < 16
+        ? ['lunch', 'dinner', 'breakfast']
+        : ['dinner', 'breakfast', 'lunch'];
 
-export interface DashboardWmUnit {
-  id: string;
-  property_id: string;
-  machine_number: number;
-  machine_name: string;
-  is_active: boolean;
-  status: 'free' | 'in_use';
-  current_resident_id: string | null;
-  current_resident_name: string | null;
-  current_resident_room: string | null;
-  started_at: string | null;
-  updated_at: string;
+  return order.find((key) => Boolean(todayMenus[key])) ?? order[0];
 }
 
 function formatElapsed(startedAtIso: string | null): string {
   if (!startedAtIso) return '';
   try {
     const started = new Date(startedAtIso).getTime();
+    if (Number.isNaN(started)) return '';
     const diff = Math.max(0, Math.floor((Date.now() - started) / 60000));
     if (diff < 1) return 'Just started';
     if (diff < 60) return `${diff} min${diff === 1 ? '' : 's'} ago`;
@@ -133,22 +107,45 @@ function formatElapsed(startedAtIso: string | null): string {
   }
 }
 
-interface TodayMenuSummary {
-  breakfast: boolean;
-  lunch: boolean;
-  dinner: boolean;
+function formatCycleStartTime(startedAtIso: string | null): string {
+  if (!startedAtIso) return '';
+  try {
+    const started = new Date(startedAtIso);
+    if (Number.isNaN(started.getTime())) return '';
+    const startTimeStr = started.toLocaleTimeString('en-IN', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    });
+    const elapsed = formatElapsed(startedAtIso);
+    return elapsed ? `Started ${startTimeStr} · ${elapsed}` : `Started ${startTimeStr}`;
+  } catch {
+    return '';
+  }
+}
+
+function getGenderPillStyle(gender: PropertyGenderType): {
+  bg: string;
+  text: string;
+} {
+  if (gender === 'girls') return { bg: '#FCE7F3', text: '#BE185D' };
+  if (gender === 'boys') return { bg: '#E0F2FE', text: '#0369A1' };
+  return { bg: '#EEF2FF', text: '#4338CA' };
 }
 
 export default function OwnerDashboard() {
-  const { user, session, profile, isLoading: authLoading, signOut } = useAuth();
+  const { user, session, profile, isLoading: authLoading } = useAuth();
   const {
     properties,
     selectedProperty,
     selectedPropertyId,
     selectProperty,
     addProperty,
-    refreshProperties,
   } = useProperty();
+  const { isInsidePager, navigateToTab } = useResidentTabs();
+
+  const userId = user?.id;
+  const profileRole = profile?.role;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -162,7 +159,7 @@ export default function OwnerDashboard() {
   const [creatingProperty, setCreatingProperty] = useState(false);
 
   // Key Operational State (Gate, Menu, Complaints, Rent Collections)
-  const [stats, setStats] = useState({
+  const [stats, setStats] = useState<OwnerDashboardStats>({
     totalResidents: 0,
     studentsInside: 0,
     studentsOutside: 0,
@@ -170,32 +167,25 @@ export default function OwnerDashboard() {
     rentCollectedPaise: 0,
     rentTotalPaise: 0,
     pendingProofsCount: 0,
+    unpaidResidentsCount: 0,
   });
 
-  const [todayMenu, setTodayMenu] = useState<TodayMenuSummary>({
-    breakfast: false,
-    lunch: false,
-    dinner: false,
-  });
-
-  const [todayMenus, setTodayMenus] = useState<Record<MealType, OwnerFoodMenuRecord | null>>({
-    breakfast: null,
-    lunch: null,
-    dinner: null,
-  });
-  const [activeMealTab, setActiveMealTab] = useState<MealType>('breakfast');
+  const [todayMenus, setTodayMenus] = useState<Record<MealType, OwnerFoodMenuRecord | null>>(() =>
+    createEmptyOwnerMenus()
+  );
 
   // Live Washing Machine Status State
-  const [wmSummary, setWmSummary] = useState({
+  const [wmSummary, setWmSummary] = useState<OwnerWmSummary>({
     totalCount: 0,
     inUseCount: 0,
     freeCount: 0,
+    outOfOrderCount: 0,
   });
   const [wmUnits, setWmUnits] = useState<DashboardWmUnit[]>([]);
   const [wmModalVisible, setWmModalVisible] = useState(false);
-  const [releasingMachineId, setReleasingMachineId] = useState<string | null>(null);
+  const [busyMachineId, setBusyMachineId] = useState<string | null>(null);
 
-  const [recentActivities, setRecentActivities] = useState<ActivityItem[]>([]);
+  const [recentActivities, setRecentActivities] = useState<OwnerActivityItem[]>([]);
 
   // Non-college Departure In-App Push Alert State
   const [departureAlert, setDepartureAlert] = useState<{
@@ -209,359 +199,86 @@ export default function OwnerDashboard() {
   const alertThrottleRef = useRef<Map<string, number>>(new Map());
   const hasFocusedOnceRef = useRef(false);
 
-  // ISO string for today 'YYYY-MM-DD' (local calendar date matching food_menus)
-  const todayIsoDate = toLocalIsoDate();
-  const currentMonthStartIso = `${todayIsoDate.slice(0, 7)}-01`;
-
-  // Instant render from cache (stale-while-revalidate for slow networks)
+  // Instant render from unified query cache (stale-while-revalidate for slow networks)
   useEffect(() => {
     if (!selectedPropertyId) return;
-    void (async () => {
-      try {
-        const cached = await AsyncStorage.getItem(`owner_dash_cache_${selectedPropertyId}`);
-        if (cached) {
-          const parsed = JSON.parse(cached);
-          if (parsed?.stats) setStats(parsed.stats);
-          if (parsed?.recentActivities) setRecentActivities(parsed.recentActivities);
-          if (parsed?.washingMachines) {
-            setWmSummary({
-              totalCount: parsed.washingMachines.totalCount || 0,
-              inUseCount: parsed.washingMachines.inUseCount || 0,
-              freeCount: parsed.washingMachines.freeCount || 0,
-            });
-            setWmUnits(parsed.washingMachines.units || []);
-          }
-        }
-      } catch {
-        // Cache miss/parse fail
-      }
-    })();
+    let cancelled = false;
+    void getCachedOwnerDashboard(selectedPropertyId).then((cached) => {
+      if (cancelled || !cached) return;
+      setStats(cached.stats);
+      setRecentActivities(cached.recentActivities);
+      setTodayMenus(cached.todayMenus);
+      setWmSummary(cached.wmSummary);
+      setWmUnits(cached.wmUnits);
+      setLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [selectedPropertyId]);
 
   // Fetch operational dashboard data scoped to the active selected property
-  const loadDashboardData = useCallback(async () => {
-    if (!user?.id || profile?.role !== 'owner' || !selectedPropertyId) {
+  const applyDashboardResult = useCallback(
+    (result: Awaited<ReturnType<typeof fetchOwnerDashboard>>) => {
+      if (result.ok) {
+        setErrorMessage(null);
+        setStats(result.data.stats);
+        setRecentActivities(result.data.recentActivities);
+        setTodayMenus(result.data.todayMenus);
+        setWmSummary(result.data.wmSummary);
+        setWmUnits(result.data.wmUnits);
+      } else {
+        console.error('[OwnerDashboard] Error loading data:', result.error);
+        setErrorMessage(`Failed to load dashboard: ${result.error.message}`);
+      }
       setLoading(false);
+      setRefreshing(false);
+    },
+    []
+  );
+
+  const loadDashboardData = useCallback(async () => {
+    if (!userId || profileRole !== 'owner' || !selectedPropertyId) {
       return;
     }
 
-    try {
-      setErrorMessage(null);
+    const todayIsoDate = toLocalIsoDate();
+    const currentMonthStartIso = `${todayIsoDate.slice(0, 7)}-01`;
 
-      // Fast Path: Single-roundtrip composite SQL RPC + current month rent collections in parallel
-      const [summaryResult, chargesResult, pendingReportsResult] = await Promise.all([
-        supabase.rpc('get_owner_dashboard_summary', {
-          p_property_id: selectedPropertyId,
-          p_date: todayIsoDate,
-        }),
-        supabase
-          .from('charges')
-          .select('amount_paise, status')
-          .eq('property_id', selectedPropertyId)
-          .eq('billing_period_start', currentMonthStartIso)
-          .eq('category', 'rent'),
-        supabase
-          .from('student_payment_reports')
-          .select('id', { count: 'exact', head: true })
-          .eq('property_id', selectedPropertyId)
-          .eq('status', 'pending'),
-      ]);
-
-      let rentCollectedPaise = 0;
-      let rentTotalPaise = 0;
-      if (!chargesResult.error && chargesResult.data) {
-        for (const ch of chargesResult.data) {
-          const amt = ch.amount_paise || 0;
-          rentTotalPaise += amt;
-          if (ch.status === 'paid') {
-            rentCollectedPaise += amt;
-          }
-        }
-      }
-      const pendingProofsCount = pendingReportsResult.count ?? 0;
-
-      const { data: summaryRpc, error: rpcError } = summaryResult;
-
-      if (!rpcError && summaryRpc?.success) {
-        if (summaryRpc.stats) {
-          setStats({
-            totalResidents: summaryRpc.stats.totalResidents ?? 0,
-            studentsInside: summaryRpc.stats.studentsInside ?? 0,
-            studentsOutside: summaryRpc.stats.studentsOutside ?? 0,
-            openComplaintsCount: summaryRpc.stats.openComplaintsCount ?? 0,
-            rentCollectedPaise,
-            rentTotalPaise,
-            pendingProofsCount,
-          });
-        }
-        if (summaryRpc.recentActivities) setRecentActivities(summaryRpc.recentActivities);
-
-        if (summaryRpc.todayMenus) {
-          const menuMap: Record<MealType, OwnerFoodMenuRecord | null> = {
-            breakfast: null,
-            lunch: null,
-            dinner: null,
-          };
-          const summary: TodayMenuSummary = { breakfast: false, lunch: false, dinner: false };
-          for (const m of summaryRpc.todayMenus as OwnerFoodMenuRecord[]) {
-            if (['breakfast', 'lunch', 'dinner'].includes(m.meal_type)) {
-              menuMap[m.meal_type] = m;
-              if (m.is_published) summary[m.meal_type] = true;
-            }
-          }
-          setTodayMenus(menuMap);
-          setTodayMenu(summary);
-        }
-
-        if (summaryRpc.washingMachines) {
-          setWmSummary({
-            totalCount: summaryRpc.washingMachines.totalCount || 0,
-            inUseCount: summaryRpc.washingMachines.inUseCount || 0,
-            freeCount: summaryRpc.washingMachines.freeCount || 0,
-          });
-          setWmUnits(summaryRpc.washingMachines.units || []);
-        }
-
-        void AsyncStorage.setItem(
-          `owner_dash_cache_${selectedPropertyId}`,
-          JSON.stringify({
-            ...summaryRpc,
-            stats: {
-              ...(summaryRpc.stats || {}),
-              rentCollectedPaise,
-              rentTotalPaise,
-              pendingProofsCount,
-            },
-          })
-        );
-        return;
-      }
-
-      // Fallback: Individual queries if RPC not yet deployed
-      // 1. Fetch active residents of selected property
-      const { data: residentsData, error: resError } = await supabase
-        .from('residents')
-        .select('id, full_name, room_number, property_id, is_active')
-        .eq('property_id', selectedPropertyId);
-
-      if (resError) throw resError;
-
-      const allResidents: ResidentRecord[] = residentsData ?? [];
-      const activeResidents = allResidents.filter((r) => r.is_active);
-      const allResidentIds = allResidents.map((r) => r.id);
-
-      if (allResidentIds.length === 0) {
-        setStats({
-          totalResidents: 0,
-          studentsInside: 0,
-          studentsOutside: 0,
-          openComplaintsCount: 0,
-          rentCollectedPaise,
-          rentTotalPaise,
-          pendingProofsCount,
-        });
-        setRecentActivities([]);
-        setLoading(false);
-        return;
-      }
-
-      // 2. Fetch recent movement logs, menus, complaints, and washing machines in parallel
-      const [logsRes, menuRes, compRes, wmRes] = await Promise.all([
-        supabase
-          .from('movement_logs')
-          .select(
-            'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required'
-          )
-          .eq('property_id', selectedPropertyId)
-          .order('event_time', { ascending: false })
-          .limit(60),
-        supabase
-          .from('food_menus')
-          .select('id, meal_type, items, notes, is_published')
-          .eq('property_id', selectedPropertyId)
-          .eq('menu_date', todayIsoDate),
-        supabase
-          .from('complaints')
-          .select('id')
-          .eq('property_id', selectedPropertyId)
-          .eq('status', 'open'),
-        supabase
-          .from('washing_machines')
-          .select(
-            'id, property_id, machine_number, machine_name, is_active, status, current_resident_id, started_at, updated_at'
-          )
-          .eq('property_id', selectedPropertyId)
-          .eq('is_active', true)
-          .order('machine_number', { ascending: true }),
-      ]);
-
-      let logsData = logsRes.data;
-      const logsError = logsRes.error;
-
-      // Backwards-compatibility fallback if property_id was not yet backfilled
-      if (
-        !logsError &&
-        (!logsData || logsData.length === 0) &&
-        allResidentIds.length > 0
-      ) {
-        const { data: fallbackData } = await supabase
-          .from('movement_logs')
-          .select(
-            'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required'
-          )
-          .in('resident_id', allResidentIds)
-          .order('event_time', { ascending: false })
-          .limit(60);
-
-        if (fallbackData && fallbackData.length > 0) {
-          logsData = fallbackData;
-        }
-      }
-
-      if (logsError) throw logsError;
-      const logs: MovementLogRecord[] = logsData ?? [];
-
-      // Calculate resident status based on newest log
-      const latestStatusMap = new Map<string, MovementLogRecord>();
-      for (const log of logs) {
-        if (!latestStatusMap.has(log.resident_id)) {
-          latestStatusMap.set(log.resident_id, log);
-        }
-      }
-
-      let insideCount = 0;
-      let outsideCount = 0;
-
-      for (const res of activeResidents) {
-        const latest = latestStatusMap.get(res.id);
-        const direction = latest?.direction || 'IN';
-
-        if (direction === 'IN') {
-          insideCount += 1;
-        } else {
-          outsideCount += 1;
-        }
-      }
-
-      // 3. Process today's food menu status and full item details
-      const summary: TodayMenuSummary = {
-        breakfast: false,
-        lunch: false,
-        dinner: false,
-      };
-      const menuMap: Record<MealType, OwnerFoodMenuRecord | null> = {
-        breakfast: null,
-        lunch: null,
-        dinner: null,
-      };
-      if (menuRes.error) {
-        console.warn('[OwnerDashboard] Could not fetch food menu:', menuRes.error.message);
-      } else if (menuRes.data) {
-        for (const m of menuRes.data as OwnerFoodMenuRecord[]) {
-          if (['breakfast', 'lunch', 'dinner'].includes(m.meal_type)) {
-            menuMap[m.meal_type] = m;
-            if (m.is_published) {
-              summary[m.meal_type] = true;
-            }
-          }
-        }
-      }
-      setTodayMenu(summary);
-      setTodayMenus(menuMap);
-
-      // 4. Open maintenance complaints count
-      const openComplaintsCount = compRes.data?.length ?? 0;
-      if (compRes.error) {
-        console.warn('[OwnerDashboard] Could not fetch complaints count:', compRes.error.message);
-      }
-
-      setStats({
-        totalResidents: activeResidents.length,
-        studentsInside: insideCount,
-        studentsOutside: outsideCount,
-        openComplaintsCount,
-        rentCollectedPaise,
-        rentTotalPaise,
-        pendingProofsCount,
-      });
-
-      // 5. Build recent activity feed (latest 3)
-      const residentMap = new Map<string, ResidentRecord>();
-      for (const r of allResidents) {
-        residentMap.set(r.id, r);
-      }
-
-      const activities: ActivityItem[] = logs.slice(0, 2).map((log) => {
-        const resident = residentMap.get(log.resident_id);
-        const residentName = resident ? resident.full_name : 'Resident';
-        const roomNumber = resident?.room_number || '';
-
-        const eventDate = new Date(log.event_time);
-        const timeFormatted = eventDate.toLocaleTimeString('en-IN', {
-          hour: '2-digit',
-          minute: '2-digit',
-          hour12: true,
-        });
-
-        return {
-          id: log.id,
-          residentName,
-          roomNumber,
-          direction: log.direction,
-          purpose: log.purpose || null,
-          time: timeFormatted,
-        };
-      });
-
-      setRecentActivities(activities);
-
-      // 6. Process washing machines for fallback
-      if (wmRes.error) {
-        console.warn('[OwnerDashboard] Could not fetch washing machines:', wmRes.error.message);
-      } else if (wmRes.data && wmRes.data.length > 0) {
-        const mappedUnits: DashboardWmUnit[] = wmRes.data.map((w: any) => {
-          const res = w.current_resident_id ? residentMap.get(w.current_resident_id) : null;
-          return {
-            id: w.id,
-            property_id: w.property_id,
-            machine_number: w.machine_number,
-            machine_name: w.machine_name,
-            is_active: w.is_active,
-            status: w.status,
-            current_resident_id: w.current_resident_id,
-            current_resident_name: res?.full_name || null,
-            current_resident_room: res?.room_number || null,
-            started_at: w.started_at,
-            updated_at: w.updated_at,
-          };
-        });
-        setWmUnits(mappedUnits);
-        setWmSummary({
-          totalCount: mappedUnits.length,
-          inUseCount: mappedUnits.filter((u) => u.status === 'in_use').length,
-          freeCount: mappedUnits.filter((u) => u.status === 'free').length,
-        });
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error('[OwnerDashboard] Error loading data:', err);
-      setErrorMessage(`Failed to load dashboard: ${msg}`);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [user?.id, profile?.role, selectedPropertyId, todayIsoDate, currentMonthStartIso]);
+    const result = await fetchOwnerDashboard(selectedPropertyId, {
+      dateIso: todayIsoDate,
+      monthStartIso: currentMonthStartIso,
+    });
+    applyDashboardResult(result);
+  }, [userId, profileRole, selectedPropertyId, applyDashboardResult]);
 
   useEffect(() => {
     if (authLoading) return;
-    if (!session || !user?.id) {
+    if (!session || !userId) {
       router.replace('/login');
       return;
     }
-    if (profile?.role === 'owner') {
-      loadDashboardData();
+    if (profileRole === 'owner' && selectedPropertyId) {
+      let cancelled = false;
+      const todayIsoDate = toLocalIsoDate();
+      const currentMonthStartIso = `${todayIsoDate.slice(0, 7)}-01`;
+      void fetchOwnerDashboard(selectedPropertyId, {
+        dateIso: todayIsoDate,
+        monthStartIso: currentMonthStartIso,
+      }).then((result) => {
+        if (!cancelled) {
+          applyDashboardResult(result);
+        }
+      });
+      return () => {
+        cancelled = true;
+      };
     }
-  }, [authLoading, session, user?.id, profile?.role, loadDashboardData]);
+    const timer = setTimeout(() => {
+      setLoading(false);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [authLoading, session, userId, profileRole, selectedPropertyId, applyDashboardResult]);
 
   // Refetch latest operational status and menu whenever returning to dashboard
   useFocusEffect(
@@ -570,40 +287,91 @@ export default function OwnerDashboard() {
         hasFocusedOnceRef.current = true;
         return;
       }
-      if (!authLoading && user?.id && profile?.role === 'owner' && selectedPropertyId) {
-        loadDashboardData();
+      if (!authLoading && userId && profileRole === 'owner' && selectedPropertyId) {
+        void loadDashboardData();
       }
-    }, [authLoading, user?.id, profile?.role, selectedPropertyId, loadDashboardData])
+    }, [authLoading, userId, profileRole, selectedPropertyId, loadDashboardData])
   );
 
-  const handleOwnerReleaseWm = async (machineId: string, machineName: string) => {
+  const handleOpenFoodMenu = () => {
+    if (isInsidePager) {
+      navigateToTab('menu');
+    } else {
+      router.push('/food-menu');
+    }
+  };
+
+  const handleOwnerReleaseWm = (machineId: string, machineName: string) => {
     if (!selectedPropertyId) return;
     Alert.alert(
-      'Release Machine',
-      `Are you sure you want to mark ${machineName} as free? This will end the current resident's session.`,
+      'Free Up Machine',
+      `Are you sure you want to free up ${machineName}? This will end the current resident's session.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
-          text: 'Mark Free',
+          text: 'Free Up',
           style: 'destructive',
           onPress: async () => {
-            try {
-              setReleasingMachineId(machineId);
-              const { error } = await supabase.rpc('release_washing_machine_unit', {
-                p_property_id: selectedPropertyId,
-                p_machine_id: machineId,
-              });
-              if (error) throw error;
-              await loadDashboardData();
-            } catch (err: unknown) {
-              Alert.alert('Error', extractErrorMessage(err, 'Failed to release washing machine.'));
-            } finally {
-              setReleasingMachineId(null);
+            setBusyMachineId(machineId);
+            const result = await releaseWashingMachineUnit(selectedPropertyId, machineId);
+            setBusyMachineId(null);
+            if (!result.ok) {
+              Alert.alert(
+                'Error',
+                result.error.message || 'Failed to release washing machine.'
+              );
+              return;
             }
+            await loadDashboardData();
           },
         },
       ]
     );
+  };
+
+  const handleOwnerSetOutOfOrder = (
+    machineId: string,
+    machineName: string,
+    outOfOrder: boolean,
+    isInUse: boolean
+  ) => {
+    if (!selectedPropertyId) return;
+
+    const applyChange = async () => {
+      setBusyMachineId(machineId);
+      const result = await setWashingMachineOutOfOrder(
+        selectedPropertyId,
+        machineId,
+        outOfOrder
+      );
+      setBusyMachineId(null);
+      if (!result.ok) {
+        Alert.alert(
+          'Error',
+          result.error.message || 'Failed to update washing machine status.'
+        );
+        return;
+      }
+      await loadDashboardData();
+    };
+
+    if (outOfOrder) {
+      Alert.alert(
+        'Mark Out of Order',
+        `Mark ${machineName} as out of order?${isInUse ? " This will end the current resident's session." : ''}`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Mark Out of Order',
+            style: 'destructive',
+            onPress: applyChange,
+          },
+        ]
+      );
+      return;
+    }
+
+    void applyChange();
   };
 
   // Non-college Movement Realtime Push Listener
@@ -621,7 +389,7 @@ export default function OwnerDashboard() {
           filter: `property_id=eq.${selectedPropertyId}`,
         },
         async (payload) => {
-          const newLog = payload.new as MovementLogRecord;
+          const newLog = payload.new as MovementLogRealtimePayload;
           if (newLog.direction === 'OUT') {
             const rawPurpose = (newLog.purpose || '').trim().toLowerCase();
             const isCollege =
@@ -632,14 +400,11 @@ export default function OwnerDashboard() {
             // Non-college departure detected
             if (!isCollege) {
               // 1. Fetch resident details and strictly enforce property isolation
-              const { data: res } = await supabase
-                .from('residents')
-                .select('id, full_name, room_number, property_id')
-                .eq('id', newLog.resident_id)
-                .single();
-
-              // Ignore alerts for residents belonging to other properties
-              if (!res || res.property_id !== selectedPropertyId) {
+              const res = await fetchMovementAlertResident(
+                newLog.resident_id,
+                selectedPropertyId
+              );
+              if (!res) {
                 return;
               }
 
@@ -649,9 +414,7 @@ export default function OwnerDashboard() {
               let rateLimitEnabled = true;
 
               try {
-                const prefsStr = await AsyncStorage.getItem(
-                  '@pgwala_owner_notif_prefs'
-                );
+                const prefsStr = await AsyncStorage.getItem('@pgwala_owner_notif_prefs');
                 if (prefsStr) {
                   const prefs = JSON.parse(prefsStr);
                   if (typeof prefs.nonCollegeAlerts === 'boolean')
@@ -667,7 +430,7 @@ export default function OwnerDashboard() {
 
               // If non-college alerts disabled by owner, refresh stats silently without showing alert banner
               if (!nonCollegeEnabled) {
-                loadDashboardData();
+                void loadDashboardData();
                 return;
               }
 
@@ -676,7 +439,7 @@ export default function OwnerDashboard() {
                 const currentHour = new Date().getHours();
                 const isEveningOrNight = currentHour >= 18 || currentHour < 6;
                 if (!isEveningOrNight) {
-                  loadDashboardData();
+                  void loadDashboardData();
                   return;
                 }
               }
@@ -687,7 +450,7 @@ export default function OwnerDashboard() {
                 const lastAlertTime =
                   alertThrottleRef.current.get(newLog.resident_id) || 0;
                 if (now - lastAlertTime < 15 * 60 * 1000) {
-                  loadDashboardData();
+                  void loadDashboardData();
                   return;
                 }
               }
@@ -710,7 +473,7 @@ export default function OwnerDashboard() {
               });
 
               // Also refresh dashboard stats in background
-              loadDashboardData();
+              void loadDashboardData();
             }
           }
         }
@@ -718,13 +481,13 @@ export default function OwnerDashboard() {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      void supabase.removeChannel(channel);
     };
   }, [selectedPropertyId, loadDashboardData]);
 
   const handleRefresh = () => {
     setRefreshing(true);
-    loadDashboardData();
+    void loadDashboardData();
   };
 
   // Add new PG property from modal
@@ -743,8 +506,9 @@ export default function OwnerDashboard() {
       setNewPropName('');
       setNewPropAddress('');
       Alert.alert('Property Added', `Switched to "${trimmed}".`);
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Could not add property.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Could not add property.';
+      Alert.alert('Error', msg);
     } finally {
       setCreatingProperty(false);
     }
@@ -761,6 +525,14 @@ export default function OwnerDashboard() {
       </SafeAreaView>
     );
   }
+
+  const outOfOrderCount =
+    wmSummary.outOfOrderCount ??
+    wmUnits.filter((u) => u.status === 'out_of_order').length;
+  const hasWmAttention = wmSummary.inUseCount > 0 || outOfOrderCount > 0;
+  const featuredMealKey = getFeaturedMealKey(todayMenus);
+  const featuredMenu = todayMenus[featuredMealKey];
+  const featuredMealTitle = MEAL_CONFIG[featuredMealKey].title;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -814,10 +586,7 @@ export default function OwnerDashboard() {
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Account and Settings"
-          style={({ pressed }) => [
-            styles.accountBtn,
-            pressed && styles.cardPressed,
-          ]}
+          style={({ pressed }) => [styles.accountBtn, pressed && styles.cardPressed]}
           onPress={() => router.push('/owner-settings')}>
           <User size={18} color={OwnerTheme.colors.primary} />
         </Pressable>
@@ -837,131 +606,11 @@ export default function OwnerDashboard() {
           <ErrorState message={errorMessage} onRetry={loadDashboardData} />
         )}
 
-        {/* Priority Area 0: Needs Attention Strip (Money & Operational Alerts First) */}
-        <View style={styles.attentionSection}>
-          <Text style={styles.attentionTitle}>Needs Attention</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.attentionStrip}>
-            {stats.rentTotalPaise - stats.rentCollectedPaise > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.attentionChip, styles.attentionChipDanger]}
-                onPress={() => router.push('/billing-management')}>
-                <Text style={[styles.attentionChipText, styles.attentionTextDanger]}>
-                  {formatPaiseToRupees(
-                    Math.max(0, stats.rentTotalPaise - stats.rentCollectedPaise)
-                  )}{' '}
-                  pending
-                </Text>
-              </Pressable>
-            )}
-            {stats.pendingProofsCount > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.attentionChip, styles.attentionChipPrimary]}
-                onPress={() => router.push('/billing-management')}>
-                <Text style={[styles.attentionChipText, styles.attentionTextPrimary]}>
-                  {stats.pendingProofsCount} proof
-                  {stats.pendingProofsCount > 1 ? 's' : ''} to verify
-                </Text>
-              </Pressable>
-            )}
-            {stats.studentsOutside > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.attentionChip, styles.attentionChipWarning]}
-                onPress={() => router.push('/student-in-out')}>
-                <Text style={[styles.attentionChipText, styles.attentionTextWarning]}>
-                  {stats.studentsOutside} outside PG
-                </Text>
-              </Pressable>
-            )}
-            <Pressable
-              accessibilityRole="button"
-              style={[styles.attentionChip, styles.attentionChipNeutral]}
-              onPress={() => router.push('/student-in-out')}>
-              <Text style={[styles.attentionChipText, styles.attentionTextNeutral]}>
-                Dinner: {stats.studentsInside} in PG
-              </Text>
-            </Pressable>
-            {stats.openComplaintsCount > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.attentionChip, styles.attentionChipWarning]}
-                onPress={() => router.push('/owner-complaints')}>
-                <Text style={[styles.attentionChipText, styles.attentionTextWarning]}>
-                  {stats.openComplaintsCount} open issue
-                  {stats.openComplaintsCount > 1 ? 's' : ''}
-                </Text>
-              </Pressable>
-            )}
-          </ScrollView>
-        </View>
+        {/* Priority Area 0 & 1: Needs Attention Strip + 4-Card Operational KPI Grid */}
+        <OwnerMetricsGrid stats={stats} />
 
-        {/* Priority Area 1: 4-Card Operational KPI Grid (Money & Alerts First) */}
-        <View style={styles.kpiGrid}>
-          <View style={styles.gateStatsRow}>
-            <StatisticCard
-              label="Pending Rent"
-              value={formatPaiseToRupees(
-                Math.max(0, stats.rentTotalPaise - stats.rentCollectedPaise)
-              )}
-              accentColor={
-                stats.rentTotalPaise - stats.rentCollectedPaise > 0
-                  ? OwnerTheme.colors.danger
-                  : OwnerTheme.colors.success
-              }
-              icon={Receipt}
-              sublabel={
-                stats.pendingProofsCount > 0
-                  ? `${stats.pendingProofsCount} proof${stats.pendingProofsCount > 1 ? 's' : ''} pending`
-                  : `${formatPaiseToRupees(stats.rentCollectedPaise)} collected`
-              }
-              onPress={() => router.push('/billing-management')}
-              style={styles.gateStatHalfCard}
-            />
-            <StatisticCard
-              label="Open Maintenance"
-              value={stats.openComplaintsCount}
-              accentColor={
-                stats.openComplaintsCount > 0
-                  ? OwnerTheme.colors.warning
-                  : OwnerTheme.colors.textSecondary
-              }
-              icon={Wrench}
-              sublabel={
-                stats.openComplaintsCount > 0 ? 'Needs attention' : 'All resolved'
-              }
-              onPress={() => router.push('/owner-complaints')}
-              style={styles.gateStatHalfCard}
-            />
-          </View>
-          <View style={styles.gateStatsRow}>
-            <StatisticCard
-              label="Students Inside"
-              value={stats.studentsInside}
-              accentColor={OwnerTheme.colors.success}
-              icon={LogIn}
-              sublabel={`of ${stats.totalResidents} active`}
-              onPress={() => router.push('/student-in-out')}
-              style={styles.gateStatHalfCard}
-            />
-            <StatisticCard
-              label="Outside"
-              value={stats.studentsOutside}
-              accentColor={OwnerTheme.colors.warning}
-              icon={LogOut}
-              sublabel="Checked out"
-              onPress={() => router.push('/student-in-out')}
-              style={styles.gateStatHalfCard}
-            />
-          </View>
-        </View>
-
-        {/* Priority Area 1b: Washing Machines (Compact Chip when All Free, Expanded when In Use) */}
-        {wmSummary.inUseCount > 0 ? (
+        {/* Priority Area 1b: Washing Machines */}
+        {hasWmAttention ? (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="View washing machine usage"
@@ -975,14 +624,31 @@ export default function OwnerDashboard() {
                 <Disc3 size={18} color="#0284C7" />
               </View>
               <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <View style={styles.wmSummaryTitleRow}>
                   <Text style={styles.wmSummaryTitle}>Washing Machines</Text>
-                  <View style={styles.wmActiveChip}>
-                    <Text style={styles.wmActiveChipText}>{wmSummary.inUseCount} In Use</Text>
-                  </View>
+                  {wmSummary.inUseCount > 0 && (
+                    <View style={styles.wmActiveChip}>
+                      <Text style={styles.wmActiveChipText}>
+                        {wmSummary.inUseCount === 1
+                          ? toSentenceCaseStatus('in_use')
+                          : `${wmSummary.inUseCount} in use`}
+                      </Text>
+                    </View>
+                  )}
+                  {outOfOrderCount > 0 && (
+                    <View style={styles.wmOutOfOrderChip}>
+                      <Text style={styles.wmOutOfOrderChipText}>
+                        {outOfOrderCount === 1
+                          ? toSentenceCaseStatus('out_of_order')
+                          : `${outOfOrderCount} out of order`}
+                      </Text>
+                    </View>
+                  )}
                 </View>
                 <Text style={styles.wmSummarySub}>
-                  {`${wmSummary.inUseCount} active • ${wmSummary.freeCount} available of ${wmSummary.totalCount} units`}
+                  {outOfOrderCount > 0
+                    ? `${wmSummary.inUseCount} active · ${wmSummary.freeCount} free · ${outOfOrderCount} out of order`
+                    : `${wmSummary.inUseCount} active · ${wmSummary.freeCount} available of ${wmSummary.totalCount} units`}
                 </Text>
               </View>
             </View>
@@ -1004,7 +670,9 @@ export default function OwnerDashboard() {
               <Text style={styles.wmCompactTitle}>Washing Machines</Text>
               <View style={styles.wmAllFreeChip}>
                 <Text style={styles.wmAllFreeChipText}>
-                  All Free{wmSummary.totalCount > 0 ? ` (${wmSummary.totalCount})` : ''}
+                  {wmSummary.totalCount > 0
+                    ? `${toSentenceCaseStatus('free')} (${wmSummary.totalCount})`
+                    : toSentenceCaseStatus('free')}
                 </Text>
               </View>
             </View>
@@ -1012,330 +680,50 @@ export default function OwnerDashboard() {
           </Pressable>
         )}
 
-        {/* Priority Area 2: Food Menu Today (Resident-Style In-Place Interactive Card) */}
-        <View style={styles.menuCard}>
-          <View style={styles.menuHeader}>
-            <View style={styles.menuHeaderLeft}>
-              <View style={styles.menuIconContainer}>
-                <Utensils size={16} color={OwnerTheme.colors.primary} />
-              </View>
-              <View>
-                <Text style={styles.menuTitle}>Today&apos;s Food Menu</Text>
-                <Text style={styles.menuSubtitle}>
-                  {new Date().toLocaleDateString('en-IN', {
-                    weekday: 'short',
-                    day: 'numeric',
-                    month: 'short',
-                  })}
-                </Text>
-              </View>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.menuManageBtn,
-                pressed && styles.cardPressed,
-              ]}
-              onPress={() => router.push('/food-menu')}>
-              <Text style={styles.menuManageBtnText}>Manage Menu ›</Text>
-            </Pressable>
+        {/* Priority Area 2: Compact Single-Row Food Menu Card */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Manage today's food menu"
+          style={({ pressed }) => [styles.menuCompactCard, pressed && styles.cardPressed]}
+          onPress={handleOpenFoodMenu}>
+          <View style={styles.menuIconContainer}>
+            <Utensils size={16} color={OwnerTheme.colors.primary} />
           </View>
-
-          {/* 3-Chip Meal Selector */}
-          <View style={styles.mealSegmentRow}>
-            {(['breakfast', 'lunch', 'dinner'] as MealType[]).map((mealKey) => {
-              const cfg = MEAL_CONFIG[mealKey];
-              const menuRecord = todayMenus[mealKey];
-              const isSelected = activeMealTab === mealKey;
-              const isPublished = Boolean(menuRecord?.is_published);
-              const hasDraft = Boolean(menuRecord && !menuRecord.is_published);
-
-              return (
-                <Pressable
-                  key={mealKey}
-                  accessibilityRole="button"
-                  style={[
-                    styles.mealSegmentChip,
-                    isSelected && styles.mealSegmentChipSelected,
-                  ]}
-                  onPress={() => {
-                    triggerSelectionHaptic();
-                    setActiveMealTab(mealKey);
-                  }}>
-                  <Utensils size={14} color={isSelected ? '#FFFFFF' : '#475569'} />
-                  <Text
-                    style={[
-                      styles.mealChipText,
-                      isSelected && styles.mealChipTextSelected,
-                    ]}>
-                    {cfg.title}
-                  </Text>
-                  <View
-                    style={[
-                      styles.mealStatusIndicator,
-                      isPublished
-                        ? styles.indicatorPublished
-                        : hasDraft
-                        ? styles.indicatorDraft
-                        : styles.indicatorEmpty,
-                    ]}>
-                    {isPublished ? (
-                      <Check size={11} color="#065F46" />
-                    ) : (
-                      <Text
-                        style={[
-                          styles.indicatorText,
-                          hasDraft
-                            ? styles.indicatorTextDraft
-                            : styles.indicatorTextEmpty,
-                        ]}>
-                        {hasDraft ? 'Draft' : '—'}
-                      </Text>
-                    )}
-                  </View>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          {/* In-Place Selected Meal Details */}
-          <View style={styles.mealDetailBox}>
-            <View style={styles.mealDetailTop}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.mealDetailTitle}>
-                  {MEAL_CONFIG[activeMealTab].title}
-                </Text>
-              </View>
-              {todayMenus[activeMealTab] ? (
-                <View
-                  style={[
-                    styles.detailBadge,
-                    todayMenus[activeMealTab]!.is_published
-                      ? styles.detailBadgePublished
-                      : styles.detailBadgeDraft,
-                  ]}>
-                  <View
-                    style={[
-                      styles.detailDot,
-                      {
-                        backgroundColor: todayMenus[activeMealTab]!.is_published
-                          ? '#16A34A'
-                          : '#F59E0B',
-                      },
-                    ]}
-                  />
-                  <Text
-                    style={[
-                      styles.detailBadgeText,
-                      {
-                        color: todayMenus[activeMealTab]!.is_published
-                          ? '#15803D'
-                          : '#B45309',
-                      },
-                    ]}>
-                    {todayMenus[activeMealTab]!.is_published ? 'Published' : 'Draft'}
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.detailBadgeNotSet}>
-                  <Text style={styles.detailBadgeNotSetText}>Not Configured</Text>
-                </View>
-              )}
-            </View>
-
-            {todayMenus[activeMealTab] ? (
-              <View style={styles.mealItemsContainer}>
-                <Text style={styles.mealItemsText}>
-                  {todayMenus[activeMealTab]!.items}
-                </Text>
-                {todayMenus[activeMealTab]!.notes ? (
-                  <Text style={styles.mealNotesText}>
-                    Note: {todayMenus[activeMealTab]!.notes}
-                  </Text>
-                ) : null}
-              </View>
-            ) : (
-              <View style={styles.noMenuContainer}>
-                <Text style={styles.noMenuText}>
-                  No menu set for {MEAL_CONFIG[activeMealTab].title.toLowerCase()} today.
-                </Text>
-                <Pressable
-                  accessibilityRole="button"
-                  style={styles.addMenuInlineBtn}
-                  onPress={() => router.push('/food-menu')}>
-                  <Text style={styles.addMenuInlineBtnText}>+ Add {MEAL_CONFIG[activeMealTab].title}</Text>
-                </Pressable>
-              </View>
-            )}
-          </View>
-        </View>
-
-        {/* Priority Area 3: Action Hub */}
-        <SectionHeader
-          title="Action Hub"
-          style={{ marginTop: 4, marginBottom: 4 }}
-        />
-        <View style={styles.quickGrid}>
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.quickCard,
-              pressed && styles.cardPressed,
-            ]}
-            onPress={() => router.push('/student-in-out')}>
+          <Text style={styles.menuCompactSummary} numberOfLines={1}>
+            <Text style={styles.menuCompactLabel}>{featuredMealTitle}: </Text>
+            {featuredMenu ? featuredMenu.items : 'Not set'}
+          </Text>
+          {featuredMenu && (
             <View
               style={[
-                styles.quickIconWrap,
-                { backgroundColor: OwnerTheme.colors.successLight },
+                styles.menuStatusPill,
+                featuredMenu.is_published
+                  ? styles.menuStatusPillPublished
+                  : styles.menuStatusPillDraft,
               ]}>
-              <DoorOpen size={20} color={OwnerTheme.colors.success} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.quickTitle}>Gate Attendance</Text>
-              <Text style={styles.quickSub}>Movement & dinner list</Text>
-            </View>
-            <ArrowRight size={15} color={OwnerTheme.colors.textMuted} />
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.quickCard,
-              pressed && styles.cardPressed,
-            ]}
-            onPress={() => router.push('/add-resident')}>
-            <View
-              style={[
-                styles.quickIconWrap,
-                { backgroundColor: OwnerTheme.colors.primaryLight },
-              ]}>
-              <Plus size={20} color={OwnerTheme.colors.primary} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.quickTitle}>+ Add Resident</Text>
-              <Text style={styles.quickSub}>Onboard new tenant</Text>
-            </View>
-            <ArrowRight size={15} color={OwnerTheme.colors.textMuted} />
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.quickCard,
-              pressed && styles.cardPressed,
-            ]}
-            onPress={() => router.push('/billing-management')}>
-            <View
-              style={[
-                styles.quickIconWrap,
-                { backgroundColor: '#F1F5F9' },
-              ]}>
-              <Receipt size={20} color={OwnerTheme.colors.textPrimary} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.quickTitle}>Rent & Bills</Text>
-              <Text style={styles.quickSub}>Monthly collections</Text>
-            </View>
-            <ArrowRight size={15} color={OwnerTheme.colors.textMuted} />
-          </Pressable>
-
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [
-              styles.quickCard,
-              pressed && styles.cardPressed,
-            ]}
-            onPress={() => router.push('/owner-complaints')}>
-            <View
-              style={[
-                styles.quickIconWrap,
-                {
-                  backgroundColor:
-                    stats.openComplaintsCount > 0
-                      ? OwnerTheme.colors.warningLight
-                      : '#F1F5F9',
-                },
-              ]}>
-              <Wrench
-                size={20}
-                color={
-                  stats.openComplaintsCount > 0
-                    ? OwnerTheme.colors.warning
-                    : OwnerTheme.colors.textSecondary
-                }
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.quickTitle}>Maintenance</Text>
-              <Text style={styles.quickSub}>
-                {stats.openComplaintsCount > 0
-                  ? `${stats.openComplaintsCount} open issues`
-                  : 'All resolved'}
+              <Text
+                style={[
+                  styles.menuStatusPillText,
+                  featuredMenu.is_published
+                    ? styles.menuStatusTextPublished
+                    : styles.menuStatusTextDraft,
+                ]}>
+                {toSentenceCaseStatus(featuredMenu.is_published ? 'published' : 'draft')}
               </Text>
             </View>
-            <ArrowRight size={15} color={OwnerTheme.colors.textMuted} />
-          </Pressable>
-        </View>
+          )}
+          <Text style={styles.menuManageText}>Manage ›</Text>
+        </Pressable>
 
-        {/* Priority Area 4: Recent Gate Movements */}
-        <SectionHeader
-          title="Recent Movement"
-          actionText="View all ›"
-          onAction={() => router.push('/student-in-out')}
-          style={{ marginTop: 12, marginBottom: 8 }}
+        {/* Priority Area 3: Residents Summary Card */}
+        <OwnerQuickActions
+          totalResidents={stats.totalResidents}
+          studentsInside={stats.studentsInside}
+          unpaidResidentsCount={stats.unpaidResidentsCount ?? 0}
         />
 
-        <View style={styles.activityCard}>
-          {loading ? (
-            <View style={styles.activityLoading}>
-              <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
-            </View>
-          ) : recentActivities.length === 0 ? (
-            <EmptyState
-              title="No recent movements"
-              description="Student gate check-ins and check-outs will display here."
-            />
-          ) : (
-            recentActivities.map((item, index) => {
-              const isEntry = item.direction === 'IN';
-              return (
-                <View
-                  key={item.id}
-                  style={[
-                    styles.activityRow,
-                    index === recentActivities.length - 1 &&
-                      styles.activityRowLast,
-                  ]}>
-                  <View
-                    style={[
-                      styles.activityIconCircle,
-                      {
-                        backgroundColor: isEntry
-                          ? OwnerTheme.colors.successLight
-                          : OwnerTheme.colors.warningLight,
-                      },
-                    ]}>
-                    {isEntry ? (
-                      <LogIn size={14} color={OwnerTheme.colors.success} />
-                    ) : (
-                      <LogOut size={14} color={OwnerTheme.colors.warning} />
-                    )}
-                  </View>
-                  <View style={styles.activityDetails}>
-                    <Text style={styles.activityResidentName}>
-                      {item.residentName} (Room {item.roomNumber})
-                    </Text>
-                    <Text style={styles.activityActionText}>
-                      marked {item.direction}
-                      {item.purpose ? ` • ${item.purpose}` : ''}
-                    </Text>
-                  </View>
-                  <Text style={styles.activityTimeText}>{item.time}</Text>
-                </View>
-              );
-            })
-          )}
-        </View>
+        {/* Priority Area 4: Recent Gate Movements */}
+        <RecentActivitySection loading={loading} activities={recentActivities} />
 
         <View style={{ height: 24 }} />
       </ScrollView>
@@ -1347,6 +735,12 @@ export default function OwnerDashboard() {
         animationType="fade"
         onRequestClose={() => setSwitcherVisible(false)}>
         <View style={styles.modalOverlay}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close switch property modal"
+            style={StyleSheet.absoluteFill}
+            onPress={() => setSwitcherVisible(false)}
+          />
           <View style={styles.switcherModalCard}>
             <View style={styles.switcherModalHeader}>
               <Text style={styles.switcherModalTitle}>Switch PG Property</Text>
@@ -1361,6 +755,25 @@ export default function OwnerDashboard() {
             <ScrollView style={{ maxHeight: 260 }}>
               {properties.map((prop) => {
                 const isSelected = prop.id === selectedPropertyId;
+                const occupied =
+                  typeof prop.active_resident_count === 'number'
+                    ? prop.active_resident_count
+                    : isSelected
+                      ? stats.totalResidents
+                      : 0;
+                const totalBeds =
+                  typeof prop.total_beds === 'number' ? prop.total_beds : 0;
+                const occupancyText =
+                  totalBeds > 0
+                    ? `${occupied}/${totalBeds} beds`
+                    : `${occupied} residents`;
+                const genderType = inferPropertyGender(
+                  prop.name,
+                  prop.gender_type ?? null
+                );
+                const genderLabel = formatPropertyGenderLabel(genderType);
+                const genderStyle = getGenderPillStyle(genderType);
+
                 return (
                   <Pressable
                     key={prop.id}
@@ -1390,11 +803,22 @@ export default function OwnerDashboard() {
                         ]}>
                         {prop.name}
                       </Text>
-                      {prop.address ? (
-                        <Text style={styles.propertyAddressItem} numberOfLines={1}>
-                          {prop.address}
-                        </Text>
-                      ) : null}
+                      <View style={styles.propertyMetaRow}>
+                        <Text style={styles.propertyOccupancyText}>{occupancyText}</Text>
+                        <View
+                          style={[
+                            styles.propertyGenderPill,
+                            { backgroundColor: genderStyle.bg },
+                          ]}>
+                          <Text
+                            style={[
+                              styles.propertyGenderText,
+                              { color: genderStyle.text },
+                            ]}>
+                            {genderLabel}
+                          </Text>
+                        </View>
+                      </View>
                     </View>
                     {isSelected && (
                       <Check size={18} color={OwnerTheme.colors.primary} />
@@ -1480,6 +904,12 @@ export default function OwnerDashboard() {
         animationType="fade"
         onRequestClose={() => setWmModalVisible(false)}>
         <View style={styles.modalOverlay}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Close washing machine modal"
+            style={StyleSheet.absoluteFill}
+            onPress={() => setWmModalVisible(false)}
+          />
           <View style={styles.wmModalContent}>
             <View style={styles.wmModalHeader}>
               <View style={{ flex: 1 }}>
@@ -1488,21 +918,26 @@ export default function OwnerDashboard() {
                   <Text style={styles.wmModalTitle}>Washing Machine Units</Text>
                 </View>
                 <Text style={styles.wmModalSubtitle} numberOfLines={1}>
-                  {selectedProperty?.name || 'Live Usage'} • {wmSummary.inUseCount} in use, {wmSummary.freeCount} free
+                  {selectedProperty?.name || 'Live Usage'} • {wmSummary.inUseCount} in use,{' '}
+                  {wmSummary.freeCount} free
+                  {outOfOrderCount > 0 ? `, ${outOfOrderCount} out of order` : ''}
                 </Text>
               </View>
               <Pressable
                 accessibilityRole="button"
+                accessibilityLabel="Close modal"
                 hitSlop={8}
                 onPress={() => setWmModalVisible(false)}>
                 <X size={20} color={OwnerTheme.colors.textMuted} />
               </Pressable>
             </View>
 
-            <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+            <ScrollView style={{ maxHeight: 400 }} showsVerticalScrollIndicator={false}>
               {wmUnits.length === 0 ? (
                 <View style={styles.wmModalEmpty}>
-                  <Text style={styles.wmModalEmptyText}>No active washing machines configured.</Text>
+                  <Text style={styles.wmModalEmptyText}>
+                    No active washing machines configured.
+                  </Text>
                   <Pressable
                     style={styles.configureWmBtn}
                     onPress={() => {
@@ -1515,7 +950,28 @@ export default function OwnerDashboard() {
               ) : (
                 wmUnits.map((unit, idx) => {
                   const isInUse = unit.status === 'in_use';
-                  const isReleasing = releasingMachineId === unit.id;
+                  const isOutOfOrder = unit.status === 'out_of_order';
+                  const isBusy = busyMachineId === unit.id;
+                  const statusLabel = toSentenceCaseStatus(unit.status);
+                  const badgeStyle = isInUse
+                    ? styles.wmStatusInUse
+                    : isOutOfOrder
+                      ? styles.wmStatusOutOfOrder
+                      : styles.wmStatusFree;
+                  const dotColor = isInUse
+                    ? '#DC2626'
+                    : isOutOfOrder
+                      ? '#D97706'
+                      : '#16A34A';
+                  const textColor = isInUse
+                    ? '#B91C1C'
+                    : isOutOfOrder
+                      ? '#B45309'
+                      : '#15803D';
+                  const cycleStartText = isInUse
+                    ? formatCycleStartTime(unit.started_at)
+                    : '';
+
                   return (
                     <View
                       key={unit.id}
@@ -1523,78 +979,113 @@ export default function OwnerDashboard() {
                         styles.wmUnitRow,
                         idx === wmUnits.length - 1 && { borderBottomWidth: 0 },
                       ]}>
-                      <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                          <Text style={styles.wmUnitName}>{unit.machine_name}</Text>
+                      <View style={styles.wmUnitTopRow}>
+                        <Text style={styles.wmUnitName}>{unit.machine_name}</Text>
+                        <View style={[styles.wmStatusBadge, badgeStyle]}>
                           <View
-                            style={[
-                              styles.wmStatusBadge,
-                              isInUse ? styles.wmStatusInUse : styles.wmStatusFree,
-                            ]}>
-                            <View
-                              style={[
-                                styles.wmStatusDot,
-                                { backgroundColor: isInUse ? '#DC2626' : '#16A34A' },
-                              ]}
-                            />
-                            <Text
-                              style={[
-                                styles.wmStatusText,
-                                { color: isInUse ? '#B91C1C' : '#15803D' },
-                              ]}>
-                              {isInUse ? 'In Use' : 'Free'}
-                            </Text>
-                          </View>
+                            style={[styles.wmStatusDot, { backgroundColor: dotColor }]}
+                          />
+                          <Text style={[styles.wmStatusText, { color: textColor }]}>
+                            {statusLabel}
+                          </Text>
                         </View>
-
-                        {isInUse ? (
-                          <View style={styles.wmInUseDetails}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                              <User size={12} color="#1E293B" />
-                              <Text style={styles.wmOccupantText}>
-                                {unit.current_resident_name || 'Resident'}
-                                {unit.current_resident_room ? ` (Room ${unit.current_resident_room})` : ''}
-                              </Text>
-                            </View>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 }}>
-                              <Clock size={12} color="#64748B" />
-                              <Text style={styles.wmDurationText}>
-                                {formatElapsed(unit.started_at)}
-                              </Text>
-                            </View>
-                          </View>
-                        ) : (
-                          <Text style={styles.wmFreeSub}>Machine is idle and available.</Text>
-                        )}
                       </View>
 
                       {isInUse && (
-                        <Pressable
-                          accessibilityRole="button"
-                          style={[styles.forceFreeBtn, isReleasing && styles.forceFreeBtnDisabled]}
-                          disabled={isReleasing}
-                          onPress={() => handleOwnerReleaseWm(unit.id, unit.machine_name)}>
-                          {isReleasing ? (
-                            <ActivityIndicator size="small" color="#DC2626" />
-                          ) : (
-                            <Text style={styles.forceFreeBtnText}>Mark Free</Text>
-                          )}
-                        </Pressable>
+                        <View style={styles.wmInUseDetails}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                            <User size={12} color="#1E293B" />
+                            <Text style={styles.wmOccupantText}>
+                              {unit.current_resident_name || 'Resident'}
+                              {unit.current_resident_room
+                                ? ` (Room ${unit.current_resident_room})`
+                                : ''}
+                            </Text>
+                          </View>
+                          {cycleStartText ? (
+                            <View
+                              style={{
+                                flexDirection: 'row',
+                                alignItems: 'center',
+                                gap: 4,
+                                marginTop: 2,
+                              }}>
+                              <Clock size={12} color="#64748B" />
+                              <Text style={styles.wmDurationText}>{cycleStartText}</Text>
+                            </View>
+                          ) : null}
+                        </View>
                       )}
+
+                      <View style={styles.wmUnitActionsRow}>
+                        {isInUse && (
+                          <Pressable
+                            accessibilityRole="button"
+                            style={[
+                              styles.forceFreeBtn,
+                              isBusy && styles.forceFreeBtnDisabled,
+                            ]}
+                            disabled={isBusy}
+                            onPress={() => handleOwnerReleaseWm(unit.id, unit.machine_name)}>
+                            {isBusy ? (
+                              <ActivityIndicator size="small" color="#DC2626" />
+                            ) : (
+                              <Text style={styles.forceFreeBtnText}>Free up</Text>
+                            )}
+                          </Pressable>
+                        )}
+
+                        {isOutOfOrder ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            style={[
+                              styles.markAvailableBtn,
+                              isBusy && styles.forceFreeBtnDisabled,
+                            ]}
+                            disabled={isBusy}
+                            onPress={() =>
+                              handleOwnerSetOutOfOrder(
+                                unit.id,
+                                unit.machine_name,
+                                false,
+                                false
+                              )
+                            }>
+                            {isBusy ? (
+                              <ActivityIndicator size="small" color="#15803D" />
+                            ) : (
+                              <Text style={styles.markAvailableBtnText}>
+                                Mark available
+                              </Text>
+                            )}
+                          </Pressable>
+                        ) : (
+                          <Pressable
+                            accessibilityRole="button"
+                            style={[
+                              styles.markOutOfOrderBtn,
+                              isBusy && styles.forceFreeBtnDisabled,
+                            ]}
+                            disabled={isBusy}
+                            onPress={() =>
+                              handleOwnerSetOutOfOrder(
+                                unit.id,
+                                unit.machine_name,
+                                true,
+                                isInUse
+                              )
+                            }>
+                            <Text style={styles.markOutOfOrderBtnText}>
+                              Mark out of order
+                            </Text>
+                          </Pressable>
+                        )}
+                      </View>
                     </View>
                   );
                 })
               )}
             </ScrollView>
-
-            <View style={styles.wmModalFooter}>
-              <Pressable
-                accessibilityRole="button"
-                style={styles.wmCloseBtn}
-                onPress={() => setWmModalVisible(false)}>
-                <Text style={styles.wmCloseBtnText}>Close</Text>
-              </Pressable>
-            </View>
           </View>
         </View>
       </Modal>
@@ -1694,59 +1185,6 @@ const styles = StyleSheet.create({
   pushAlertClose: {
     padding: 4,
   },
-  attentionSection: {
-    gap: 6,
-  },
-  attentionTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  attentionStrip: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingVertical: 2,
-  },
-  attentionChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: OwnerTheme.radius.full,
-    borderWidth: 1,
-  },
-  attentionChipDanger: {
-    backgroundColor: '#FEF2F2',
-    borderColor: '#FECACA',
-  },
-  attentionChipPrimary: {
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    borderColor: '#BAE6FD',
-  },
-  attentionChipWarning: {
-    backgroundColor: OwnerTheme.colors.warningLight,
-    borderColor: '#FDE68A',
-  },
-  attentionChipNeutral: {
-    backgroundColor: '#FFFFFF',
-    borderColor: OwnerTheme.colors.border,
-  },
-  attentionChipText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  attentionTextDanger: {
-    color: '#B91C1C',
-  },
-  attentionTextPrimary: {
-    color: OwnerTheme.colors.primary,
-  },
-  attentionTextWarning: {
-    color: '#B45309',
-  },
-  attentionTextNeutral: {
-    color: OwnerTheme.colors.textPrimary,
-  },
   wmCompactChipRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1767,16 +1205,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: OwnerTheme.colors.textPrimary,
-  },
-  kpiGrid: {
-    gap: 8,
-  },
-  gateStatsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  gateStatHalfCard: {
-    flex: 1,
   },
   wmSummaryCard: {
     flexDirection: 'row',
@@ -1807,6 +1235,12 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  wmSummaryTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
   wmSummaryTitle: {
     fontSize: 14,
     fontWeight: '700',
@@ -1822,6 +1256,17 @@ const styles = StyleSheet.create({
     fontSize: 10,
     fontWeight: '700',
     color: '#DC2626',
+  },
+  wmOutOfOrderChip: {
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  wmOutOfOrderChipText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#B45309',
   },
   wmAllFreeChip: {
     backgroundColor: '#DCFCE7',
@@ -1899,28 +1344,35 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.primary,
   },
   wmUnitRow: {
+    paddingVertical: 11,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  wmUnitTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
+    gap: 8,
   },
   wmUnitName: {
     fontSize: 14,
     fontWeight: '700',
     color: OwnerTheme.colors.textPrimary,
+    flex: 1,
   },
   wmStatusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 6,
+    paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: 10,
   },
   wmStatusInUse: {
     backgroundColor: '#FEE2E2',
+  },
+  wmStatusOutOfOrder: {
+    backgroundColor: '#FEF3C7',
   },
   wmStatusFree: {
     backgroundColor: '#DCFCE7',
@@ -1935,7 +1387,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   wmInUseDetails: {
-    marginTop: 4,
+    marginTop: 5,
   },
   wmOccupantText: {
     fontSize: 12,
@@ -1946,10 +1398,12 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#64748B',
   },
-  wmFreeSub: {
-    fontSize: 11,
-    color: '#94A3B8',
-    marginTop: 2,
+  wmUnitActionsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 8,
   },
   forceFreeBtn: {
     paddingVertical: 5,
@@ -1967,309 +1421,91 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#DC2626',
   },
-  wmModalFooter: {
-    paddingTop: 12,
-    marginTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: OwnerTheme.colors.borderLight,
-    alignItems: 'flex-end',
-  },
-  wmCloseBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: OwnerTheme.radius.sm,
-    backgroundColor: '#F1F5F9',
-  },
-  wmCloseBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  menuCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    padding: 14,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
-  },
-  menuHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  menuHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  menuIconContainer: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  menuTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  menuSubtitle: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 1,
-  },
-  menuManageBtn: {
+  markOutOfOrderBtn: {
     paddingVertical: 5,
     paddingHorizontal: 10,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    borderRadius: OwnerTheme.radius.full,
+    borderRadius: 6,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
   },
-  menuManageBtnText: {
-    fontSize: 12,
+  markOutOfOrderBtnText: {
+    fontSize: 11,
     fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  mealSegmentRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 12,
-  },
-  mealSegmentChip: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingVertical: 8,
-    paddingHorizontal: 6,
-    backgroundColor: '#F8FAFC',
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1.5,
-    borderColor: '#E2E8F0',
-  },
-  mealSegmentChipSelected: {
-    backgroundColor: '#F0F9FF',
-    borderColor: OwnerTheme.colors.primary,
-  },
-  mealChipEmoji: {
-    fontSize: 14,
-  },
-  mealChipText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#64748B',
-  },
-  mealChipTextSelected: {
-    color: OwnerTheme.colors.primary,
-    fontWeight: '700',
-  },
-  mealStatusIndicator: {
-    paddingHorizontal: 4,
-    paddingVertical: 1,
-    borderRadius: 4,
-  },
-  indicatorPublished: {
-    backgroundColor: '#DCFCE7',
-  },
-  indicatorDraft: {
-    backgroundColor: '#FEF3C7',
-  },
-  indicatorEmpty: {
-    backgroundColor: '#E2E8F0',
-  },
-  indicatorText: {
-    fontSize: 9,
-    fontWeight: '700',
-  },
-  indicatorTextPublished: {
-    color: '#15803D',
-  },
-  indicatorTextDraft: {
     color: '#B45309',
   },
-  indicatorTextEmpty: {
-    color: '#94A3B8',
-  },
-  mealDetailBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: OwnerTheme.radius.md,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  mealDetailTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 8,
-  },
-  mealDetailTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  mealDetailTime: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 1,
-  },
-  detailBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-  },
-  detailBadgePublished: {
-    backgroundColor: '#DCFCE7',
-  },
-  detailBadgeDraft: {
-    backgroundColor: '#FEF3C7',
-  },
-  detailBadgeNotSet: {
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-  },
-  detailDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  detailBadgeText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  detailBadgeNotSetText: {
-    fontSize: 10,
-    fontWeight: '600',
-    color: '#94A3B8',
-  },
-  mealItemsContainer: {
-    marginTop: 4,
-  },
-  mealItemsText: {
-    fontSize: 13,
-    color: '#334155',
-    lineHeight: 19,
-  },
-  mealNotesText: {
-    fontSize: 11,
-    color: '#64748B',
-    fontStyle: 'italic',
-    marginTop: 6,
-  },
-  noMenuContainer: {
-    alignItems: 'center',
-    paddingVertical: 10,
-    gap: 6,
-  },
-  noMenuText: {
-    fontSize: 12,
-    color: '#94A3B8',
-    fontStyle: 'italic',
-  },
-  addMenuInlineBtn: {
-    marginTop: 2,
-    paddingVertical: 4,
+  markAvailableBtn: {
+    paddingVertical: 5,
     paddingHorizontal: 10,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    borderRadius: OwnerTheme.radius.full,
-  },
-  addMenuInlineBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  quickGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  quickCard: {
-    width: '48.8%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
+    borderRadius: 6,
+    backgroundColor: '#F0FDF4',
     borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    padding: 10,
-    gap: 8,
+    borderColor: '#86EFAC',
   },
-  quickIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: OwnerTheme.radius.sm,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  quickTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  quickSub: {
+  markAvailableBtnText: {
     fontSize: 11,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 1,
+    fontWeight: '700',
+    color: '#15803D',
   },
-  activityCard: {
+  menuCompactCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
     backgroundColor: '#FFFFFF',
     borderRadius: OwnerTheme.radius.card,
     borderWidth: 1,
     borderColor: OwnerTheme.colors.border,
     paddingHorizontal: 12,
-    paddingVertical: 2,
+    paddingVertical: 11,
+    gap: 8,
+    ...OwnerTheme.shadow,
   },
-  activityLoading: {
-    paddingVertical: 16,
-    alignItems: 'center',
-  },
-  activityRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: OwnerTheme.colors.borderLight,
-  },
-  activityRowLast: {
-    borderBottomWidth: 0,
-  },
-  activityIconCircle: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+  menuIconContainer: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: OwnerTheme.colors.primaryLight,
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 8,
+    flexShrink: 0,
   },
-  activityDetails: {
+  menuCompactSummary: {
     flex: 1,
-  },
-  activityResidentName: {
+    minWidth: 0,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '500',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  menuCompactLabel: {
+    fontWeight: '700',
     color: OwnerTheme.colors.textPrimary,
   },
-  activityActionText: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 1,
+  menuStatusPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: OwnerTheme.radius.full,
+    flexShrink: 0,
   },
-  activityTimeText: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textMuted,
+  menuStatusPillPublished: {
+    backgroundColor: '#DCFCE7',
+  },
+  menuStatusPillDraft: {
+    backgroundColor: '#FEF3C7',
+  },
+  menuStatusPillText: {
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  menuStatusTextPublished: {
+    color: '#15803D',
+  },
+  menuStatusTextDraft: {
+    color: '#B45309',
+  },
+  menuManageText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+    flexShrink: 0,
   },
   cardPressed: {
     opacity: 0.85,
@@ -2286,7 +1522,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: OwnerTheme.colors.textSecondary,
   },
-  // Modal styles
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -2341,10 +1576,25 @@ const styles = StyleSheet.create({
   propertyNameItemSelected: {
     color: OwnerTheme.colors.primary,
   },
-  propertyAddressItem: {
+  propertyMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 3,
+  },
+  propertyOccupancyText: {
     fontSize: 11,
+    fontWeight: '500',
     color: OwnerTheme.colors.textSecondary,
-    marginTop: 1,
+  },
+  propertyGenderPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 1,
+    borderRadius: OwnerTheme.radius.full,
+  },
+  propertyGenderText: {
+    fontSize: 10,
+    fontWeight: '700',
   },
   addPropertyBtn: {
     flexDirection: 'row',

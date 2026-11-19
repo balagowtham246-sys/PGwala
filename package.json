@@ -58,7 +58,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "lint": "expo lint",
-    "test": "jest"
+    "test": "jest",
+    "test:rls": "node scripts/verify-rls.mjs"
   },
   "private": true
 }

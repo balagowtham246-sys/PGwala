@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Alert,
+  Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Switch,
@@ -8,55 +11,237 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ShieldAlert, CheckCircle2 } from 'lucide-react-native';
+import * as Notifications from 'expo-notifications';
+import {
+  Bell,
+  CheckCircle2,
+  MessageSquare,
+  Moon,
+  Send,
+  ShieldAlert,
+  Smartphone,
+} from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
-import { OwnerHeader } from '@/components/ui/owner';
+import {
+  HIGH_CONTRAST_SWITCH_COLORS,
+  OwnerHeader,
+  PrimaryButton,
+  SWITCH_THUMB_COLOR,
+} from '@/components/ui/owner';
 
 const STORAGE_NOTIF_PREFS = '@pgwala_owner_notif_prefs';
 
+const QUIET_HOURS_PRESETS = [
+  '10:00 PM – 7:00 AM',
+  '11:00 PM – 6:00 AM',
+  '9:00 PM – 7:00 AM',
+] as const;
+
+type QuietHoursWindow = (typeof QUIET_HOURS_PRESETS)[number];
+
+interface DeliveryChannels {
+  push: boolean;
+  whatsapp: boolean;
+  sms: boolean;
+}
+
+interface OwnerNotifPrefs {
+  nonCollegeAlerts: boolean;
+  eveningOnly: boolean;
+  rateLimitEnabled: boolean;
+  deliveryChannels: DeliveryChannels;
+  quietHoursEnabled: boolean;
+  quietHoursWindow: QuietHoursWindow;
+}
+
+const DEFAULT_PREFS: OwnerNotifPrefs = {
+  nonCollegeAlerts: true,
+  eveningOnly: true,
+  rateLimitEnabled: true,
+  deliveryChannels: {
+    push: true,
+    whatsapp: false,
+    sms: false,
+  },
+  quietHoursEnabled: false,
+  quietHoursWindow: '10:00 PM – 7:00 AM',
+};
+
+function isValidQuietWindow(val: unknown): val is QuietHoursWindow {
+  return (
+    typeof val === 'string' &&
+    (QUIET_HOURS_PRESETS as readonly string[]).includes(val)
+  );
+}
+
 export default function OwnerNotificationsScreen() {
-  const [nonCollegeAlerts, setNonCollegeAlerts] = useState(true);
-  const [eveningOnly, setEveningOnly] = useState(true);
-  const [rateLimitEnabled, setRateLimitEnabled] = useState(true);
+  const [prefs, setPrefs] = useState<OwnerNotifPrefs>(DEFAULT_PREFS);
   const [savedNotice, setSavedNotice] = useState(false);
+  const [testingNotif, setTestingNotif] = useState(false);
+  const [testNotice, setTestNotice] = useState<string | null>(null);
 
   useEffect(() => {
+    let active = true;
     (async () => {
       try {
         const savedPrefs = await AsyncStorage.getItem(STORAGE_NOTIF_PREFS);
-        if (savedPrefs) {
-          const parsed = JSON.parse(savedPrefs);
-          if (typeof parsed.nonCollegeAlerts === 'boolean')
-            setNonCollegeAlerts(parsed.nonCollegeAlerts);
-          if (typeof parsed.eveningOnly === 'boolean')
-            setEveningOnly(parsed.eveningOnly);
-          if (typeof parsed.rateLimitEnabled === 'boolean')
-            setRateLimitEnabled(parsed.rateLimitEnabled);
-        }
+        if (!active || !savedPrefs) return;
+        const parsed = JSON.parse(savedPrefs);
+        setPrefs({
+          nonCollegeAlerts:
+            typeof parsed.nonCollegeAlerts === 'boolean'
+              ? parsed.nonCollegeAlerts
+              : DEFAULT_PREFS.nonCollegeAlerts,
+          eveningOnly:
+            typeof parsed.eveningOnly === 'boolean'
+              ? parsed.eveningOnly
+              : DEFAULT_PREFS.eveningOnly,
+          rateLimitEnabled:
+            typeof parsed.rateLimitEnabled === 'boolean'
+              ? parsed.rateLimitEnabled
+              : DEFAULT_PREFS.rateLimitEnabled,
+          deliveryChannels: {
+            push:
+              typeof parsed.deliveryChannels?.push === 'boolean'
+                ? parsed.deliveryChannels.push
+                : DEFAULT_PREFS.deliveryChannels.push,
+            whatsapp:
+              typeof parsed.deliveryChannels?.whatsapp === 'boolean'
+                ? parsed.deliveryChannels.whatsapp
+                : DEFAULT_PREFS.deliveryChannels.whatsapp,
+            sms:
+              typeof parsed.deliveryChannels?.sms === 'boolean'
+                ? parsed.deliveryChannels.sms
+                : DEFAULT_PREFS.deliveryChannels.sms,
+          },
+          quietHoursEnabled:
+            typeof parsed.quietHoursEnabled === 'boolean'
+              ? parsed.quietHoursEnabled
+              : DEFAULT_PREFS.quietHoursEnabled,
+          quietHoursWindow: isValidQuietWindow(parsed.quietHoursWindow)
+            ? parsed.quietHoursWindow
+            : DEFAULT_PREFS.quietHoursWindow,
+        });
       } catch (err) {
         console.warn('Failed to load notification preferences:', err);
       }
     })();
+    return () => {
+      active = false;
+    };
   }, []);
 
-  const savePreferences = async (newPrefs: {
-    nonCollegeAlerts?: boolean;
-    eveningOnly?: boolean;
-    rateLimitEnabled?: boolean;
-  }) => {
+  useEffect(() => {
+    if (!savedNotice) return;
+    const timer = setTimeout(() => setSavedNotice(false), 2000);
+    return () => clearTimeout(timer);
+  }, [savedNotice]);
+
+  const persistPreferences = async (next: OwnerNotifPrefs) => {
     try {
-      const payload = {
-        nonCollegeAlerts,
-        eveningOnly,
-        rateLimitEnabled,
-        ...newPrefs,
-      };
-      await AsyncStorage.setItem(STORAGE_NOTIF_PREFS, JSON.stringify(payload));
+      await AsyncStorage.setItem(STORAGE_NOTIF_PREFS, JSON.stringify(next));
       setSavedNotice(true);
-      setTimeout(() => setSavedNotice(false), 2000);
     } catch (err) {
       console.warn('Failed to save notification preferences:', err);
+    }
+  };
+
+  const updatePrefs = (patch: Partial<OwnerNotifPrefs>) => {
+    setPrefs((prev) => {
+      const next: OwnerNotifPrefs = {
+        ...prev,
+        ...patch,
+        deliveryChannels: {
+          ...prev.deliveryChannels,
+          ...(patch.deliveryChannels ?? {}),
+        },
+      };
+      void persistPreferences(next);
+      return next;
+    });
+  };
+
+  const updateChannel = (channel: keyof DeliveryChannels, value: boolean) => {
+    setPrefs((prev) => {
+      const next: OwnerNotifPrefs = {
+        ...prev,
+        deliveryChannels: {
+          ...prev.deliveryChannels,
+          [channel]: value,
+        },
+      };
+      void persistPreferences(next);
+      return next;
+    });
+  };
+
+  const handleSendTestNotification = async () => {
+    if (testingNotif) return;
+    setTestingNotif(true);
+    setTestNotice(null);
+
+    try {
+      if (Platform.OS === 'web') {
+        const msg =
+          'Local push notifications are unavailable on web browsers. On Android and iOS devices, PGwala triggers a live alert banner here.';
+        setTestNotice(msg);
+        Alert.alert('Test Notification (Web)', msg);
+        return;
+      }
+
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowBanner: true,
+          shouldShowList: true,
+          shouldPlaySound: true,
+          shouldSetBadge: false,
+        }),
+      });
+
+      if (Platform.OS === 'android') {
+        await Notifications.setNotificationChannelAsync('owner-alerts', {
+          name: 'Owner Alerts',
+          importance: 6, // Notifications.AndroidImportance.HIGH
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#0284C7',
+        });
+      }
+
+      const existing = await Notifications.getPermissionsAsync();
+      let finalStatus = existing.status;
+      if (finalStatus !== 'granted') {
+        const requested = await Notifications.requestPermissionsAsync();
+        finalStatus = requested.status;
+      }
+
+      if (finalStatus !== 'granted') {
+        const deniedMsg =
+          'Notification permissions are denied. Please enable notifications for PGwala in your device settings to test alerts.';
+        setTestNotice(deniedMsg);
+        Alert.alert('Permission Required', deniedMsg);
+        return;
+      }
+
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: 'PGwala Test Alert',
+          body: 'Resident Departure Alert: Arun Kumar (Room 101) checked OUT.',
+          sound: true,
+        },
+        trigger: null,
+      });
+
+      setTestNotice('Test notification triggered on this device.');
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Could not trigger test notification on this device.';
+      setTestNotice(msg);
+      Alert.alert('Notification Test Failed', msg);
+    } finally {
+      setTestingNotif(false);
     }
   };
 
@@ -78,11 +263,11 @@ export default function OwnerNotificationsScreen() {
           </View>
         )}
 
-        {/* Departure Alerts Section */}
+        {/* Resident Departure Alerts Section */}
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <ShieldAlert size={18} color={OwnerTheme.colors.warning} />
-            <Text style={styles.cardTitle}>Student Departure Alerts</Text>
+            <Text style={styles.cardTitle}>Resident Departure Alerts</Text>
           </View>
           <Text style={styles.cardDescription}>
             Get notified when residents check OUT for reasons other than college.
@@ -92,66 +277,217 @@ export default function OwnerNotificationsScreen() {
             <View style={styles.settingTextCol}>
               <Text style={styles.settingLabel}>Non-College Exit Alerts</Text>
               <Text style={styles.settingHint}>
-                Alerts when students leave for shopping, outing, or hometown
+                Alerts when residents leave for shopping, outing, or hometown
               </Text>
             </View>
             <Switch
-              value={nonCollegeAlerts}
-              onValueChange={(val) => {
-                setNonCollegeAlerts(val);
-                savePreferences({ nonCollegeAlerts: val });
-              }}
-              trackColor={{
-                false: '#E2E8F0',
-                true: OwnerTheme.colors.primary,
-              }}
-              thumbColor="#FFFFFF"
+              value={prefs.nonCollegeAlerts}
+              onValueChange={(val) => updatePrefs({ nonCollegeAlerts: val })}
+              trackColor={HIGH_CONTRAST_SWITCH_COLORS}
+              thumbColor={SWITCH_THUMB_COLOR}
+            />
+          </View>
+
+          {/* Nested Child Options */}
+          <View
+            style={[
+              styles.nestedChildren,
+              !prefs.nonCollegeAlerts && styles.nestedDisabled,
+            ]}
+            pointerEvents={prefs.nonCollegeAlerts ? 'auto' : 'none'}>
+            <View style={styles.settingRow}>
+              <View style={styles.settingTextCol}>
+                <Text style={styles.settingLabel}>
+                  Evening Hours Only (6:00 PM+)
+                </Text>
+                <Text style={styles.settingHint}>
+                  Only alert for evening or night departures to avoid routine
+                  daytime notifications
+                </Text>
+              </View>
+              <Switch
+                value={prefs.eveningOnly}
+                disabled={!prefs.nonCollegeAlerts}
+                onValueChange={(val) => updatePrefs({ eveningOnly: val })}
+                trackColor={HIGH_CONTRAST_SWITCH_COLORS}
+                thumbColor={SWITCH_THUMB_COLOR}
+              />
+            </View>
+
+            <View style={[styles.settingRow, styles.lastRow]}>
+              <View style={styles.settingTextCol}>
+                <Text style={styles.settingLabel}>Limit repeat alerts</Text>
+                <Text style={styles.settingHint}>
+                  Limit repeat alerts to 1 per 15 min per resident
+                </Text>
+              </View>
+              <Switch
+                value={prefs.rateLimitEnabled}
+                disabled={!prefs.nonCollegeAlerts}
+                onValueChange={(val) => updatePrefs({ rateLimitEnabled: val })}
+                trackColor={HIGH_CONTRAST_SWITCH_COLORS}
+                thumbColor={SWITCH_THUMB_COLOR}
+              />
+            </View>
+          </View>
+        </View>
+
+        {/* Delivery Channels Section */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Bell size={18} color={OwnerTheme.colors.primary} />
+            <Text style={styles.cardTitle}>Delivery Channels</Text>
+          </View>
+          <Text style={styles.cardDescription}>
+            Choose how departure and operational alerts are delivered to you.
+          </Text>
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingTextCol}>
+              <View style={styles.labelWithIcon}>
+                <Smartphone size={14} color={OwnerTheme.colors.textSecondary} />
+                <Text style={styles.settingLabel}>Push notifications</Text>
+              </View>
+              <Text style={styles.settingHint}>
+                Instant alerts on this device through the PGwala app
+              </Text>
+            </View>
+            <Switch
+              value={prefs.deliveryChannels.push}
+              onValueChange={(val) => updateChannel('push', val)}
+              trackColor={HIGH_CONTRAST_SWITCH_COLORS}
+              thumbColor={SWITCH_THUMB_COLOR}
             />
           </View>
 
           <View style={styles.settingRow}>
             <View style={styles.settingTextCol}>
-              <Text style={styles.settingLabel}>Evening Hours Only (6:00 PM+)</Text>
+              <View style={styles.labelWithIcon}>
+                <MessageSquare
+                  size={14}
+                  color={OwnerTheme.colors.textSecondary}
+                />
+                <Text style={styles.settingLabel}>WhatsApp</Text>
+              </View>
               <Text style={styles.settingHint}>
-                Only alert for evening or night departures to avoid routine daytime notifications
+                Send departure summaries to your registered WhatsApp number
               </Text>
             </View>
             <Switch
-              value={eveningOnly}
-              disabled={!nonCollegeAlerts}
-              onValueChange={(val) => {
-                setEveningOnly(val);
-                savePreferences({ eveningOnly: val });
-              }}
-              trackColor={{
-                false: '#E2E8F0',
-                true: OwnerTheme.colors.primary,
-              }}
-              thumbColor="#FFFFFF"
+              value={prefs.deliveryChannels.whatsapp}
+              onValueChange={(val) => updateChannel('whatsapp', val)}
+              trackColor={HIGH_CONTRAST_SWITCH_COLORS}
+              thumbColor={SWITCH_THUMB_COLOR}
             />
           </View>
 
-          <View style={styles.settingRow}>
+          <View style={[styles.settingRow, styles.lastRow]}>
             <View style={styles.settingTextCol}>
-              <Text style={styles.settingLabel}>Anti-Flooding Rate Limiter</Text>
+              <View style={styles.labelWithIcon}>
+                <Send size={14} color={OwnerTheme.colors.textSecondary} />
+                <Text style={styles.settingLabel}>SMS</Text>
+              </View>
               <Text style={styles.settingHint}>
-                Throttle repeated logs to at most 1 alert every 15 minutes per resident
+                Fallback SMS alerts when mobile internet is unavailable
               </Text>
             </View>
             <Switch
-              value={rateLimitEnabled}
-              disabled={!nonCollegeAlerts}
-              onValueChange={(val) => {
-                setRateLimitEnabled(val);
-                savePreferences({ rateLimitEnabled: val });
-              }}
-              trackColor={{
-                false: '#E2E8F0',
-                true: OwnerTheme.colors.primary,
-              }}
-              thumbColor="#FFFFFF"
+              value={prefs.deliveryChannels.sms}
+              onValueChange={(val) => updateChannel('sms', val)}
+              trackColor={HIGH_CONTRAST_SWITCH_COLORS}
+              thumbColor={SWITCH_THUMB_COLOR}
             />
           </View>
+        </View>
+
+        {/* Quiet Hours Section */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Moon size={18} color={OwnerTheme.colors.primary} />
+            <Text style={styles.cardTitle}>Quiet Hours</Text>
+          </View>
+          <Text style={styles.cardDescription}>
+            Silence non-urgent notifications during overnight hours.
+          </Text>
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingTextCol}>
+              <Text style={styles.settingLabel}>Enable Quiet Hours</Text>
+              <Text style={styles.settingHint}>
+                Hold non-critical alerts during your selected sleep window
+              </Text>
+            </View>
+            <Switch
+              value={prefs.quietHoursEnabled}
+              onValueChange={(val) => updatePrefs({ quietHoursEnabled: val })}
+              trackColor={HIGH_CONTRAST_SWITCH_COLORS}
+              thumbColor={SWITCH_THUMB_COLOR}
+            />
+          </View>
+
+          <View
+            style={[
+              styles.quietPresetsContainer,
+              !prefs.quietHoursEnabled && styles.nestedDisabled,
+            ]}
+            pointerEvents={prefs.quietHoursEnabled ? 'auto' : 'none'}>
+            <Text style={styles.presetsLabel}>Quiet Hours Window</Text>
+            <View style={styles.presetsWrap}>
+              {QUIET_HOURS_PRESETS.map((windowLabel) => {
+                const isSelected = prefs.quietHoursWindow === windowLabel;
+                return (
+                  <Pressable
+                    key={windowLabel}
+                    accessibilityRole="radio"
+                    accessibilityState={{
+                      selected: isSelected,
+                      disabled: !prefs.quietHoursEnabled,
+                    }}
+                    disabled={!prefs.quietHoursEnabled}
+                    onPress={() =>
+                      updatePrefs({ quietHoursWindow: windowLabel })
+                    }
+                    style={[
+                      styles.presetChip,
+                      isSelected && styles.presetChipActive,
+                    ]}>
+                    <Text
+                      style={[
+                        styles.presetChipText,
+                        isSelected && styles.presetChipTextActive,
+                      ]}>
+                      {windowLabel}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        </View>
+
+        {/* Test Notification Action */}
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <Send size={17} color={OwnerTheme.colors.primary} />
+            <Text style={styles.cardTitle}>Verify Device Alerts</Text>
+          </View>
+          <Text style={styles.cardDescription}>
+            Trigger an immediate sample notification to verify alerts are
+            working on this device.
+          </Text>
+
+          <PrimaryButton
+            label="Send Test Notification"
+            icon={Bell}
+            onPress={handleSendTestNotification}
+            loading={testingNotif}
+          />
+
+          {testNotice && (
+            <View style={styles.testNoticeBox}>
+              <Text style={styles.testNoticeText}>{testNotice}</Text>
+            </View>
+          )}
         </View>
 
         <View style={{ height: 32 }} />
@@ -204,6 +540,10 @@ const styles = StyleSheet.create({
     borderBottomColor: OwnerTheme.colors.borderLight,
     gap: 12,
   },
+  lastRow: {
+    borderBottomWidth: 0,
+    paddingBottom: 4,
+  },
   settingTextCol: {
     flex: 1,
   },
@@ -222,6 +562,64 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.textSecondary,
     marginTop: 2,
     lineHeight: 16,
+  },
+  nestedChildren: {
+    marginLeft: 14,
+    paddingLeft: 14,
+    marginTop: 4,
+    borderLeftWidth: 2,
+    borderLeftColor: OwnerTheme.colors.border,
+  },
+  nestedDisabled: {
+    opacity: 0.45,
+  },
+  quietPresetsContainer: {
+    marginTop: 12,
+  },
+  presetsLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+    marginBottom: 8,
+  },
+  presetsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  presetChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: OwnerTheme.radius.full,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#FAFAFA',
+  },
+  presetChipActive: {
+    borderColor: OwnerTheme.colors.primary,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+  },
+  presetChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  presetChipTextActive: {
+    color: OwnerTheme.colors.primary,
+    fontWeight: '700',
+  },
+  testNoticeBox: {
+    marginTop: 10,
+    padding: 10,
+    borderRadius: OwnerTheme.radius.sm,
+    backgroundColor: OwnerTheme.colors.primarySoft,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.primaryLight,
+  },
+  testNoticeText: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textPrimary,
+    lineHeight: 17,
   },
   savedBanner: {
     flexDirection: 'row',

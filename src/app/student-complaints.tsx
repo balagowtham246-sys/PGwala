@@ -1,10 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   Image,
   Modal,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -15,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import {
   CheckCircle2,
@@ -32,7 +31,18 @@ import {
 } from 'lucide-react-native';
 
 import { useAuth } from '@/context/auth-context';
+import { extractErrorMessage } from '@/lib/error-utils';
+import {
+  enqueueOfflineMutation,
+  flushOfflineQueue,
+  getPendingCount,
+} from '@/lib/offline-queue';
+import { isLikelyNetworkError } from '@/lib/service-result';
 import { supabase, decodeBase64ToBytes, getSignedComplaintPhotoUrl } from '@/lib/supabase';
+import {
+  ComplaintOfflinePayload,
+  defaultOfflineExecutors,
+} from '@/services/offline-executors';
 
 export type ComplaintCategory =
   | 'plumbing'
@@ -107,11 +117,13 @@ const STATUS_CONFIG: Record<
 
 export default function StudentComplaintsScreen() {
   const { user } = useAuth();
+  const userId = user?.id;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [resident, setResident] = useState<StudentResident | null>(null);
   const [complaints, setComplaints] = useState<ComplaintRecord[]>([]);
+  const [pendingOfflineCount, setPendingOfflineCount] = useState(0);
 
   // Filter: 'all' | 'active' | 'resolved'
   const [filter, setFilter] = useState<'all' | 'active' | 'resolved'>('active');
@@ -213,10 +225,8 @@ export default function StudentComplaintsScreen() {
   };
 
   const loadData = useCallback(async () => {
-    if (!user?.id) return;
+    if (!userId) return;
     try {
-      setLoading(true);
-
       // 1. Fetch linked resident
       const { data: resData, error: resError } = await supabase
         .from('residents')
@@ -229,14 +239,13 @@ export default function StudentComplaintsScreen() {
             name
           )
         `)
-        .eq('profile_id', user.id)
+        .eq('profile_id', userId)
         .eq('is_active', true)
         .maybeSingle();
 
       if (resError) throw resError;
       if (!resData) {
         setResident(null);
-        setLoading(false);
         return;
       }
 
@@ -264,18 +273,31 @@ export default function StudentComplaintsScreen() {
         setComplaints(compData || []);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Could not load your complaints.');
       console.error('[StudentComplaints] Load error:', err);
       Alert.alert('Load Error', msg || 'Could not load your complaints.');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id]);
+  }, [userId]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      void (async () => {
+        await flushOfflineQueue(defaultOfflineExecutors);
+        const pending = await getPendingCount();
+        if (active) {
+          setPendingOfflineCount(pending);
+          await loadData();
+        }
+      })();
+      return () => {
+        active = false;
+      };
+    }, [loadData])
+  );
 
   // Submit new complaint
   const handleSubmitComplaint = async () => {
@@ -300,7 +322,7 @@ export default function StudentComplaintsScreen() {
     try {
       let uploadedPhotoPath: string | null = null;
 
-      // 1. Upload photo if selected
+      // 1. Upload photo if selected (requires live connection — never queued offline)
       if (selectedPhoto?.base64) {
         try {
           const fileExt =
@@ -320,7 +342,7 @@ export default function StudentComplaintsScreen() {
           }
           uploadedPhotoPath = fileName;
         } catch (photoErr: unknown) {
-          const pMsg = photoErr instanceof Error ? photoErr.message : String(photoErr);
+          const pMsg = extractErrorMessage(photoErr, 'Could not upload attachment.');
           Alert.alert('Photo Upload Error', pMsg || 'Could not upload attachment.');
           setSubmitting(false);
           return;
@@ -352,9 +374,39 @@ export default function StudentComplaintsScreen() {
       setCategory('plumbing');
       setPriority('medium');
       setFilter('active');
-      loadData();
+      await loadData();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      // Offline queuing is strictly restricted to complaints WITHOUT an attached local photo
+      if (!selectedPhoto && isLikelyNetworkError(err)) {
+        const offlinePayload: ComplaintOfflinePayload & Record<string, unknown> = {
+          property_id: resident.property_id,
+          resident_id: resident.id,
+          category,
+          priority,
+          title: trimmedTitle,
+          description: trimmedDesc,
+          photo_url: null,
+        };
+        const idempotencyKey = `complaint-${resident.id}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await enqueueOfflineMutation('complaint_submit', offlinePayload, idempotencyKey);
+        setPendingOfflineCount(await getPendingCount());
+
+        Alert.alert(
+          'Complaint Queued Offline',
+          'You appear to be offline. Your complaint has been saved and will be submitted automatically once you are back online.'
+        );
+
+        setShowModal(false);
+        setTitle('');
+        setDescription('');
+        setSelectedPhoto(null);
+        setCategory('plumbing');
+        setPriority('medium');
+        setFilter('active');
+        return;
+      }
+
+      const msg = extractErrorMessage(err, 'Could not submit your complaint.');
       console.error('[StudentComplaints] Submit error:', err);
       Alert.alert('Submission Failed', msg || 'Could not submit your complaint.');
     } finally {
@@ -386,7 +438,11 @@ export default function StudentComplaintsScreen() {
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
-              loadData();
+              void (async () => {
+                await flushOfflineQueue(defaultOfflineExecutors);
+                setPendingOfflineCount(await getPendingCount());
+                await loadData();
+              })();
             }}
             colors={['#0284C7']}
           />
@@ -441,6 +497,14 @@ export default function StudentComplaintsScreen() {
                 <Text style={styles.raiseBtnText}>+ Raise Issue</Text>
               </Pressable>
             </View>
+
+            {pendingOfflineCount > 0 && (
+              <View style={styles.offlineBanner}>
+                <Text style={styles.offlineBannerText}>
+                  {pendingOfflineCount} offline update{pendingOfflineCount > 1 ? 's' : ''} queued — will submit automatically when connected
+                </Text>
+              </View>
+            )}
 
             {/* Filter Tabs (hide zero-count tabs) */}
             {complaints.length > 0 && (
@@ -859,6 +923,20 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: '#64748B',
     marginTop: 2,
+  },
+  offlineBanner: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginBottom: 14,
+  },
+  offlineBannerText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#92400E',
   },
   raiseBtn: {
     backgroundColor: '#0284C7',

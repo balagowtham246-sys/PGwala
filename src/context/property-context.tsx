@@ -8,6 +8,7 @@ import React, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/auth-context';
+import { inferPropertyGender, PropertyGenderType } from '@/lib/ux-utils';
 
 export interface PropertyItem {
   id: string;
@@ -15,6 +16,15 @@ export interface PropertyItem {
   address: string | null;
   owner_id: string;
   is_active: boolean;
+  gender_type?: PropertyGenderType | null;
+  total_beds?: number | null;
+  active_resident_count?: number;
+}
+
+export interface PropertyMetaInput {
+  gender_type?: PropertyGenderType;
+  total_beds?: number;
+  explicit_gender?: boolean;
 }
 
 interface PropertyContextType {
@@ -22,13 +32,23 @@ interface PropertyContextType {
   selectedProperty: PropertyItem | null;
   selectedPropertyId: string | null;
   selectProperty: (id: string) => Promise<void>;
-  addProperty: (name: string, address?: string) => Promise<PropertyItem>;
-  updateProperty: (id: string, name: string, address?: string) => Promise<void>;
+  addProperty: (
+    name: string,
+    address?: string,
+    meta?: PropertyMetaInput
+  ) => Promise<PropertyItem>;
+  updateProperty: (
+    id: string,
+    name: string,
+    address?: string,
+    meta?: PropertyMetaInput
+  ) => Promise<void>;
   refreshProperties: () => Promise<void>;
   loadingProperties: boolean;
 }
 
 const STORAGE_ACTIVE_PROPERTY_KEY = '@pgwala_active_property_id';
+const STORAGE_PROPERTY_META_PREFIX = '@pgwala_property_meta:';
 
 const PropertyContext = createContext<PropertyContextType>({
   properties: [],
@@ -43,13 +63,44 @@ const PropertyContext = createContext<PropertyContextType>({
   loadingProperties: true,
 });
 
+function isMissingColumnError(err: { code?: string; message?: string } | null): boolean {
+  if (!err) return false;
+  const msg = (err.message || '').toLowerCase();
+  return err.code === '42703' || err.code === 'PGRST204' || msg.includes('does not exist') || msg.includes('column');
+}
+
+async function readLocalPropertyMeta(
+  propertyId: string
+): Promise<PropertyMetaInput | null> {
+  try {
+    const raw = await AsyncStorage.getItem(`${STORAGE_PROPERTY_META_PREFIX}${propertyId}`);
+    if (!raw) return null;
+    return JSON.parse(raw) as PropertyMetaInput;
+  } catch {
+    return null;
+  }
+}
+
+async function writeLocalPropertyMeta(
+  propertyId: string,
+  meta: PropertyMetaInput
+): Promise<void> {
+  try {
+    await AsyncStorage.setItem(
+      `${STORAGE_PROPERTY_META_PREFIX}${propertyId}`,
+      JSON.stringify(meta)
+    );
+  } catch {
+    // Non-fatal fallback persistence
+  }
+}
+
 export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const { user, profile } = useAuth();
   const [properties, setProperties] = useState<PropertyItem[]>([]);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
   const [loadingProperties, setLoadingProperties] = useState(true);
 
-  // Fetch all active properties owned by the user
   const fetchProperties = useCallback(async () => {
     if (!user?.id || profile?.role !== 'owner') {
       setProperties([]);
@@ -60,30 +111,88 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
 
     try {
       setLoadingProperties(true);
-      const { data, error } = await supabase
+
+      let rawRows: PropertyItem[] = [];
+      const richRes = await supabase
         .from('properties')
-        .select('id, name, address, owner_id, is_active')
+        .select('id, name, address, owner_id, is_active, gender_type, total_beds')
         .eq('owner_id', user.id)
         .eq('is_active', true)
         .order('created_at', { ascending: true });
 
-      if (error) {
-        console.warn('[PropertyContext] Error fetching properties:', error.message);
+      if (richRes.error && isMissingColumnError(richRes.error)) {
+        const basicRes = await supabase
+          .from('properties')
+          .select('id, name, address, owner_id, is_active')
+          .eq('owner_id', user.id)
+          .eq('is_active', true)
+          .order('created_at', { ascending: true });
+
+        if (basicRes.error) {
+          console.warn('[PropertyContext] Error fetching properties:', basicRes.error.message);
+          return;
+        }
+        rawRows = (basicRes.data as PropertyItem[]) ?? [];
+      } else if (richRes.error) {
+        console.warn('[PropertyContext] Error fetching properties:', richRes.error.message);
         return;
+      } else {
+        rawRows = (richRes.data as PropertyItem[]) ?? [];
       }
 
-      const propList: PropertyItem[] = (data as PropertyItem[]) ?? [];
-      setProperties(propList);
+      // Fetch active resident counts across all properties for occupancy badges
+      const propIds = rawRows.map((p) => p.id);
+      const occupancyMap = new Map<string, number>();
+      if (propIds.length > 0) {
+        const { data: resRows } = await supabase
+          .from('residents')
+          .select('property_id')
+          .in('property_id', propIds)
+          .eq('is_active', true);
 
-      if (propList.length > 0) {
-        // Try restoring saved active property from local storage
+        if (resRows) {
+          for (const row of resRows) {
+            const pid = row.property_id as string;
+            occupancyMap.set(pid, (occupancyMap.get(pid) ?? 0) + 1);
+          }
+        }
+      }
+
+      const hydratedList: PropertyItem[] = await Promise.all(
+        rawRows.map(async (p) => {
+          const localMeta = await readLocalPropertyMeta(p.id);
+          const dbGender =
+            p.gender_type === 'coed' && !localMeta?.explicit_gender
+              ? null
+              : p.gender_type;
+          const resolvedGender = inferPropertyGender(
+            p.name,
+            dbGender ?? localMeta?.gender_type ?? null
+          );
+          const resolvedBeds =
+            typeof p.total_beds === 'number' && p.total_beds > 0
+              ? p.total_beds
+              : localMeta?.total_beds ?? 0;
+
+          return {
+            ...p,
+            gender_type: resolvedGender,
+            total_beds: resolvedBeds,
+            active_resident_count: occupancyMap.get(p.id) ?? 0,
+          };
+        })
+      );
+
+      setProperties(hydratedList);
+
+      if (hydratedList.length > 0) {
         const savedId = await AsyncStorage.getItem(STORAGE_ACTIVE_PROPERTY_KEY);
-        const match = propList.find((p) => p.id === savedId);
+        const match = hydratedList.find((p) => p.id === savedId);
         if (match) {
           setSelectedPropertyId(match.id);
         } else {
-          setSelectedPropertyId(propList[0].id);
-          await AsyncStorage.setItem(STORAGE_ACTIVE_PROPERTY_KEY, propList[0].id);
+          setSelectedPropertyId(hydratedList[0].id);
+          await AsyncStorage.setItem(STORAGE_ACTIVE_PROPERTY_KEY, hydratedList[0].id);
         }
       } else {
         setSelectedPropertyId(null);
@@ -104,50 +213,138 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     await AsyncStorage.setItem(STORAGE_ACTIVE_PROPERTY_KEY, id);
   };
 
-  const addProperty = async (name: string, address?: string): Promise<PropertyItem> => {
+  const addProperty = async (
+    name: string,
+    address?: string,
+    meta?: PropertyMetaInput
+  ): Promise<PropertyItem> => {
     if (!user?.id) throw new Error('You must be signed in as an owner.');
     const trimmedName = name.trim();
     if (!trimmedName) throw new Error('Property name cannot be empty.');
 
-    const { data, error } = await supabase
+    const genderType = inferPropertyGender(trimmedName, meta?.gender_type ?? null);
+    const totalBeds =
+      typeof meta?.total_beds === 'number' && Number.isFinite(meta.total_beds)
+        ? Math.max(0, Math.round(meta.total_beds))
+        : 0;
+
+    let inserted: PropertyItem | null = null;
+
+    const richInsert = await supabase
       .from('properties')
       .insert({
         owner_id: user.id,
         name: trimmedName,
         address: address?.trim() || null,
         is_active: true,
+        gender_type: genderType,
+        total_beds: totalBeds,
       })
-      .select('id, name, address, owner_id, is_active')
+      .select('id, name, address, owner_id, is_active, gender_type, total_beds')
       .single();
 
-    if (error) throw error;
-    if (!data) throw new Error('Failed to create new property.');
+    if (richInsert.error && isMissingColumnError(richInsert.error)) {
+      const basicInsert = await supabase
+        .from('properties')
+        .insert({
+          owner_id: user.id,
+          name: trimmedName,
+          address: address?.trim() || null,
+          is_active: true,
+        })
+        .select('id, name, address, owner_id, is_active')
+        .single();
 
-    const newProp = data as PropertyItem;
+      if (basicInsert.error) throw basicInsert.error;
+      inserted = basicInsert.data as PropertyItem;
+    } else if (richInsert.error) {
+      throw richInsert.error;
+    } else {
+      inserted = richInsert.data as PropertyItem;
+    }
+
+    if (!inserted) throw new Error('Failed to create new property.');
+
+    await writeLocalPropertyMeta(inserted.id, {
+      gender_type: genderType,
+      total_beds: totalBeds,
+      explicit_gender: Boolean(meta?.gender_type),
+    });
+
+    const newProp: PropertyItem = {
+      ...inserted,
+      gender_type: genderType,
+      total_beds: totalBeds,
+      active_resident_count: 0,
+    };
+
     setProperties((prev) => [...prev, newProp]);
     await selectProperty(newProp.id);
     return newProp;
   };
 
-  const updateProperty = async (id: string, name: string, address?: string) => {
+  const updateProperty = async (
+    id: string,
+    name: string,
+    address?: string,
+    meta?: PropertyMetaInput
+  ) => {
     if (!user?.id) throw new Error('You must be signed in as an owner.');
     const trimmedName = name.trim();
     if (!trimmedName) throw new Error('Property name cannot be empty.');
 
-    const { error } = await supabase
+    const existing = properties.find((p) => p.id === id);
+    const genderType =
+      meta?.gender_type ??
+      inferPropertyGender(trimmedName, existing?.gender_type ?? null);
+    const totalBeds =
+      typeof meta?.total_beds === 'number' && Number.isFinite(meta.total_beds)
+        ? Math.max(0, Math.round(meta.total_beds))
+        : existing?.total_beds ?? 0;
+
+    const richUpdate = await supabase
       .from('properties')
       .update({
         name: trimmedName,
         address: address?.trim() || null,
+        gender_type: genderType,
+        total_beds: totalBeds,
       })
       .eq('id', id)
       .eq('owner_id', user.id);
 
-    if (error) throw error;
+    if (richUpdate.error && isMissingColumnError(richUpdate.error)) {
+      const basicUpdate = await supabase
+        .from('properties')
+        .update({
+          name: trimmedName,
+          address: address?.trim() || null,
+        })
+        .eq('id', id)
+        .eq('owner_id', user.id);
+
+      if (basicUpdate.error) throw basicUpdate.error;
+    } else if (richUpdate.error) {
+      throw richUpdate.error;
+    }
+
+    await writeLocalPropertyMeta(id, {
+      gender_type: genderType,
+      total_beds: totalBeds,
+      explicit_gender: Boolean(meta?.gender_type),
+    });
 
     setProperties((prev) =>
       prev.map((p) =>
-        p.id === id ? { ...p, name: trimmedName, address: address?.trim() || null } : p
+        p.id === id
+          ? {
+              ...p,
+              name: trimmedName,
+              address: address?.trim() || null,
+              gender_type: genderType,
+              total_beds: totalBeds,
+            }
+          : p
       )
     );
   };
@@ -179,4 +376,3 @@ export function useProperty() {
   }
   return context;
 }
-

@@ -1,134 +1,118 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import { Href, router, useLocalSearchParams } from 'expo-router';
+import {
+  AlertTriangle,
+  Check,
+  Copy,
+  Edit3,
+  MessageCircle,
+  X,
+  Zap,
+} from 'lucide-react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Image,
-  KeyboardAvoidingView,
   Linking,
   Modal,
   Platform,
   Pressable,
   RefreshControl,
   ScrollView,
+  Share,
   StyleSheet,
-  Switch,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+
+import { BillingSummaryHeader } from '@/components/billing/BillingSummaryHeader';
+import { ChargeFormModal } from '@/components/billing/ChargeFormModal';
+import { PaymentReportReviewModal } from '@/components/billing/PaymentReportReviewModal';
+import { ResidentLedgerCard } from '@/components/billing/ResidentLedgerCard';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { EmptyState, OwnerHeader } from '@/components/ui/owner';
+import { OwnerTheme } from '@/constants/theme';
+import { useAuth } from '@/context/auth-context';
+import { useProperty } from '@/context/property-context';
 import {
   buildWhatsAppReminderUrl,
   formatDueStatus,
   formatPaiseToRupees,
 } from '@/lib/billing-utils';
-import { router } from 'expo-router';
+import { findDuplicatePhones } from '@/lib/ux-utils';
 import {
-  ChevronLeft,
-  ChevronRight,
-  Zap,
-  Check,
-  Receipt,
-  Eye,
-  X,
-  CreditCard,
-  Edit3,
-  MessageCircle,
-} from 'lucide-react-native';
-
-import { OwnerTheme } from '@/constants/theme';
-import { useAuth } from '@/context/auth-context';
-import { useProperty } from '@/context/property-context';
-import { supabase, getSignedPaymentProofUrl } from '@/lib/supabase';
-import { PRESET_REJECTION_REASONS } from '@/lib/billing-utils';
-import {
-  OwnerHeader,
-  StatisticCard,
-  StatusBadge,
-  SegmentedFilter,
-  EmptyState,
-  ErrorState,
-} from '@/components/ui/owner';
-
-interface ResidentRentBillItem {
-  resident_id: string;
-  full_name: string;
-  room_number: string;
-  phone_number: string | null;
-  opt_in_wm: boolean;
-  wm_request_pending?: boolean;
-  monthly_rent_paise: number;
-  charge_id: string | null;
-  rent_paise: number;
-  wm_paise: number;
-  total_paise: number;
-  status: 'paid' | 'unpaid' | 'not_generated';
-  has_pending_report: boolean;
-  pending_report?: {
-    id: string;
-    claimed_method: 'cash' | 'upi';
-    amount_paise: number;
-    payment_date: string;
-    reference_number: string | null;
-    screenshot_url: string | null;
-    notes: string | null;
-  } | null;
-  rejected_report?: {
-    id: string;
-    rejection_reason: string | null;
-  } | null;
-  receipt_number?: string | null;
-  paid_date?: string | null;
-  paid_method?: string | null;
-  due_date?: string | null;
-}
-
-interface ResidentEbBillItem {
-  resident_id: string;
-  full_name: string;
-  room_number: string;
-  phone_number: string | null;
-  charge_id: string | null;
-  amount_paise: number;
-  status: 'paid' | 'unpaid' | 'not_generated';
-  has_pending_report: boolean;
-  pending_report?: {
-    id: string;
-    claimed_method: 'cash' | 'upi';
-    amount_paise: number;
-    payment_date: string;
-    reference_number: string | null;
-    screenshot_url: string | null;
-    notes: string | null;
-  } | null;
-  rejected_report?: {
-    id: string;
-    rejection_reason: string | null;
-  } | null;
-  receipt_number?: string | null;
-  paid_date?: string | null;
-  paid_method?: string | null;
-  due_date?: string | null;
-}
-
-interface RoomResidentInfo {
-  id: string;
-  full_name: string;
-  room_number: string;
-}
+  allocateEbBill,
+  BillingFilterTab,
+  BillingMode,
+  CombinedBillItem,
+  confirmMonthlyPayment,
+  generateMonthlyBills,
+  getOwnerBilling,
+  OwnerBillingSnapshot,
+  PaymentMethod,
+  rejectStudentPaymentReport,
+  ResidentEbBillItem,
+  ResidentRentBillItem,
+  resolvePaymentProofUrl,
+  ReviewPaymentItem,
+  RoomResidentInfo,
+  toggleResidentWmBilling,
+  updateResidentRent,
+} from '@/services/billing.service';
 
 export default function SimplifiedBillingManagementScreen() {
   const { user } = useAuth();
   const { selectedProperty, selectedPropertyId } = useProperty();
+  const params = useLocalSearchParams<{ residentId?: string | string[] }>();
+  const rawParamResidentId = Array.isArray(params.residentId)
+    ? params.residentId[0]
+    : params.residentId;
+  const paramResidentId = rawParamResidentId?.trim() || null;
+
+  const userId = user?.id;
+  const activeSelectedPropertyId = selectedPropertyId;
+  const activeSelectedPropertyName = selectedProperty?.name;
+
+  const [clearedResidentId, setClearedResidentId] = useState<string | null>(
+    null
+  );
+
+  useEffect(() => {
+    if (paramResidentId) return;
+    const timer = setTimeout(() => {
+      setClearedResidentId(null);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [paramResidentId]);
+
+  const activeResidentFilterId =
+    paramResidentId && paramResidentId !== clearedResidentId
+      ? paramResidentId
+      : null;
+
+  const handleClearResidentFilter = () => {
+    setClearedResidentId(paramResidentId);
+    try {
+      router.setParams({ residentId: undefined });
+    } catch {
+      // Non-fatal in pager context
+    }
+  };
+
+  const handleOpenResidentProfile = (residentId: string) => {
+    router.push({
+      pathname: '/resident-profile',
+      params: { id: residentId },
+    } as Href);
+  };
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [propertyId, setPropertyId] = useState<string | null>(null);
   const [propertyName, setPropertyName] = useState('Shalom Residency');
 
-  // Top Section Mode: 'RENT' | 'EB'
-  const [billingMode, setBillingMode] = useState<'RENT' | 'EB' | 'COMBINED'>('RENT');
+  // Top Section Mode: 'RENT' | 'EB' | 'COMBINED'
+  const [billingMode, setBillingMode] = useState<BillingMode>('RENT');
 
   // Month navigation: default to current month
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -138,7 +122,8 @@ export default function SimplifiedBillingManagementScreen() {
 
   // Rent Bills State
   const [rentBills, setRentBills] = useState<ResidentRentBillItem[]>([]);
-  const [generateRentModalVisible, setGenerateRentModalVisible] = useState(false);
+  const [generateRentModalVisible, setGenerateRentModalVisible] =
+    useState(false);
   const [rentInputRupees, setRentInputRupees] = useState('8000');
   const [generatingRent, setGeneratingRent] = useState(false);
 
@@ -159,16 +144,18 @@ export default function SimplifiedBillingManagementScreen() {
   const [generatingEb, setGeneratingEb] = useState(false);
 
   // Filter tabs: 'ALL' | 'REVIEW' | 'UNPAID' | 'PAID'
-  const [filterTab, setFilterTab] = useState<'ALL' | 'REVIEW' | 'UNPAID' | 'PAID'>('ALL');
+  const [filterTab, setFilterTab] = useState<BillingFilterTab>('ALL');
+
+  // Transient post-generation banner & Bulk Reminder Modal
+  const [showBillsGeneratedBanner, setShowBillsGeneratedBanner] =
+    useState(false);
+  const [bulkReminderModalVisible, setBulkReminderModalVisible] =
+    useState(false);
+  const [sentReminderIds, setSentReminderIds] = useState<string[]>([]);
 
   // Review Report Modal
-  const [selectedReviewItem, setSelectedReviewItem] = useState<{
-    full_name: string;
-    room_number: string;
-    charge_id: string;
-    bill_title: string;
-    report: any;
-  } | null>(null);
+  const [selectedReviewItem, setSelectedReviewItem] =
+    useState<ReviewPaymentItem | null>(null);
   const [reviewModalVisible, setReviewModalVisible] = useState(false);
   const [confirmingPayment, setConfirmingPayment] = useState(false);
   const [reviewSignedUrl, setReviewSignedUrl] = useState<string | null>(null);
@@ -177,36 +164,23 @@ export default function SimplifiedBillingManagementScreen() {
   const [rejectionReason, setRejectionReason] = useState('');
   const [rejectingPayment, setRejectingPayment] = useState(false);
 
-  // Helper to open review modal and securely resolve signed screenshot URL
-  const openReviewModal = async (item: {
-    full_name: string;
-    room_number: string;
-    charge_id: string;
-    bill_title: string;
-    report: any;
-  }) => {
-    setSelectedReviewItem(item);
-    setReviewSignedUrl(null);
-    setShowRejectForm(false);
-    setRejectionReason('');
-    setReviewModalVisible(true);
+  const mountedRef = useRef(true);
+  const requestIdRef = useRef(0);
 
-    if (item.report?.screenshot_url) {
-      setLoadingReviewUrl(true);
-      try {
-        const signed = await getSignedPaymentProofUrl(item.report.screenshot_url);
-        setReviewSignedUrl(signed);
-      } catch (e) {
-        console.warn('[BillingManagement] Failed to sign proof url:', e);
-        setReviewSignedUrl(item.report.screenshot_url);
-      } finally {
-        setLoadingReviewUrl(false);
-      }
-    }
-  };
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
-  // Full Screen Image Viewer Modal
-  const [fullImageUrl, setFullImageUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!showBillsGeneratedBanner) return;
+    const timer = setTimeout(() => {
+      setShowBillsGeneratedBanner(false);
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [showBillsGeneratedBanner]);
 
   // Month labels
   const monthLabel = selectedDate.toLocaleDateString('en-IN', {
@@ -233,311 +207,120 @@ export default function SimplifiedBillingManagementScreen() {
 
   // Navigate months
   const handlePrevMonth = () => {
-    setSelectedDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+    setShowBillsGeneratedBanner(false);
+    setSelectedDate(
+      (prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1)
+    );
   };
 
   const handleNextMonth = () => {
-    setSelectedDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+    setShowBillsGeneratedBanner(false);
+    setSelectedDate(
+      (prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1)
+    );
   };
 
-  // Load all billing data
-  const loadBillingData = useCallback(async () => {
-    if (!user?.id) return;
-
-    try {
-      // 1. Resolve active property ID and name
-      let activePropId = selectedPropertyId;
-      let activePropName = selectedProperty?.name;
-
-      if (!activePropId) {
-        const { data: properties, error: propErr } = await supabase
-          .from('properties')
-          .select('id, name')
-          .eq('owner_id', user.id)
-          .eq('is_active', true)
-          .limit(1);
-
-        if (propErr) throw propErr;
-        if (!properties || properties.length === 0) {
-          setRentBills([]);
-          setEbBills([]);
-          setLoading(false);
-          return;
-        }
-
-        activePropId = properties[0].id;
-        activePropName = properties[0].name;
-      }
-
-      setPropertyId(activePropId);
-      setPropertyName(activePropName || 'Shalom Residency');
-
-      // 2. Fetch active residents of this property
-      const { data: resData, error: resErr } = await supabase
-        .from('residents')
-        .select('id, full_name, room_number, phone_number, monthly_rent_paise, is_active')
-        .eq('property_id', activePropId)
-        .eq('is_active', true)
-        .order('room_number', { ascending: true });
-
-      if (resErr) throw resErr;
-      const residents = resData ?? [];
-      const residentIds = residents.map((r) => r.id);
-
-      setAllResidents(residents);
-      const rooms = Array.from(new Set(residents.map((r) => r.room_number))).sort();
-      setAvailableRooms(rooms);
-      if (rooms.length > 0 && !selectedRoomForEb) {
-        setSelectedRoomForEb(rooms[0]);
-      }
-
-      if (residentIds.length === 0) {
-        setRentBills([]);
-        setEbBills([]);
-        setLoading(false);
-        return;
-      }
-
-      // 3. Fetch washing machine opt-ins
-      const { data: optData } = await supabase
-        .from('resident_opt_ins')
-        .select('resident_id, is_enabled')
-        .eq('feature_name', 'washing_machine')
-        .in('resident_id', residentIds);
-
-      const wmMap = new Map<string, boolean>();
-      if (optData) {
-        for (const o of optData) {
-          wmMap.set(o.resident_id, o.is_enabled);
-        }
-      }
-
-      // 3b. Fetch pending washing machine requests
-      const wmPendingRequestSet = new Set<string>();
-      try {
-        const { data: wmReqData } = await supabase
-          .from('washing_machine_requests')
-          .select('resident_id')
-          .eq('property_id', activePropId)
-          .eq('status', 'pending');
-        if (wmReqData) {
-          for (const req of wmReqData) {
-            wmPendingRequestSet.add(req.resident_id);
-          }
-        }
-      } catch {
-        // Fallback gracefully if table not yet created
-      }
-
-      // 4. Fetch all charges for this property and month
-      const { data: chargeData, error: chgErr } = await supabase
-        .from('charges')
-        .select(
-          'id, resident_id, category, amount_paise, rent_amount_paise, wm_amount_paise, status, due_date'
-        )
-        .eq('property_id', activePropId)
-        .eq('billing_period_start', monthIsoStart);
-
-      if (chgErr) throw chgErr;
-
-      const rentChargeMap = new Map<string, any>();
-      const ebChargeMap = new Map<string, any>();
-
-      if (chargeData) {
-        for (const c of chargeData) {
-          if (c.category === 'rent') {
-            rentChargeMap.set(c.resident_id, c);
-          } else if (c.category === 'electricity') {
-            ebChargeMap.set(c.resident_id, c);
-          }
-        }
-      }
-
-      // 5. Fetch student payment reports (both pending and rejected)
-      const { data: reportData } = await supabase
-        .from('student_payment_reports')
-        .select(
-          'id, resident_id, charge_id, amount_paise, claimed_method, payment_date, reference_number, screenshot_url, notes, status, rejection_reason'
-        )
-        .eq('property_id', activePropId)
-        .in('status', ['pending', 'rejected'])
-        .order('created_at', { ascending: false });
-
-      const reportByChargeMap = new Map<string, any>();
-      if (reportData) {
-        for (const rep of reportData) {
-          if (rep.charge_id && !reportByChargeMap.has(rep.charge_id)) {
-            reportByChargeMap.set(rep.charge_id, rep);
-          }
-        }
-      }
-
-      // 6. Fetch approved payment receipts for settled charges
-      const settledChargeIds = (chargeData || [])
-        .filter((c) => c.status === 'settled')
-        .map((c) => c.id);
-
-      const paymentMap = new Map<
-        string,
-        { receipt: string; date: string; method: string }
-      >();
-      if (settledChargeIds.length > 0) {
-        const { data: allocData } = await supabase
-          .from('payment_allocations')
-          .select(`
-            charge_id,
-            payment:payments (
-              receipt_number,
-              payment_date,
-              method
-            )
-          `)
-          .in('charge_id', settledChargeIds)
-          .eq('status', 'active');
-
-        if (allocData) {
-          for (const a of allocData) {
-            const p: any = Array.isArray(a.payment) ? a.payment[0] : a.payment;
-            if (p) {
-              paymentMap.set(a.charge_id, {
-                receipt: p.receipt_number,
-                date: p.payment_date,
-                method: p.method,
-              });
-            }
-          }
-        }
-      }
-
-      // 7. Assemble Rent Bills
-      const rentItems: ResidentRentBillItem[] = residents.map((r) => {
-        const optWm = wmMap.get(r.id) ?? false;
-        const defaultRent = r.monthly_rent_paise || 800000;
-        const chg = rentChargeMap.get(r.id);
-        const rep = chg ? reportByChargeMap.get(chg.id) : null;
-        const isPendingReport = rep?.status === 'pending';
-        const isRejectedReport = rep?.status === 'rejected';
-
-        if (chg) {
-          const isSettled = chg.status === 'settled';
-          const pInfo = paymentMap.get(chg.id);
-
-          return {
-            resident_id: r.id,
-            full_name: r.full_name,
-            room_number: r.room_number,
-            phone_number: r.phone_number,
-            opt_in_wm: optWm,
-            wm_request_pending: wmPendingRequestSet.has(r.id),
-            monthly_rent_paise: defaultRent,
-            charge_id: chg.id,
-            rent_paise: chg.rent_amount_paise || defaultRent,
-            wm_paise: chg.wm_amount_paise || (optWm ? 50000 : 0),
-            total_paise: chg.amount_paise,
-            status: isSettled ? 'paid' : 'unpaid',
-            has_pending_report: isPendingReport,
-            pending_report: isPendingReport ? rep : null,
-            rejected_report: isRejectedReport
-              ? { id: rep.id, rejection_reason: rep.rejection_reason }
-              : null,
-            receipt_number: pInfo?.receipt || null,
-            paid_date: pInfo?.date || null,
-            paid_method: pInfo?.method || null,
-            due_date: chg.due_date || null,
-          };
-        }
-
-        return {
-          resident_id: r.id,
-          full_name: r.full_name,
-          room_number: r.room_number,
-          phone_number: r.phone_number,
-          opt_in_wm: optWm,
-          wm_request_pending: wmPendingRequestSet.has(r.id),
-          monthly_rent_paise: defaultRent,
-          charge_id: null,
-          rent_paise: defaultRent,
-          wm_paise: optWm ? 50000 : 0,
-          total_paise: defaultRent + (optWm ? 50000 : 0),
-          status: 'not_generated',
-          has_pending_report: false,
-          pending_report: null,
-          rejected_report: null,
-          receipt_number: null,
-          paid_date: null,
-          paid_method: null,
-        };
-      });
-
-      // 8. Assemble EB Bills
-      const ebItems: ResidentEbBillItem[] = residents.map((r) => {
-        const chg = ebChargeMap.get(r.id);
-        const rep = chg ? reportByChargeMap.get(chg.id) : null;
-        const isPendingReport = rep?.status === 'pending';
-        const isRejectedReport = rep?.status === 'rejected';
-
-        if (chg) {
-          const isSettled = chg.status === 'settled';
-          const pInfo = paymentMap.get(chg.id);
-
-          return {
-            resident_id: r.id,
-            full_name: r.full_name,
-            room_number: r.room_number,
-            phone_number: r.phone_number,
-            charge_id: chg.id,
-            amount_paise: chg.amount_paise,
-            status: isSettled ? 'paid' : 'unpaid',
-            has_pending_report: isPendingReport,
-            pending_report: isPendingReport ? rep : null,
-            rejected_report: isRejectedReport
-              ? { id: rep.id, rejection_reason: rep.rejection_reason }
-              : null,
-            receipt_number: pInfo?.receipt || null,
-            paid_date: pInfo?.date || null,
-            paid_method: pInfo?.method || null,
-            due_date: chg.due_date || null,
-          };
-        }
-
-        return {
-          resident_id: r.id,
-          full_name: r.full_name,
-          room_number: r.room_number,
-          phone_number: r.phone_number,
-          charge_id: null,
-          amount_paise: 0,
-          status: 'not_generated',
-          has_pending_report: false,
-          pending_report: null,
-          rejected_report: null,
-          receipt_number: null,
-          paid_date: null,
-          paid_method: null,
-        };
-      });
-
-      setRentBills(rentItems);
-      setEbBills(ebItems);
-    } catch (err: any) {
-      console.error('[BillingManagement] Load error:', err);
-      Alert.alert(
-        'Load Error',
-        err.message || 'Could not load billing information.'
+  const applySnapshot = useCallback((snapshot: OwnerBillingSnapshot) => {
+    setPropertyId(snapshot.propertyId);
+    setPropertyName(snapshot.propertyName);
+    setRentBills(snapshot.rentBills);
+    setEbBills(snapshot.ebBills);
+    setAllResidents(snapshot.allResidents);
+    setAvailableRooms(snapshot.availableRooms);
+    if (snapshot.availableRooms.length > 0) {
+      setSelectedRoomForEb((prev) =>
+        prev && snapshot.availableRooms.includes(prev)
+          ? prev
+          : snapshot.availableRooms[0]
       );
-    } finally {
+    }
+  }, []);
+
+  // Load all billing data via SWR service
+  const loadBillingData = useCallback(
+    async (options?: { forceNetwork?: boolean }) => {
+      if (!userId) return;
+
+      const reqId = ++requestIdRef.current;
+      let hadCacheHit = false;
+
+      const result = await getOwnerBilling(
+        {
+          userId,
+          selectedPropertyId: activeSelectedPropertyId,
+          selectedPropertyName: activeSelectedPropertyName,
+          monthIsoStart,
+        },
+        {
+          forceNetwork: options?.forceNetwork,
+          onCachedData: (cached) => {
+            if (!mountedRef.current || requestIdRef.current !== reqId) return;
+            hadCacheHit = true;
+            applySnapshot(cached);
+            setLoading(false);
+          },
+        }
+      );
+
+      if (!mountedRef.current || requestIdRef.current !== reqId) return;
+
+      if (result.ok) {
+        applySnapshot(result.data);
+      } else if (!hadCacheHit || options?.forceNetwork) {
+        Alert.alert('Load Error', result.error.message);
+      }
+
       setLoading(false);
       setRefreshing(false);
-    }
-  }, [user?.id, monthIsoStart, selectedPropertyId, selectedProperty?.name]);
+    },
+    [
+      userId,
+      activeSelectedPropertyId,
+      activeSelectedPropertyName,
+      monthIsoStart,
+      applySnapshot,
+    ]
+  );
 
   useEffect(() => {
-    loadBillingData();
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (!cancelled) {
+        void loadBillingData();
+      }
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [loadBillingData]);
 
   const handleRefresh = () => {
     setRefreshing(true);
-    loadBillingData();
+    void loadBillingData({ forceNetwork: true });
+  };
+
+  // Helper to open review modal and securely resolve signed screenshot URL
+  const openReviewModal = async (item: ReviewPaymentItem) => {
+    setSelectedReviewItem(item);
+    setReviewSignedUrl(null);
+    setShowRejectForm(false);
+    setRejectionReason('');
+    setReviewModalVisible(true);
+
+    if (item.report?.screenshot_url) {
+      setLoadingReviewUrl(true);
+      try {
+        const signed = await resolvePaymentProofUrl(item.report.screenshot_url);
+        if (mountedRef.current) {
+          setReviewSignedUrl(signed);
+        }
+      } finally {
+        if (mountedRef.current) {
+          setLoadingReviewUrl(false);
+        }
+      }
+    }
   };
 
   // Generate or update monthly Rent bills with custom rent amount
@@ -546,50 +329,49 @@ export default function SimplifiedBillingManagementScreen() {
 
     const parsedRupees = parseFloat(rentInputRupees.trim());
     if (isNaN(parsedRupees) || parsedRupees <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid rent amount in Rupees.');
+      Alert.alert(
+        'Invalid Amount',
+        'Please enter a valid rent amount in Rupees.'
+      );
       return;
     }
 
     const rentPaise = Math.round(parsedRupees * 100);
+    setGeneratingRent(true);
+    const result = await generateMonthlyBills({
+      propertyId,
+      monthIsoStart,
+      rentPaise,
+    });
+    setGeneratingRent(false);
 
-    try {
-      setGeneratingRent(true);
-      const { data, error } = await supabase.rpc('generate_monthly_bills', {
-        p_property_id: propertyId,
-        p_billing_month: monthIsoStart,
-        p_default_rent_paise: rentPaise,
-      });
+    if (!result.ok) {
+      Alert.alert('Generation Failed', result.error.message);
+      return;
+    }
 
-      if (error) throw error;
-      if (!data?.success)
-        throw new Error(data?.error || 'Failed to generate bills.');
-
-      setGenerateRentModalVisible(false);
-      const created = data.created_count || 0;
-      const updated = data.updated_count || 0;
-      const parts = [];
-      if (created > 0)
-        parts.push(`${created} new bill${created > 1 ? 's' : ''} created`);
-      if (updated > 0)
-        parts.push(
-          `${updated} bill${
-            updated > 1 ? 's' : ''
-          } updated to ₹${parsedRupees.toLocaleString('en-IN')}`
-        );
-
-      Alert.alert(
-        'Rent Bills Updated',
-        `${parts.join(', ') || 'Bills ready'} for ${monthLabel}.${
-          data.skipped_count > 0
-            ? ` (${data.skipped_count} paid bills preserved)`
-            : ''
-        }`
+    setGenerateRentModalVisible(false);
+    const { created_count: created, updated_count: updated, skipped_count: skipped } =
+      result.data;
+    const parts: string[] = [];
+    if (created > 0) {
+      parts.push(`${created} new bill${created > 1 ? 's' : ''} created`);
+    }
+    if (updated > 0) {
+      parts.push(
+        `${updated} bill${updated > 1 ? 's' : ''
+        } updated to ₹${parsedRupees.toLocaleString('en-IN')}`
       );
-      await loadBillingData();
-    } catch (err: any) {
-      Alert.alert('Generation Failed', err.message || 'Could not generate rent bills.');
-    } finally {
-      setGeneratingRent(false);
+    }
+
+    Alert.alert(
+      'Rent Bills Updated',
+      `${parts.join(', ') || 'Bills ready'} for ${monthLabel}.${skipped > 0 ? ` (${skipped} paid bills preserved)` : ''
+      }`
+    );
+    await loadBillingData({ forceNetwork: true });
+    if (mountedRef.current) {
+      setShowBillsGeneratedBanner(true);
     }
   };
 
@@ -606,39 +388,38 @@ export default function SimplifiedBillingManagementScreen() {
 
     const parsedRupees = parseFloat(editRentInputRupees.trim());
     if (isNaN(parsedRupees) || parsedRupees <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid rent amount in Rupees.');
+      Alert.alert(
+        'Invalid Amount',
+        'Please enter a valid rent amount in Rupees.'
+      );
       return;
     }
 
     const rentPaise = Math.round(parsedRupees * 100);
+    setUpdatingRent(true);
+    const result = await updateResidentRent({
+      propertyId,
+      residentId: selectedResidentForEdit.resident_id,
+      rentPaise,
+      monthIsoStart,
+    });
+    setUpdatingRent(false);
 
-    try {
-      setUpdatingRent(true);
-      const { data, error } = await supabase.rpc('update_resident_rent', {
-        p_property_id: propertyId,
-        p_resident_id: selectedResidentForEdit.resident_id,
-        p_rent_paise: rentPaise,
-        p_billing_month: monthIsoStart,
-      });
-
-      if (error) throw error;
-      if (!data?.success)
-        throw new Error(data?.error || 'Failed to update rent.');
-
-      setEditRentModalVisible(false);
-      setSelectedResidentForEdit(null);
-      Alert.alert(
-        'Rent Updated',
-        `Monthly rent for ${
-          selectedResidentForEdit.full_name
-        } set to ₹${parsedRupees.toLocaleString('en-IN')}.`
-      );
-      await loadBillingData();
-    } catch (err: any) {
-      Alert.alert('Update Failed', err.message || 'Could not update rent amount.');
-    } finally {
-      setUpdatingRent(false);
+    if (!result.ok) {
+      Alert.alert('Update Failed', result.error.message);
+      return;
     }
+
+    const residentName = selectedResidentForEdit.full_name;
+    setEditRentModalVisible(false);
+    setSelectedResidentForEdit(null);
+    Alert.alert(
+      'Rent Updated',
+      `Monthly rent for ${residentName} set to ₹${parsedRupees.toLocaleString(
+        'en-IN'
+      )}.`
+    );
+    await loadBillingData({ forceNetwork: true });
   };
 
   // Split Room EB Bill
@@ -668,97 +449,81 @@ export default function SimplifiedBillingManagementScreen() {
     const residentIds = roomResidents.map((r) => r.id);
     const totalPaise = Math.round(parsedRupees * 100);
 
-    try {
-      setGeneratingEb(true);
-      const { data, error } = await supabase.rpc('allocate_eb_bill', {
-        p_property_id: propertyId,
-        p_room_number: selectedRoomForEb,
-        p_period_start: monthIsoStart,
-        p_period_end: monthIsoEnd,
-        p_due_date: dueIsoDate,
-        p_total_amount_paise: totalPaise,
-        p_resident_ids: residentIds,
-        p_notes: `${monthLabel} Room ${selectedRoomForEb} Electricity Bill`,
-      });
+    setGeneratingEb(true);
+    const result = await allocateEbBill({
+      propertyId,
+      roomNumber: selectedRoomForEb,
+      monthIsoStart,
+      monthIsoEnd,
+      dueIsoDate,
+      totalPaise,
+      residentIds,
+      notes: `${monthLabel} Room ${selectedRoomForEb} Electricity Bill`,
+    });
+    setGeneratingEb(false);
 
-      if (error) throw error;
-      if (!data?.success)
-        throw new Error(data?.error || 'Failed to allocate EB bill.');
-
-      setSplitEbModalVisible(false);
-      setEbTotalRupeesInput('');
-      Alert.alert(
-        'EB Bill Split',
-        `Split ₹${parsedRupees.toLocaleString('en-IN')} equally across ${
-          roomResidents.length
-        } resident${
-          roomResidents.length > 1 ? 's' : ''
-        } in Room ${selectedRoomForEb}.`
-      );
-      await loadBillingData();
-    } catch (err: any) {
-      Alert.alert('EB Split Failed', err.message || 'Could not split EB bill.');
-    } finally {
-      setGeneratingEb(false);
+    if (!result.ok) {
+      Alert.alert('EB Split Failed', result.error.message);
+      return;
     }
+
+    const targetRoom = selectedRoomForEb;
+    setSplitEbModalVisible(false);
+    setEbTotalRupeesInput('');
+    Alert.alert(
+      'EB Bill Split',
+      `Split ₹${parsedRupees.toLocaleString('en-IN')} equally across ${roomResidents.length
+      } resident${roomResidents.length > 1 ? 's' : ''} in Room ${targetRoom}.`
+    );
+    await loadBillingData({ forceNetwork: true });
   };
 
   // Toggle Washing Machine opt-in
   const handleToggleWashingMachine = async (resident: ResidentRentBillItem) => {
     if (!propertyId) return;
     const nextVal = !resident.opt_in_wm;
-    try {
-      const { data, error } = await supabase.rpc('toggle_resident_wm_billing', {
-        p_property_id: propertyId,
-        p_resident_id: resident.resident_id,
-        p_is_enabled: nextVal,
-        p_billing_month: monthIsoStart,
-      });
+    const result = await toggleResidentWmBilling({
+      propertyId,
+      residentId: resident.resident_id,
+      isEnabled: nextVal,
+      monthIsoStart,
+    });
 
-      if (error) throw error;
-      if (!data?.success)
-        throw new Error(data?.error || 'Failed to toggle washing machine.');
-      await loadBillingData();
-    } catch (err: any) {
-      Alert.alert(
-        'Update Error',
-        err.message || 'Could not update washing machine setting.'
-      );
+    if (!result.ok) {
+      Alert.alert('Update Error', result.error.message);
+      return;
     }
+    await loadBillingData({ forceNetwork: true });
   };
 
   // Confirm payment
   const handleConfirmPayment = async (
     chargeId: string,
     reportId?: string | null,
-    method: 'upi' | 'cash' = 'upi'
+    method: PaymentMethod = 'upi'
   ) => {
     if (confirmingPayment) return;
 
-    try {
-      setConfirmingPayment(true);
-      const { data, error } = await supabase.rpc('confirm_monthly_payment', {
-        p_charge_id: chargeId,
-        p_report_id: reportId || undefined,
-        p_method: method,
-        p_notes: reportId
-          ? 'Payment confirmed via student app proof'
-          : 'Payment received directly in person (Cash)',
-      });
+    setConfirmingPayment(true);
+    const result = await confirmMonthlyPayment({
+      chargeId,
+      reportId,
+      method,
+    });
+    setConfirmingPayment(false);
 
-      if (error) throw error;
-      if (!data?.success)
-        throw new Error(data?.error || 'Failed to confirm payment.');
-
-      setReviewModalVisible(false);
-      setSelectedReviewItem(null);
-      Alert.alert('Payment Confirmed', `Receipt Number: ${data.receipt_number}`);
-      await loadBillingData();
-    } catch (err: any) {
-      Alert.alert('Confirmation Failed', err.message || 'Could not confirm payment.');
-    } finally {
-      setConfirmingPayment(false);
+    if (!result.ok) {
+      Alert.alert('Confirmation Failed', result.error.message);
+      return;
     }
+
+    setReviewModalVisible(false);
+    setSelectedReviewItem(null);
+    Alert.alert(
+      'Payment Confirmed',
+      `Receipt Number: ${result.data.receipt_number}`
+    );
+    await loadBillingData({ forceNetwork: true });
   };
 
   // Reject payment proof with reason
@@ -773,32 +538,27 @@ export default function SimplifiedBillingManagementScreen() {
       return;
     }
 
-    try {
-      setRejectingPayment(true);
-      const { data, error } = await supabase.rpc('reject_student_payment_report', {
-        p_report_id: selectedReviewItem.report.id,
-        p_rejection_reason: trimmedReason,
-      });
+    setRejectingPayment(true);
+    const result = await rejectStudentPaymentReport({
+      reportId: selectedReviewItem.report.id,
+      rejectionReason: trimmedReason,
+    });
+    setRejectingPayment(false);
 
-      if (error) throw error;
-      if (!data?.success) {
-        throw new Error(data?.error || 'Failed to reject payment proof.');
-      }
-
-      setReviewModalVisible(false);
-      setSelectedReviewItem(null);
-      setShowRejectForm(false);
-      setRejectionReason('');
-      Alert.alert(
-        'Payment Proof Rejected',
-        'The resident can view the rejection feedback and resubmit their payment proof.'
-      );
-      await loadBillingData();
-    } catch (err: any) {
-      Alert.alert('Rejection Failed', err.message || 'Could not reject payment report.');
-    } finally {
-      setRejectingPayment(false);
+    if (!result.ok) {
+      Alert.alert('Rejection Failed', result.error.message);
+      return;
     }
+
+    setReviewModalVisible(false);
+    setSelectedReviewItem(null);
+    setShowRejectForm(false);
+    setRejectionReason('');
+    Alert.alert(
+      'Payment Proof Rejected',
+      'The resident can view the rejection feedback and resubmit their payment proof.'
+    );
+    await loadBillingData({ forceNetwork: true });
   };
 
   // RENT Metrics & Filtering
@@ -820,13 +580,21 @@ export default function SimplifiedBillingManagementScreen() {
     (acc, r) => acc + (r.status === 'paid' ? r.total_paise : 0),
     0
   );
-  const rentUnpaidPaise = Math.max(0, rentTotalBilledPaise - rentTotalCollectedPaise);
+  const rentUnpaidPaise = Math.max(
+    0,
+    rentTotalBilledPaise - rentTotalCollectedPaise
+  );
 
   const filteredRentList = rentBills.filter((r) => {
-    if (filterTab === 'REVIEW')
+    if (activeResidentFilterId && r.resident_id !== activeResidentFilterId) {
+      return false;
+    }
+    if (filterTab === 'REVIEW') {
       return r.has_pending_report && r.status !== 'paid';
-    if (filterTab === 'UNPAID')
+    }
+    if (filterTab === 'UNPAID') {
       return r.status === 'unpaid' || r.status === 'not_generated';
+    }
     if (filterTab === 'PAID') return r.status === 'paid';
     return true;
   });
@@ -834,7 +602,9 @@ export default function SimplifiedBillingManagementScreen() {
   // EB Metrics & Filtering
   const ebBilledResidents = ebBills.filter((r) => r.charge_id !== null);
   const ebTotalCount = ebBilledResidents.length;
-  const ebPaidCount = ebBilledResidents.filter((r) => r.status === 'paid').length;
+  const ebPaidCount = ebBilledResidents.filter(
+    (r) => r.status === 'paid'
+  ).length;
   const ebReviewCount = ebBilledResidents.filter(
     (r) => r.has_pending_report && r.status !== 'paid'
   ).length;
@@ -853,12 +623,61 @@ export default function SimplifiedBillingManagementScreen() {
   const ebUnpaidPaise = Math.max(0, ebTotalBilledPaise - ebTotalCollectedPaise);
 
   const filteredEbList = ebBilledResidents.filter((r) => {
-    if (filterTab === 'REVIEW')
+    if (activeResidentFilterId && r.resident_id !== activeResidentFilterId) {
+      return false;
+    }
+    if (filterTab === 'REVIEW') {
       return r.has_pending_report && r.status !== 'paid';
+    }
     if (filterTab === 'UNPAID') return r.status === 'unpaid';
     if (filterTab === 'PAID') return r.status === 'paid';
     return true;
   });
+
+  const filteredResidentName = useMemo(() => {
+    if (!activeResidentFilterId) return '';
+    const fromRent = rentBills.find(
+      (r) => r.resident_id === activeResidentFilterId
+    );
+    if (fromRent) return fromRent.full_name;
+    const fromEb = ebBills.find((e) => e.resident_id === activeResidentFilterId);
+    if (fromEb) return fromEb.full_name;
+    const fromAll = allResidents.find((r) => r.id === activeResidentFilterId);
+    if (fromAll) return fromAll.full_name;
+    return 'Resident';
+  }, [activeResidentFilterId, rentBills, ebBills, allResidents]);
+
+  const duplicatePhoneResidentIds = useMemo(() => {
+    const byId = new Map<string, { id: string; phone_number?: string | null }>();
+    for (const r of rentBills) {
+      byId.set(r.resident_id, {
+        id: r.resident_id,
+        phone_number: r.phone_number,
+      });
+    }
+    for (const e of ebBills) {
+      if (!byId.has(e.resident_id)) {
+        byId.set(e.resident_id, {
+          id: e.resident_id,
+          phone_number: e.phone_number,
+        });
+      }
+    }
+    return findDuplicatePhones(Array.from(byId.values()));
+  }, [rentBills, ebBills]);
+
+  const formatReminderMessage = (
+    residentName: string,
+    amountPaise: number,
+    billLabel: string,
+    dueDateIso?: string | null
+  ) => {
+    const dueInfo = formatDueStatus(dueDateIso);
+    const amountText = formatPaiseToRupees(amountPaise);
+    return `Hi ${residentName}, reminder from ${propertyName}: your ${billLabel} of ${amountText} is pending${
+      dueInfo ? ` (${dueInfo.label})` : ''
+    }. Please pay and upload proof in the PGwala app.`;
+  };
 
   const handleSendReminder = async (
     residentName: string,
@@ -866,29 +685,63 @@ export default function SimplifiedBillingManagementScreen() {
     amountPaise: number,
     billLabel: string,
     dueDateIso?: string | null
-  ) => {
-    const dueInfo = formatDueStatus(dueDateIso);
-    const amountText = formatPaiseToRupees(amountPaise);
-    const message = `Hi ${residentName}, reminder from ${propertyName}: your ${billLabel} of ${amountText} is pending${
-      dueInfo ? ` (${dueInfo.label})` : ''
-    }. Please pay and upload proof in the PGwala app.`;
+  ): Promise<boolean> => {
+    const message = formatReminderMessage(
+      residentName,
+      amountPaise,
+      billLabel,
+      dueDateIso
+    );
     const url = buildWhatsAppReminderUrl(phoneNumber, message);
     if (!url) {
       Alert.alert(
         'Phone Number Missing',
         `${residentName} does not have a valid 10-digit phone number saved. Add it in Edit Resident to send WhatsApp reminders.`
       );
-      return;
+      return false;
     }
     try {
       await Linking.openURL(url);
+      return true;
     } catch {
-      Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp on this device.');
+      Alert.alert(
+        'WhatsApp Unavailable',
+        'Could not open WhatsApp on this device.'
+      );
+      return false;
     }
   };
 
+  const handleConfirmCombinedCashPayment = async (chargeIds: string[]) => {
+    if (confirmingPayment || chargeIds.length === 0) return;
+
+    setConfirmingPayment(true);
+    const receipts: string[] = [];
+    for (const chargeId of chargeIds) {
+      const result = await confirmMonthlyPayment({
+        chargeId,
+        reportId: null,
+        method: 'cash',
+      });
+      if (!result.ok) {
+        setConfirmingPayment(false);
+        Alert.alert('Confirmation Failed', result.error.message);
+        await loadBillingData({ forceNetwork: true });
+        return;
+      }
+      receipts.push(result.data.receipt_number);
+    }
+    setConfirmingPayment(false);
+
+    Alert.alert(
+      'Payment Confirmed',
+      `Receipt Number${receipts.length > 1 ? 's' : ''}: ${receipts.join(', ')}`
+    );
+    await loadBillingData({ forceNetwork: true });
+  };
+
   // Active counts for current mode
-  const combinedBills = rentBills.map((rent) => {
+  const combinedBills: CombinedBillItem[] = rentBills.map((rent) => {
     const eb = ebBills.find((e) => e.resident_id === rent.resident_id);
     const ebAmount = eb?.charge_id ? eb.amount_paise : 0;
     const rentAmount = rent.charge_id ? rent.total_paise : 0;
@@ -920,54 +773,163 @@ export default function SimplifiedBillingManagementScreen() {
   });
 
   const filteredCombinedList = combinedBills.filter((c) => {
+    if (activeResidentFilterId && c.resident_id !== activeResidentFilterId) {
+      return false;
+    }
     if (filterTab === 'REVIEW') return c.has_pending_report && !c.is_all_paid;
     if (filterTab === 'UNPAID') return c.remaining_paise > 0;
     if (filterTab === 'PAID') return c.is_all_paid;
     return true;
   });
 
+  const unpaidReminderTargets =
+    billingMode === 'RENT'
+      ? rentBills
+          .filter(
+            (r) =>
+              r.status === 'unpaid' && !r.has_pending_report && r.total_paise > 0
+          )
+          .map((r) => ({
+            residentId: r.resident_id,
+            fullName: r.full_name,
+            roomNumber: r.room_number,
+            phoneNumber: r.phone_number,
+            amountPaise: r.total_paise,
+            billLabel: 'monthly rent',
+            dueDateIso: r.due_date,
+          }))
+      : billingMode === 'EB'
+        ? ebBilledResidents
+            .filter(
+              (r) =>
+                r.status === 'unpaid' &&
+                !r.has_pending_report &&
+                r.amount_paise > 0
+            )
+            .map((r) => ({
+              residentId: r.resident_id,
+              fullName: r.full_name,
+              roomNumber: r.room_number,
+              phoneNumber: r.phone_number,
+              amountPaise: r.amount_paise,
+              billLabel: 'electricity share',
+              dueDateIso: r.due_date,
+            }))
+        : combinedBills
+            .filter((c) => c.remaining_paise > 0 && !c.has_pending_report)
+            .map((c) => ({
+              residentId: c.resident_id,
+              fullName: c.full_name,
+              roomNumber: c.room_number,
+              phoneNumber: c.phone_number,
+              amountPaise: c.remaining_paise,
+              billLabel: 'combined PG bill (Rent + EB)',
+              dueDateIso: c.due_date,
+            }));
+
+  const bulkContactIssueCount = unpaidReminderTargets.filter(
+    (t) =>
+      !buildWhatsAppReminderUrl(t.phoneNumber, 'x') ||
+      duplicatePhoneResidentIds.has(t.residentId)
+  ).length;
+
+  const handleCopyAllReminders = async () => {
+    if (unpaidReminderTargets.length === 0) return;
+    const summaryText = unpaidReminderTargets
+      .map((t, idx) => {
+        const flags: string[] = [];
+        if (!buildWhatsAppReminderUrl(t.phoneNumber, 'x')) {
+          flags.push('Missing phone');
+        }
+        if (duplicatePhoneResidentIds.has(t.residentId)) {
+          flags.push('Duplicate phone');
+        }
+        const flagSuffix = flags.length > 0 ? ` [${flags.join(', ')}]` : '';
+        const msg = formatReminderMessage(
+          t.fullName,
+          t.amountPaise,
+          t.billLabel,
+          t.dueDateIso
+        );
+        return `${idx + 1}. ${t.fullName} (Room ${t.roomNumber})${flagSuffix}\n${msg}`;
+      })
+      .join('\n\n');
+
+    const fullText = `${propertyName} — ${monthLabel} Payment Reminders\n\n${summaryText}`;
+
+    if (
+      Platform.OS === 'web' &&
+      typeof navigator !== 'undefined' &&
+      navigator.clipboard?.writeText
+    ) {
+      try {
+        await navigator.clipboard.writeText(fullText);
+        Alert.alert(
+          'Copied',
+          'All unpaid payment reminders copied to clipboard.'
+        );
+        return;
+      } catch {
+        // Fall through to Share
+      }
+    }
+
+    try {
+      await Share.share({
+        title: `${propertyName} — ${monthLabel} Reminders`,
+        message: fullText,
+      });
+    } catch {
+      Alert.alert(
+        'Copy Failed',
+        'Could not share or copy reminder messages on this device.'
+      );
+    }
+  };
+
   const currentTotalBilled =
     billingMode === 'RENT'
       ? rentTotalBilledPaise
       : billingMode === 'EB'
-      ? ebTotalBilledPaise
-      : rentTotalBilledPaise + ebTotalBilledPaise;
+        ? ebTotalBilledPaise
+        : rentTotalBilledPaise + ebTotalBilledPaise;
   const currentTotalCollected =
     billingMode === 'RENT'
       ? rentTotalCollectedPaise
       : billingMode === 'EB'
-      ? ebTotalCollectedPaise
-      : rentTotalCollectedPaise + ebTotalCollectedPaise;
+        ? ebTotalCollectedPaise
+        : rentTotalCollectedPaise + ebTotalCollectedPaise;
   const currentUnpaidAmount =
     billingMode === 'RENT'
       ? rentUnpaidPaise
       : billingMode === 'EB'
-      ? ebUnpaidPaise
-      : rentUnpaidPaise + ebUnpaidPaise;
+        ? ebUnpaidPaise
+        : rentUnpaidPaise + ebUnpaidPaise;
   const currentReviewCount =
     billingMode === 'RENT'
       ? rentReviewCount
       : billingMode === 'EB'
-      ? ebReviewCount
-      : combinedBills.filter((c) => c.has_pending_report && !c.is_all_paid).length;
+        ? ebReviewCount
+        : combinedBills.filter((c) => c.has_pending_report && !c.is_all_paid)
+          .length;
   const currentUnpaidCount =
     billingMode === 'RENT'
       ? rentUnpaidCount + rentUngeneratedCount
       : billingMode === 'EB'
-      ? ebUnpaidCount
-      : combinedBills.filter((c) => c.remaining_paise > 0).length;
+        ? ebUnpaidCount
+        : combinedBills.filter((c) => c.remaining_paise > 0).length;
   const currentPaidCount =
     billingMode === 'RENT'
       ? rentPaidCount
       : billingMode === 'EB'
-      ? ebPaidCount
-      : combinedBills.filter((c) => c.is_all_paid).length;
+        ? ebPaidCount
+        : combinedBills.filter((c) => c.is_all_paid).length;
   const currentTotalCount =
     billingMode === 'RENT'
       ? rentTotalCount
       : billingMode === 'EB'
-      ? ebTotalCount
-      : combinedBills.length;
+        ? ebTotalCount
+        : combinedBills.length;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -1019,137 +981,79 @@ export default function SimplifiedBillingManagementScreen() {
             colors={[OwnerTheme.colors.primary]}
           />
         }>
-        {/* Compact Segmented Control: Rent vs Electricity vs Combined */}
-        <SegmentedFilter
-          options={[
-            { key: 'RENT', label: 'Rent' },
-            { key: 'EB', label: 'Electricity' },
-            { key: 'COMBINED', label: 'Combined' },
-          ]}
-          activeKey={billingMode}
-          onSelect={(key) => setBillingMode(key as 'RENT' | 'EB' | 'COMBINED')}
-          style={{ marginBottom: 12 }}
+        <BillingSummaryHeader
+          billingMode={billingMode}
+          onSelectBillingMode={setBillingMode}
+          monthLabel={monthLabel}
+          onPrevMonth={handlePrevMonth}
+          onNextMonth={handleNextMonth}
+          totalBilledPaise={currentTotalBilled}
+          totalCollectedPaise={currentTotalCollected}
+          unpaidAmountPaise={currentUnpaidAmount}
+          totalCount={currentTotalCount}
+          paidCount={currentPaidCount}
+          unpaidCount={currentUnpaidCount}
+          reviewCount={currentReviewCount}
+          rentUngeneratedCount={rentUngeneratedCount}
+          filterTab={filterTab}
+          onSelectFilterTab={setFilterTab}
+          onOpenGenerateRent={() => setGenerateRentModalVisible(true)}
+          showGeneratedBanner={showBillsGeneratedBanner}
+          onDismissGeneratedBanner={() => setShowBillsGeneratedBanner(false)}
         />
 
-        {/* Compact Month Selector Bar */}
-        <View style={styles.monthSelectorBar}>
+        {/* Resident Filter Banner */}
+        {activeResidentFilterId && (
           <Pressable
             accessibilityRole="button"
-            accessibilityLabel="Previous month"
-            hitSlop={8}
+            accessibilityLabel={`Filtered to ${filteredResidentName}. Show all`}
             style={({ pressed }) => [
-              styles.monthNavBtn,
-              pressed && styles.monthNavBtnPressed,
+              styles.residentFilterBanner,
+              pressed && styles.cardPressed,
             ]}
-            onPress={handlePrevMonth}>
-            <ChevronLeft size={20} color={OwnerTheme.colors.textPrimary} />
-          </Pressable>
-          <View style={styles.monthLabelWrap}>
-            <Text style={styles.monthLabelText}>{monthLabel}</Text>
-          </View>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Next month"
-            hitSlop={8}
-            style={({ pressed }) => [
-              styles.monthNavBtn,
-              pressed && styles.monthNavBtnPressed,
-            ]}
-            onPress={handleNextMonth}>
-            <ChevronRight size={20} color={OwnerTheme.colors.textPrimary} />
-          </Pressable>
-        </View>
-
-        {/* Billing Summary: 3 Compact Cards */}
-        <View style={styles.summaryGrid}>
-          <StatisticCard
-            label="Total Billed"
-            value={formatPaiseToRupees(currentTotalBilled)}
-            accentColor={OwnerTheme.colors.primary}
-            sublabel={`${currentTotalCount} resident${
-              currentTotalCount === 1 ? '' : 's'
-            }`}
-          />
-          <StatisticCard
-            label="Paid"
-            value={formatPaiseToRupees(currentTotalCollected)}
-            accentColor={OwnerTheme.colors.success}
-            sublabel={`${currentPaidCount} collected`}
-          />
-          <StatisticCard
-            label="Unpaid"
-            value={formatPaiseToRupees(currentUnpaidAmount)}
-            accentColor={
-              currentUnpaidAmount > 0
-                ? OwnerTheme.colors.danger
-                : OwnerTheme.colors.textSecondary
-            }
-            sublabel={`${currentUnpaidCount} pending`}
-          />
-        </View>
-
-        {/* Needs Review indicator if applicable */}
-        {currentReviewCount > 0 && (
-          <Pressable
-            style={styles.reviewBanner}
-            onPress={() => setFilterTab('REVIEW')}>
-            <View style={styles.reviewBannerIcon}>
-              <CreditCard size={16} color={OwnerTheme.colors.warning} />
-            </View>
-            <Text style={styles.reviewBannerText}>
-              {currentReviewCount} payment proof
-              {currentReviewCount > 1 ? 's' : ''} awaiting review
+            onPress={handleClearResidentFilter}>
+            <Text style={styles.residentFilterBannerText} numberOfLines={1}>
+              Filtered to {filteredResidentName} ·{' '}
+              <Text style={styles.residentFilterBannerAction}>Show all</Text>
             </Text>
-            <Text style={styles.reviewBannerAction}>View ›</Text>
+            <X size={15} color={OwnerTheme.colors.primary} />
           </Pressable>
         )}
 
-        {/* Small Inline Generator / Success Indicator */}
-        {billingMode === 'RENT' ? (
-          rentUngeneratedCount > 0 ? (
-            <View style={styles.inlineWarningBanner}>
-              <Text style={styles.inlineWarningText}>
-                {rentUngeneratedCount} resident
-                {rentUngeneratedCount > 1 ? 's' : ''} not yet billed for{' '}
-                {monthLabel}.
-              </Text>
-              <Pressable
-                accessibilityRole="button"
-                onPress={() => setGenerateRentModalVisible(true)}>
-                <Text style={styles.inlineActionLink}>Generate Bills ›</Text>
-              </Pressable>
-            </View>
-          ) : (
-            <View style={styles.inlineSuccessBanner}>
-              <Check size={14} color={OwnerTheme.colors.success} />
-              <Text style={styles.inlineSuccessText}>
-                Bills generated for all active residents.
-              </Text>
-            </View>
-          )
-        ) : billingMode === 'EB' ? (
-          <View style={styles.ebSplitterBanner}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.ebSplitterTitle}>Room EB Splitter</Text>
-              <Text style={styles.ebSplitterSub}>
-                Use &ldquo;Split EB&rdquo; above to divide room electricity equally among occupants.
-              </Text>
-            </View>
-          </View>
-        ) : null}
-
-        {/* Compact Billing Filter Tabs */}
-        <SegmentedFilter
-          options={[
-            { key: 'ALL', label: 'All', count: currentTotalCount },
-            { key: 'REVIEW', label: 'Review', count: currentReviewCount },
-            { key: 'UNPAID', label: 'Unpaid', count: currentUnpaidCount },
-            { key: 'PAID', label: 'Paid', count: currentPaidCount },
-          ]}
-          activeKey={filterTab}
-          onSelect={(key) => setFilterTab(key)}
-          style={{ marginVertical: 12 }}
-        />
+        {/* Bulk Remind All Unpaid Button */}
+        {!loading &&
+          unpaidReminderTargets.length > 0 &&
+          (filterTab === 'ALL' || filterTab === 'UNPAID') && (
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.bulkRemindBar,
+                pressed && styles.cardPressed,
+              ]}
+              onPress={() => {
+                setSentReminderIds([]);
+                setBulkReminderModalVisible(true);
+              }}>
+              <View style={styles.bulkRemindLeft}>
+                <View style={styles.bulkRemindIconCircle}>
+                  <MessageCircle size={16} color={OwnerTheme.colors.primary} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.bulkRemindTitle}>
+                    Remind all unpaid ({unpaidReminderTargets.length})
+                  </Text>
+                  <Text style={styles.bulkRemindSub}>
+                    {bulkContactIssueCount > 0
+                      ? `${bulkContactIssueCount} contact issue${
+                          bulkContactIssueCount > 1 ? 's' : ''
+                        } flagged · tap to review & send`
+                      : 'Send WhatsApp reminders or copy summary'}
+                  </Text>
+                </View>
+              </View>
+              <Text style={styles.bulkRemindAction}>Open ›</Text>
+            </Pressable>
+          )}
 
         {/* Bills Roster Display */}
         {loading ? (
@@ -1165,243 +1069,39 @@ export default function SimplifiedBillingManagementScreen() {
                 filterTab === 'REVIEW'
                   ? 'No rent payment proofs pending review.'
                   : filterTab === 'UNPAID'
-                  ? 'All residents have paid their rent for this month!'
-                  : 'No resident rent records found for this period.'
+                    ? 'All residents have paid their rent for this month!'
+                    : 'No resident rent records found for this period.'
+              }
+              actionLabel={activeResidentFilterId ? 'Show all' : undefined}
+              onAction={
+                activeResidentFilterId ? handleClearResidentFilter : undefined
               }
             />
           ) : (
             <View style={styles.cardsList}>
-              {filteredRentList.map((res) => {
-                const isPaid = res.status === 'paid';
-                const isNotGen = res.status === 'not_generated';
-                const hasReport = res.has_pending_report && !isPaid;
-                const dueStatus =
-                  !isPaid && !isNotGen ? formatDueStatus(res.due_date) : null;
-
-                return (
-                  <View key={res.resident_id} style={styles.billCard}>
-                    {/* Card Header: Resident Name, Room, Status Badge */}
-                    <View style={styles.cardHeader}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.resName}>{res.full_name}</Text>
-                        <Text style={styles.resRoom}>
-                          Room {res.room_number}
-                          {res.phone_number ? ` • ${res.phone_number}` : ''}
-                        </Text>
-                        {dueStatus && (
-                          <View
-                            style={[
-                              styles.duePill,
-                              dueStatus.isOverdue && styles.duePillOverdue,
-                            ]}>
-                            <Text
-                              style={[
-                                styles.duePillText,
-                                dueStatus.isOverdue && styles.duePillTextOverdue,
-                              ]}>
-                              {dueStatus.label}
-                            </Text>
-                          </View>
-                        )}
-                      </View>
-                      <StatusBadge
-                        label={
-                          isPaid
-                            ? 'PAID'
-                            : hasReport
-                            ? 'REVIEW'
-                            : isNotGen
-                            ? 'NOT BILLED'
-                            : 'UNPAID'
-                        }
-                        variant={
-                          isPaid
-                            ? 'success'
-                            : hasReport
-                            ? 'warning'
-                            : isNotGen
-                            ? 'neutral'
-                            : 'danger'
-                        }
-                        size="sm"
-                      />
-                    </View>
-
-                    {/* Breakdown */}
-                    <View style={styles.breakdownBox}>
-                      <View style={styles.breakdownRow}>
-                        <View style={styles.breakdownLabelGroup}>
-                          <Text style={styles.breakdownLabel}>Room Rent</Text>
-                          {!isPaid && (
-                            <Pressable
-                              hitSlop={6}
-                              onPress={() => handleOpenEditRent(res)}>
-                              <Text style={styles.editLink}>Edit</Text>
-                            </Pressable>
-                          )}
-                        </View>
-                        <Text style={styles.breakdownValue}>
-                          {formatPaiseToRupees(res.rent_paise)}
-                        </Text>
-                      </View>
-
-                      <View style={styles.breakdownRow}>
-                        <View style={styles.wmRow}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                            <Text style={styles.breakdownLabel}>
-                              Washing Machine
-                            </Text>
-                            {res.wm_request_pending && !res.opt_in_wm ? (
-                              <View style={styles.wmPendingBadge}>
-                                <Text style={styles.wmPendingBadgeText}>Requested</Text>
-                              </View>
-                            ) : null}
-                          </View>
-                          <Switch
-                            value={res.opt_in_wm}
-                            onValueChange={() =>
-                              handleToggleWashingMachine(res)
-                            }
-                            trackColor={{
-                              false: '#E2E8F0',
-                              true: OwnerTheme.colors.primaryLight,
-                            }}
-                            thumbColor={
-                              res.opt_in_wm
-                                ? OwnerTheme.colors.primary
-                                : '#FFFFFF'
-                            }
-                            style={{
-                              transform: [{ scaleX: 0.8 }, { scaleY: 0.8 }],
-                            }}
-                          />
-                        </View>
-                        <Text
-                          style={[
-                            styles.breakdownValue,
-                            !res.opt_in_wm && { color: OwnerTheme.colors.textMuted },
-                          ]}>
-                          {res.opt_in_wm ? '₹500' : '₹0'}
-                        </Text>
-                      </View>
-
-                      <View style={styles.totalRow}>
-                        <Text style={styles.totalLabel}>Total</Text>
-                        <Text style={styles.totalValue}>
-                          {formatPaiseToRupees(res.total_paise)}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {/* Footer Actions */}
-                    {isPaid ? (
-                      <View style={styles.paidInfoBox}>
-                        <Receipt size={14} color={OwnerTheme.colors.success} />
-                        <Text style={styles.paidInfoText}>
-                          Receipt #{res.receipt_number || 'Confirmed'}
-                          {res.paid_method
-                            ? ` • ${res.paid_method.toUpperCase()}`
-                            : ''}
-                          {res.paid_date ? ` • ${res.paid_date}` : ''}
-                        </Text>
-                      </View>
-                    ) : hasReport ? (
-                      <View style={styles.actionRow}>
-                        <Pressable
-                          style={styles.reviewActionBtn}
-                          onPress={() => {
-                            openReviewModal({
-                              full_name: res.full_name,
-                              room_number: res.room_number,
-                              charge_id: res.charge_id!,
-                              bill_title: `${monthLabel} Rent Bill`,
-                              report: res.pending_report,
-                            });
-                          }}>
-                          <Eye size={14} color={OwnerTheme.colors.primary} />
-                          <Text style={styles.reviewActionBtnText}>
-                            Review Payment Proof ›
-                          </Text>
-                        </Pressable>
-                      </View>
-                    ) : (
-                      <>
-                        {res.rejected_report && (
-                          <View style={styles.rejectedBannerWrap}>
-                            <Text style={styles.rejectedBannerTitle}>
-                              Payment Proof Rejected
-                            </Text>
-                            <Text
-                              style={styles.rejectedBannerSub}
-                              numberOfLines={2}>
-                              Reason: {res.rejected_report.rejection_reason || 'Verification failed'}
-                            </Text>
-                          </View>
-                        )}
-                        <View style={styles.actionRow}>
-                          <Pressable
-                            style={styles.cashActionBtn}
-                            onPress={() => {
-                              if (!res.charge_id) {
-                                Alert.alert(
-                                  'Notice',
-                                  'Please generate monthly rent bills first.'
-                                );
-                                return;
-                              }
-                              Alert.alert(
-                                'Confirm In-Person Cash Payment',
-                                `Confirm cash payment of ${formatPaiseToRupees(
-                                  res.total_paise
-                                )} received from ${res.full_name} for Room ${
-                                  res.room_number
-                                }?`,
-                                [
-                                  { text: 'Cancel', style: 'cancel' },
-                                  {
-                                    text: 'Confirm Cash Payment',
-                                    style: 'default',
-                                    onPress: () =>
-                                      handleConfirmPayment(
-                                        res.charge_id!,
-                                        null,
-                                        'cash'
-                                      ),
-                                  },
-                                ]
-                              );
-                            }}>
-                            <Text style={styles.cashActionBtnText}>
-                              Mark as Paid (Cash)
-                            </Text>
-                          </Pressable>
-                          {!isNotGen && res.total_paise > 0 && (
-                            <Pressable
-                              style={styles.reminderActionBtn}
-                              onPress={() =>
-                                handleSendReminder(
-                                  res.full_name,
-                                  res.phone_number,
-                                  res.total_paise,
-                                  'monthly rent',
-                                  res.due_date
-                                )
-                              }>
-                              <MessageCircle
-                                size={14}
-                                color={OwnerTheme.colors.primary}
-                              />
-                              <Text style={styles.reminderActionBtnText}>
-                                Send Reminder
-                              </Text>
-                            </Pressable>
-                          )}
-                        </View>
-                      </>
-                    )}
-                  </View>
-                );
-              })}
+              {filteredRentList.map((res) => (
+                <ResidentLedgerCard
+                  key={res.resident_id}
+                  mode="RENT"
+                  item={res}
+                  monthLabel={monthLabel}
+                  isDuplicatePhone={duplicatePhoneResidentIds.has(
+                    res.resident_id
+                  )}
+                  onOpenProfile={handleOpenResidentProfile}
+                  onEditRent={handleOpenEditRent}
+                  onToggleWashingMachine={(item) =>
+                    void handleToggleWashingMachine(item)
+                  }
+                  onReviewProof={(item) => void openReviewModal(item)}
+                  onConfirmCashPayment={(chargeId) =>
+                    void handleConfirmPayment(chargeId, null, 'cash')
+                  }
+                  onSendReminder={(name, phone, amount, label, due) =>
+                    void handleSendReminder(name, phone, amount, label, due)
+                  }
+                />
+              ))}
             </View>
           )
         ) : billingMode === 'EB' ? (
@@ -1413,300 +1113,76 @@ export default function SimplifiedBillingManagementScreen() {
                   ? 'No electricity bills split for this month yet. Tap "Split Room EB" above to allocate meter bills.'
                   : 'No matching electricity bill records found.'
               }
+              actionLabel={activeResidentFilterId ? 'Show all' : undefined}
+              onAction={
+                activeResidentFilterId ? handleClearResidentFilter : undefined
+              }
             />
           ) : (
             <View style={styles.cardsList}>
-              {filteredEbList.map((res) => {
-                const isPaid = res.status === 'paid';
-                const hasReport = res.has_pending_report && !isPaid;
-                const dueStatus = !isPaid
-                  ? formatDueStatus(res.due_date)
-                  : null;
-
-                return (
-                  <View key={res.resident_id} style={styles.billCard}>
-                    <View style={styles.cardHeader}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.resName}>{res.full_name}</Text>
-                        <Text style={styles.resRoom}>
-                          Room {res.room_number}
-                          {res.phone_number ? ` • ${res.phone_number}` : ''}
-                        </Text>
-                        {dueStatus && (
-                          <View
-                            style={[
-                              styles.duePill,
-                              dueStatus.isOverdue && styles.duePillOverdue,
-                            ]}>
-                            <Text
-                              style={[
-                                styles.duePillText,
-                                dueStatus.isOverdue && styles.duePillTextOverdue,
-                              ]}>
-                              {dueStatus.label}
-                            </Text>
-                          </View>
-                        )}
-                      </View>
-                      <StatusBadge
-                        label={
-                          isPaid ? 'PAID' : hasReport ? 'REVIEW' : 'UNPAID'
-                        }
-                        variant={
-                          isPaid ? 'success' : hasReport ? 'warning' : 'danger'
-                        }
-                        size="sm"
-                      />
-                    </View>
-
-                    <View style={styles.breakdownBox}>
-                      <View style={styles.totalRow}>
-                        <Text style={styles.totalLabel}>EB Meter Share</Text>
-                        <Text
-                          style={[
-                            styles.totalValue,
-                            { color: OwnerTheme.colors.warning },
-                          ]}>
-                          {formatPaiseToRupees(res.amount_paise)}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {/* Footer Actions */}
-                    {isPaid ? (
-                      <View style={styles.paidInfoBox}>
-                        <Receipt size={14} color={OwnerTheme.colors.success} />
-                        <Text style={styles.paidInfoText}>
-                          Receipt #{res.receipt_number || 'Confirmed'}
-                          {res.paid_method
-                            ? ` • ${res.paid_method.toUpperCase()}`
-                            : ''}
-                        </Text>
-                      </View>
-                    ) : hasReport ? (
-                      <View style={styles.actionRow}>
-                        <Pressable
-                          style={styles.reviewActionBtn}
-                          onPress={() => {
-                            openReviewModal({
-                              full_name: res.full_name,
-                              room_number: res.room_number,
-                              charge_id: res.charge_id!,
-                              bill_title: `${monthLabel} Room ${res.room_number} EB Bill`,
-                              report: res.pending_report,
-                            });
-                          }}>
-                          <Eye size={14} color={OwnerTheme.colors.primary} />
-                          <Text style={styles.reviewActionBtnText}>
-                            Review EB Proof ›
-                          </Text>
-                        </Pressable>
-                      </View>
-                    ) : (
-                      <>
-                        {res.rejected_report && (
-                          <View style={styles.rejectedBannerWrap}>
-                            <Text style={styles.rejectedBannerTitle}>
-                              Payment Proof Rejected
-                            </Text>
-                            <Text
-                              style={styles.rejectedBannerSub}
-                              numberOfLines={2}>
-                              Reason: {res.rejected_report.rejection_reason || 'Verification failed'}
-                            </Text>
-                          </View>
-                        )}
-                        <View style={styles.actionRow}>
-                          <Pressable
-                            style={styles.cashActionBtn}
-                            onPress={() => {
-                              Alert.alert(
-                                'Confirm In-Person Cash Payment',
-                                `Confirm cash payment of ${formatPaiseToRupees(
-                                  res.amount_paise
-                                )} received from ${res.full_name} for electricity?`,
-                                [
-                                  { text: 'Cancel', style: 'cancel' },
-                                  {
-                                    text: 'Confirm Cash Payment',
-                                    onPress: () =>
-                                      handleConfirmPayment(
-                                        res.charge_id!,
-                                        null,
-                                        'cash'
-                                      ),
-                                  },
-                                ]
-                              );
-                            }}>
-                            <Text style={styles.cashActionBtnText}>
-                              Mark as Paid (Cash)
-                            </Text>
-                          </Pressable>
-                          <Pressable
-                            style={styles.reminderActionBtn}
-                            onPress={() =>
-                              handleSendReminder(
-                                res.full_name,
-                                res.phone_number,
-                                res.amount_paise,
-                                'electricity share',
-                                res.due_date
-                              )
-                            }>
-                            <MessageCircle
-                              size={14}
-                              color={OwnerTheme.colors.primary}
-                            />
-                            <Text style={styles.reminderActionBtnText}>
-                              Send Reminder
-                            </Text>
-                          </Pressable>
-                        </View>
-                      </>
-                    )}
-                  </View>
-                );
-              })}
+              {filteredEbList.map((res) => (
+                <ResidentLedgerCard
+                  key={res.resident_id}
+                  mode="EB"
+                  item={res}
+                  monthLabel={monthLabel}
+                  isDuplicatePhone={duplicatePhoneResidentIds.has(
+                    res.resident_id
+                  )}
+                  onOpenProfile={handleOpenResidentProfile}
+                  onReviewProof={(item) => void openReviewModal(item)}
+                  onConfirmCashPayment={(chargeId) =>
+                    void handleConfirmPayment(chargeId, null, 'cash')
+                  }
+                  onSendReminder={(name, phone, amount, label, due) =>
+                    void handleSendReminder(name, phone, amount, label, due)
+                  }
+                />
+              ))}
             </View>
           )
         ) : filteredCombinedList.length === 0 ? (
           <EmptyState
             title="No combined bills"
             description="No matching resident billing records found for this filter."
+            actionLabel={activeResidentFilterId ? 'Show all' : undefined}
+            onAction={
+              activeResidentFilterId ? handleClearResidentFilter : undefined
+            }
           />
         ) : (
           <View style={styles.cardsList}>
             {filteredCombinedList.map((res) => {
-              const dueStatus =
-                res.remaining_paise > 0 ? formatDueStatus(res.due_date) : null;
-
+              const rentMatch = rentBills.find(
+                (r) => r.resident_id === res.resident_id
+              );
+              const ebMatch = ebBills.find(
+                (e) => e.resident_id === res.resident_id
+              );
+              const unpaidChargeIds: string[] = [];
+              if (rentMatch?.charge_id && rentMatch.status === 'unpaid') {
+                unpaidChargeIds.push(rentMatch.charge_id);
+              }
+              if (ebMatch?.charge_id && ebMatch.status === 'unpaid') {
+                unpaidChargeIds.push(ebMatch.charge_id);
+              }
               return (
-                <View key={res.resident_id} style={styles.billCard}>
-                  <View style={styles.cardHeader}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.resName}>{res.full_name}</Text>
-                      <Text style={styles.resRoom}>
-                        Room {res.room_number}
-                        {res.phone_number ? ` • ${res.phone_number}` : ''}
-                      </Text>
-                      {dueStatus && (
-                        <View
-                          style={[
-                            styles.duePill,
-                            dueStatus.isOverdue && styles.duePillOverdue,
-                          ]}>
-                          <Text
-                            style={[
-                              styles.duePillText,
-                              dueStatus.isOverdue && styles.duePillTextOverdue,
-                            ]}>
-                            {dueStatus.label}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-                    <StatusBadge
-                      label={
-                        res.is_all_paid
-                          ? 'PAID'
-                          : res.has_pending_report
-                          ? 'REVIEW'
-                          : res.total_paise === 0
-                          ? 'NO BILLS'
-                          : 'UNPAID'
-                      }
-                      variant={
-                        res.is_all_paid
-                          ? 'success'
-                          : res.has_pending_report
-                          ? 'warning'
-                          : res.total_paise === 0
-                          ? 'neutral'
-                          : 'danger'
-                      }
-                      size="sm"
-                    />
-                  </View>
-
-                  <View style={styles.breakdownBox}>
-                    <View style={styles.breakdownRow}>
-                      <Text style={styles.breakdownLabel}>Room Rent</Text>
-                      <Text style={styles.breakdownValue}>
-                        {formatPaiseToRupees(res.rent_paise)}
-                      </Text>
-                    </View>
-                    {res.wm_paise > 0 && (
-                      <View style={styles.breakdownRow}>
-                        <Text style={styles.breakdownLabel}>
-                          Washing Machine
-                        </Text>
-                        <Text style={styles.breakdownValue}>
-                          {formatPaiseToRupees(res.wm_paise)}
-                        </Text>
-                      </View>
-                    )}
-                    {res.eb_paise > 0 && (
-                      <View style={styles.breakdownRow}>
-                        <Text style={styles.breakdownLabel}>EB Share</Text>
-                        <Text style={styles.breakdownValue}>
-                          {formatPaiseToRupees(res.eb_paise)}
-                        </Text>
-                      </View>
-                    )}
-                    <View style={styles.totalRow}>
-                      <Text style={styles.totalLabel}>Combined Total</Text>
-                      <Text style={styles.totalValue}>
-                        {formatPaiseToRupees(res.total_paise)}
-                      </Text>
-                    </View>
-                    {res.paid_paise > 0 && res.remaining_paise > 0 && (
-                      <View style={styles.breakdownRow}>
-                        <Text style={styles.breakdownLabel}>
-                          Paid ({formatPaiseToRupees(res.paid_paise)}) • Due
-                        </Text>
-                        <Text
-                          style={[
-                            styles.breakdownValue,
-                            { color: OwnerTheme.colors.danger },
-                          ]}>
-                          {formatPaiseToRupees(res.remaining_paise)}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-
-                  {res.is_all_paid ? (
-                    <View style={styles.paidInfoBox}>
-                      <Receipt size={14} color={OwnerTheme.colors.success} />
-                      <Text style={styles.paidInfoText}>
-                        All rent and EB bills settled
-                      </Text>
-                    </View>
-                  ) : res.remaining_paise > 0 ? (
-                    <View style={styles.actionRow}>
-                      <Pressable
-                        style={styles.reminderActionBtn}
-                        onPress={() =>
-                          handleSendReminder(
-                            res.full_name,
-                            res.phone_number,
-                            res.remaining_paise,
-                            'combined PG bill (Rent + EB)',
-                            res.due_date
-                          )
-                        }>
-                        <MessageCircle
-                          size={14}
-                          color={OwnerTheme.colors.primary}
-                        />
-                        <Text style={styles.reminderActionBtnText}>
-                          Send Reminder
-                        </Text>
-                      </Pressable>
-                    </View>
-                  ) : null}
-                </View>
+                <ResidentLedgerCard
+                  key={res.resident_id}
+                  mode="COMBINED"
+                  item={res}
+                  isDuplicatePhone={duplicatePhoneResidentIds.has(
+                    res.resident_id
+                  )}
+                  unpaidChargeIds={unpaidChargeIds}
+                  onOpenProfile={handleOpenResidentProfile}
+                  onConfirmCashPayment={(chargeIds) =>
+                    void handleConfirmCombinedCashPayment(chargeIds)
+                  }
+                  onSendReminder={(name, phone, amount, label, due) =>
+                    void handleSendReminder(name, phone, amount, label, due)
+                  }
+                />
               );
             })}
           </View>
@@ -1716,502 +1192,225 @@ export default function SimplifiedBillingManagementScreen() {
       </ScrollView>
 
       {/* Modal 1: Generate / Update Rent Amount */}
-      <Modal
+      <ChargeFormModal
+        mode="generate-rent"
         visible={generateRentModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setGenerateRentModalVisible(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalHeading}>Update Monthly Rent</Text>
-              <Pressable
-                hitSlop={8}
-                onPress={() => setGenerateRentModalVisible(false)}>
-                <X size={20} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            </View>
-
-            <Text style={styles.modalExplanation}>
-              Set default room rent for {monthLabel}. Existing unpaid rent bills
-              for {monthLabel} will be updated automatically. Paid bills are
-              preserved.
-            </Text>
-
-            <Text style={styles.inputFieldLabel}>
-              Monthly Room Rent Amount (₹)
-            </Text>
-            <TextInput
-              style={styles.inputBox}
-              value={rentInputRupees}
-              onChangeText={setRentInputRupees}
-              placeholder="e.g. 8000"
-              placeholderTextColor={OwnerTheme.colors.textMuted}
-              keyboardType="numeric"
-            />
-
-            <View style={styles.modalActions}>
-              <Pressable
-                style={styles.modalCancelBtn}
-                onPress={() => setGenerateRentModalVisible(false)}>
-                <Text style={styles.modalCancelBtnText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.modalConfirmBtn,
-                  generatingRent && styles.btnDisabled,
-                ]}
-                disabled={generatingRent}
-                onPress={handleConfirmGenerateRent}>
-                {generatingRent ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.modalConfirmBtnText}>Apply & Save</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+        monthLabel={monthLabel}
+        rentInputRupees={rentInputRupees}
+        onChangeRentInputRupees={setRentInputRupees}
+        submitting={generatingRent}
+        onClose={() => setGenerateRentModalVisible(false)}
+        onConfirm={() => void handleConfirmGenerateRent()}
+      />
 
       {/* Modal 1B: Edit Individual Resident Rent */}
-      <Modal
+      <ChargeFormModal
+        mode="edit-rent"
         visible={editRentModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setEditRentModalVisible(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalHeading}>Edit Resident Rent</Text>
-              <Pressable
-                hitSlop={8}
-                onPress={() => setEditRentModalVisible(false)}>
-                <X size={20} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            </View>
-
-            {selectedResidentForEdit && (
-              <>
-                <Text style={styles.modalExplanation}>
-                  Adjust rent for {selectedResidentForEdit.full_name} (Room{' '}
-                  {selectedResidentForEdit.room_number}). Unpaid bill for{' '}
-                  {monthLabel} will update automatically.
-                </Text>
-
-                <Text style={styles.inputFieldLabel}>
-                  Monthly Rent Amount (₹)
-                </Text>
-                <TextInput
-                  style={styles.inputBox}
-                  value={editRentInputRupees}
-                  onChangeText={setEditRentInputRupees}
-                  placeholder="e.g. 9000"
-                  placeholderTextColor={OwnerTheme.colors.textMuted}
-                  keyboardType="numeric"
-                />
-
-                <View style={styles.modalActions}>
-                  <Pressable
-                    style={styles.modalCancelBtn}
-                    onPress={() => setEditRentModalVisible(false)}>
-                    <Text style={styles.modalCancelBtnText}>Cancel</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[
-                      styles.modalConfirmBtn,
-                      updatingRent && styles.btnDisabled,
-                    ]}
-                    disabled={updatingRent}
-                    onPress={handleConfirmEditRent}>
-                    {updatingRent ? (
-                      <ActivityIndicator size="small" color="#FFFFFF" />
-                    ) : (
-                      <Text style={styles.modalConfirmBtnText}>Save</Text>
-                    )}
-                  </Pressable>
-                </View>
-              </>
-            )}
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+        monthLabel={monthLabel}
+        resident={selectedResidentForEdit}
+        rentInputRupees={editRentInputRupees}
+        onChangeRentInputRupees={setEditRentInputRupees}
+        submitting={updatingRent}
+        onClose={() => setEditRentModalVisible(false)}
+        onConfirm={() => void handleConfirmEditRent()}
+      />
 
       {/* Modal 2: Split Room EB Bill */}
-      <Modal
+      <ChargeFormModal
+        mode="split-eb"
         visible={splitEbModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSplitEbModalVisible(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalHeading}>Split Electricity Bill</Text>
-              <Pressable
-                hitSlop={8}
-                onPress={() => setSplitEbModalVisible(false)}>
-                <X size={20} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            </View>
+        availableRooms={availableRooms}
+        selectedRoom={selectedRoomForEb}
+        onSelectRoom={setSelectedRoomForEb}
+        ebTotalRupeesInput={ebTotalRupeesInput}
+        onChangeEbTotalRupeesInput={setEbTotalRupeesInput}
+        allResidents={allResidents}
+        submitting={generatingEb}
+        onClose={() => setSplitEbModalVisible(false)}
+        onConfirm={() => void handleConfirmSplitEb()}
+      />
 
-            <ScrollView
-              style={{ maxHeight: 380 }}
-              showsVerticalScrollIndicator={false}>
-              <Text style={styles.inputFieldLabel}>Select Room Number</Text>
-              <View style={styles.roomChipsWrap}>
-                {availableRooms.map((rm) => (
-                  <Pressable
-                    key={rm}
-                    style={[
-                      styles.roomChip,
-                      selectedRoomForEb === rm && styles.roomChipSelected,
-                    ]}
-                    onPress={() => setSelectedRoomForEb(rm)}>
-                    <Text
-                      style={[
-                        styles.roomChipText,
-                        selectedRoomForEb === rm && styles.roomChipTextSelected,
-                      ]}>
-                      Room {rm}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-
-              <Text style={styles.inputFieldLabel}>
-                Total Meter Bill Amount (₹)
-              </Text>
-              <TextInput
-                style={styles.inputBox}
-                value={ebTotalRupeesInput}
-                onChangeText={setEbTotalRupeesInput}
-                placeholder="e.g. 1200"
-                placeholderTextColor={OwnerTheme.colors.textMuted}
-                keyboardType="numeric"
-              />
-
-              {selectedRoomForEb ? (
-                <View style={styles.ebSplitPreviewBox}>
-                  <Text style={styles.ebPreviewTitle}>
-                    Occupants in Room {selectedRoomForEb}:
-                  </Text>
-                  {allResidents.filter((r) => r.room_number === selectedRoomForEb)
-                    .length > 0 ? (
-                    allResidents
-                      .filter((r) => r.room_number === selectedRoomForEb)
-                      .map((r, idx, arr) => {
-                        const totalRs =
-                          parseFloat(ebTotalRupeesInput.trim()) || 0;
-                        const perPerson =
-                          totalRs > 0 ? (totalRs / arr.length).toFixed(0) : '0';
-                        return (
-                          <View key={r.id} style={styles.ebPreviewRow}>
-                            <Text style={styles.ebPreviewName}>
-                              • {r.full_name}
-                            </Text>
-                            <Text style={styles.ebPreviewShare}>
-                              ₹{perPerson}
-                            </Text>
-                          </View>
-                        );
-                      })
-                  ) : (
-                    <Text style={styles.noOccupantsText}>
-                      No active residents currently assigned to Room{' '}
-                      {selectedRoomForEb}.
-                    </Text>
-                  )}
-                </View>
-              ) : null}
-            </ScrollView>
-
-            <View style={styles.modalActions}>
-              <Pressable
-                style={styles.modalCancelBtn}
-                onPress={() => setSplitEbModalVisible(false)}>
-                <Text style={styles.modalCancelBtnText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.modalConfirmBtn,
-                  { backgroundColor: OwnerTheme.colors.warning },
-                  generatingEb && styles.btnDisabled,
-                ]}
-                disabled={generatingEb}
-                onPress={handleConfirmSplitEb}>
-                {generatingEb ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.modalConfirmBtnText}>Split & Send</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* Modal 3: Review Payment Proof */}
-      <Modal
+      {/* Modal 3: Review Payment Proof & Full-Screen Viewer */}
+      <PaymentReportReviewModal
         visible={reviewModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => {
+        item={selectedReviewItem}
+        signedUrl={reviewSignedUrl}
+        loadingSignedUrl={loadingReviewUrl}
+        showRejectForm={showRejectForm}
+        rejectionReason={rejectionReason}
+        confirmingPayment={confirmingPayment}
+        rejectingPayment={rejectingPayment}
+        onClose={() => {
           setReviewModalVisible(false);
           setShowRejectForm(false);
           setRejectionReason('');
-        }}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalHeading}>Review Payment Proof</Text>
+        }}
+        onToggleRejectForm={setShowRejectForm}
+        onChangeRejectionReason={setRejectionReason}
+        onConfirmPayment={(chargeId, reportId, method) =>
+          void handleConfirmPayment(chargeId, reportId, method)
+        }
+        onRejectPayment={() => void handleRejectPayment()}
+      />
+
+      {/* Modal 4: Bulk Reminder Modal */}
+      <Modal
+        visible={bulkReminderModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setBulkReminderModalVisible(false)}>
+        <View style={styles.bulkModalOverlay}>
+          <Pressable
+            style={styles.bulkModalBackdrop}
+            onPress={() => setBulkReminderModalVisible(false)}
+          />
+          <View style={styles.bulkModalCard}>
+            <View style={styles.bulkModalHandle} />
+            <View style={styles.bulkModalHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.bulkModalTitle}>Bulk Payment Reminders</Text>
+                <Text style={styles.bulkModalSub}>
+                  {unpaidReminderTargets.length} unpaid resident
+                  {unpaidReminderTargets.length === 1 ? '' : 's'} · {monthLabel}
+                </Text>
+              </View>
               <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close reminders modal"
                 hitSlop={8}
-                onPress={() => {
-                  setReviewModalVisible(false);
-                  setShowRejectForm(false);
-                  setRejectionReason('');
-                }}>
+                onPress={() => setBulkReminderModalVisible(false)}>
                 <X size={20} color={OwnerTheme.colors.textSecondary} />
               </Pressable>
             </View>
 
-            {selectedReviewItem?.report && (
-              <ScrollView
-                style={{ maxHeight: 440 }}
-                showsVerticalScrollIndicator={false}>
-                <View style={styles.reviewSummaryBox}>
-                  <Text style={styles.modalResName}>
-                    {selectedReviewItem.full_name} (Room{' '}
-                    {selectedReviewItem.room_number})
-                  </Text>
-                  <Text style={styles.modalBillPeriod}>
-                    {selectedReviewItem.bill_title}
-                  </Text>
-                </View>
-
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Claimed Amount</Text>
-                  <Text style={styles.detailValueBold}>
-                    {formatPaiseToRupees(
-                      selectedReviewItem.report.amount_paise
-                    )}
-                  </Text>
-                </View>
-
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Method</Text>
-                  <Text style={styles.detailValue}>
-                    {selectedReviewItem.report.claimed_method === 'upi'
-                      ? 'UPI / Online'
-                      : 'Cash'}
-                  </Text>
-                </View>
-
-                {selectedReviewItem.report.reference_number ? (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Transaction Ref</Text>
-                    <Text style={styles.detailValue}>
-                      {selectedReviewItem.report.reference_number}
-                    </Text>
-                  </View>
-                ) : null}
-
-                {selectedReviewItem.report.notes ? (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Resident Note</Text>
-                    <Text style={styles.detailValue}>
-                      {selectedReviewItem.report.notes}
-                    </Text>
-                  </View>
-                ) : null}
-
-                {selectedReviewItem.report.screenshot_url ? (
-                  <View style={styles.screenshotSection}>
-                    <Text style={styles.detailLabel}>Attached Screenshot</Text>
-                    <Pressable
-                      style={styles.screenshotWrap}
-                      onPress={() =>
-                        setFullImageUrl(
-                          reviewSignedUrl ||
-                            selectedReviewItem.report.screenshot_url
-                        )
-                      }>
-                      {loadingReviewUrl ? (
-                        <View
-                          style={[
-                            styles.screenshotThumb,
-                            {
-                              justifyContent: 'center',
-                              alignItems: 'center',
-                              backgroundColor: '#F1F5F9',
-                            },
-                          ]}>
-                          <ActivityIndicator
-                            size="small"
-                            color={OwnerTheme.colors.primary}
-                          />
-                        </View>
-                      ) : (
-                        <Image
-                          source={{
-                            uri:
-                              reviewSignedUrl ||
-                              selectedReviewItem.report.screenshot_url,
-                          }}
-                          style={styles.screenshotThumb}
-                          resizeMode="cover"
-                        />
-                      )}
-                      <Text style={styles.tapToViewText}>
-                        Tap to view full image
-                      </Text>
-                    </Pressable>
-                  </View>
-                ) : null}
-
-                {/* Rejection Form Box */}
-                {showRejectForm && (
-                  <View style={styles.rejectionCard}>
-                    <View style={styles.rejectionHeaderRow}>
-                      <Text style={styles.rejectionHeaderTitle}>
-                        Specify Rejection Reason
-                      </Text>
-                      <Pressable
-                        hitSlop={8}
-                        onPress={() => setShowRejectForm(false)}>
-                        <Text style={styles.rejectionCancelText}>Cancel</Text>
-                      </Pressable>
-                    </View>
-                    <Text style={styles.rejectionHint}>
-                      Select a reason or type feedback for the resident:
-                    </Text>
-                    <View style={styles.presetChipsWrap}>
-                      {PRESET_REJECTION_REASONS.map((preset) => {
-                        const isSelected = rejectionReason === preset;
-                        return (
-                          <Pressable
-                            key={preset}
-                            style={[
-                              styles.presetChip,
-                              isSelected && styles.presetChipSelected,
-                            ]}
-                            onPress={() => setRejectionReason(preset)}>
-                            <Text
-                              style={[
-                                styles.presetChipText,
-                                isSelected && styles.presetChipTextSelected,
-                              ]}>
-                              {preset}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                    <TextInput
-                      style={styles.rejectionInput}
-                      value={rejectionReason}
-                      onChangeText={setRejectionReason}
-                      placeholder="Type custom rejection reason..."
-                      placeholderTextColor="#94A3B8"
-                      multiline
-                      numberOfLines={3}
-                    />
-                    <Pressable
-                      style={[
-                        styles.confirmRejectBtn,
-                        (!rejectionReason.trim() || rejectingPayment) &&
-                          styles.btnDisabled,
-                      ]}
-                      disabled={!rejectionReason.trim() || rejectingPayment}
-                      onPress={handleRejectPayment}>
-                      {rejectingPayment ? (
-                        <ActivityIndicator size="small" color="#FFFFFF" />
-                      ) : (
-                        <Text style={styles.confirmRejectBtnText}>
-                          Confirm Rejection
-                        </Text>
-                      )}
-                    </Pressable>
-                  </View>
-                )}
-              </ScrollView>
-            )}
-
-            {!showRejectForm && (
-              <View style={styles.modalActions}>
-                <Pressable
-                  style={styles.modalCancelBtn}
-                  onPress={() => {
-                    setReviewModalVisible(false);
-                    setShowRejectForm(false);
-                    setRejectionReason('');
-                  }}>
-                  <Text style={styles.modalCancelBtnText}>Close</Text>
-                </Pressable>
-                <Pressable
-                  style={styles.modalRejectBtn}
-                  onPress={() => setShowRejectForm(true)}>
-                  <Text style={styles.modalRejectBtnText}>Reject Proof</Text>
-                </Pressable>
-                <Pressable
-                  style={[
-                    styles.modalConfirmBtn,
-                    confirmingPayment && styles.btnDisabled,
-                  ]}
-                  disabled={confirmingPayment}
-                  onPress={() => {
-                    if (
-                      selectedReviewItem?.charge_id &&
-                      selectedReviewItem.report?.id
-                    ) {
-                      handleConfirmPayment(
-                        selectedReviewItem.charge_id,
-                        selectedReviewItem.report.id,
-                        selectedReviewItem.report.claimed_method
-                      );
-                    }
-                  }}>
-                  {confirmingPayment ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <Text style={styles.modalConfirmBtnText}>
-                      Confirm & Mark Paid
-                    </Text>
-                  )}
-                </Pressable>
+            {bulkContactIssueCount > 0 && (
+              <View style={styles.bulkWarningBanner}>
+                <AlertTriangle size={15} color="#B45309" />
+                <Text style={styles.bulkWarningText}>
+                  {bulkContactIssueCount} resident
+                  {bulkContactIssueCount > 1 ? 's have' : ' has'} a missing or
+                  duplicate phone number. Review before sending.
+                </Text>
               </View>
             )}
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
 
-      {/* Full Screen Image Modal */}
-      <Modal
-        visible={Boolean(fullImageUrl)}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setFullImageUrl(null)}>
-        <View style={styles.fullImageOverlay}>
-          <Pressable
-            style={styles.fullImageCloseBtn}
-            onPress={() => setFullImageUrl(null)}>
-            <Text style={styles.fullImageCloseText}>Close</Text>
-          </Pressable>
-          {fullImageUrl && (
-            <Image
-              source={{ uri: fullImageUrl }}
-              style={{ width: '92%', height: '80%' }}
-              resizeMode="contain"
-            />
-          )}
+            <ScrollView
+              style={styles.bulkListScroll}
+              showsVerticalScrollIndicator={false}>
+              {unpaidReminderTargets.map((target) => {
+                const isMissingPhone = !buildWhatsAppReminderUrl(
+                  target.phoneNumber,
+                  'x'
+                );
+                const isDuplicatePhone = duplicatePhoneResidentIds.has(
+                  target.residentId
+                );
+                const isSent = sentReminderIds.includes(target.residentId);
+
+                return (
+                  <View key={target.residentId} style={styles.bulkRow}>
+                    <View style={{ flex: 1, paddingRight: 10 }}>
+                      <Text style={styles.bulkRowName}>
+                        {target.fullName}{' '}
+                        <Text style={styles.bulkRowRoom}>
+                          · Room {target.roomNumber}
+                        </Text>
+                      </Text>
+                      <Text style={styles.bulkRowMeta}>
+                        {formatPaiseToRupees(target.amountPaise)}
+                        {target.phoneNumber
+                          ? ` · ${target.phoneNumber}`
+                          : ' · No phone saved'}
+                      </Text>
+                      {(isMissingPhone || isDuplicatePhone) && (
+                        <View style={styles.bulkFlagsRow}>
+                          {isMissingPhone && (
+                            <View style={styles.missingPhoneFlag}>
+                              <Text style={styles.missingPhoneFlagText}>
+                                Missing phone
+                              </Text>
+                            </View>
+                          )}
+                          {isDuplicatePhone && (
+                            <View style={styles.duplicatePhoneFlag}>
+                              <AlertTriangle size={10} color="#92400E" />
+                              <Text style={styles.duplicatePhoneFlagText}>
+                                Duplicate phone
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      )}
+                    </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={isMissingPhone}
+                      style={[
+                        styles.bulkSendBtn,
+                        isMissingPhone && styles.bulkSendBtnDisabled,
+                        isSent && !isMissingPhone && styles.bulkSendBtnSent,
+                      ]}
+                      onPress={() => {
+                        void handleSendReminder(
+                          target.fullName,
+                          target.phoneNumber,
+                          target.amountPaise,
+                          target.billLabel,
+                          target.dueDateIso
+                        ).then((opened) => {
+                          if (opened && mountedRef.current) {
+                            setSentReminderIds((prev) =>
+                              prev.includes(target.residentId)
+                                ? prev
+                                : [...prev, target.residentId]
+                            );
+                          }
+                        });
+                      }}>
+                      {isSent && !isMissingPhone ? (
+                        <Check size={13} color={OwnerTheme.colors.success} />
+                      ) : (
+                        <MessageCircle
+                          size={13}
+                          color={
+                            isMissingPhone
+                              ? OwnerTheme.colors.textMuted
+                              : OwnerTheme.colors.primary
+                          }
+                        />
+                      )}
+                      <Text
+                        style={[
+                          styles.bulkSendBtnText,
+                          isMissingPhone && styles.bulkSendBtnTextDisabled,
+                          isSent && !isMissingPhone && styles.bulkSendBtnTextSent,
+                        ]}>
+                        {isMissingPhone
+                          ? 'No phone'
+                          : isSent
+                            ? 'Sent'
+                            : 'Send'}
+                      </Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+            </ScrollView>
+
+            <View style={styles.bulkModalFooter}>
+              <Pressable
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.copyAllBtn,
+                  pressed && styles.cardPressed,
+                ]}
+                onPress={() => void handleCopyAllReminders()}>
+                <Copy size={16} color="#FFFFFF" />
+                <Text style={styles.copyAllBtnText}>Copy all reminders</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
       </Modal>
 
@@ -2248,298 +1447,73 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: OwnerTheme.colors.primary,
   },
-  monthSelectorBar: {
+  residentFilterBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: OwnerTheme.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 12,
+  },
+  residentFilterBannerText: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  residentFilterBannerAction: {
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  bulkRemindBar: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: '#FFFFFF',
     borderRadius: OwnerTheme.radius.md,
     borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    paddingVertical: 6,
+    borderColor: '#BAE6FD',
+    paddingVertical: 10,
     paddingHorizontal: 12,
     marginBottom: 12,
   },
-  monthNavBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: OwnerTheme.radius.sm,
+  bulkRemindLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    paddingRight: 8,
+  },
+  bulkRemindIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: OwnerTheme.colors.primaryLight,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  monthNavBtnPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  monthLabelWrap: {
-    alignItems: 'center',
-  },
-  monthLabelText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  summaryGrid: {
-    flexDirection: 'row',
-    gap: 10,
-    marginBottom: 10,
-  },
-  reviewBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: OwnerTheme.radius.md,
-    paddingVertical: 9,
-    paddingHorizontal: 12,
-    marginBottom: 10,
-  },
-  reviewBannerIcon: {
-    marginRight: 8,
-  },
-  reviewBannerText: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#92400E',
-  },
-  reviewBannerAction: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  inlineSuccessBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: OwnerTheme.colors.successLight,
-    borderRadius: OwnerTheme.radius.sm,
-    marginBottom: 8,
-  },
-  inlineSuccessText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: OwnerTheme.colors.success,
-  },
-  inlineWarningBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: '#FEF3C7',
-    borderRadius: OwnerTheme.radius.sm,
-    marginBottom: 8,
-  },
-  inlineWarningText: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: '#92400E',
-  },
-  inlineActionLink: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  ebSplitterBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    borderRadius: OwnerTheme.radius.md,
-    padding: 12,
-    marginBottom: 8,
-  },
-  ebSplitterTitle: {
+  bulkRemindTitle: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '700',
     color: OwnerTheme.colors.textPrimary,
   },
-  ebSplitterSub: {
+  bulkRemindSub: {
     fontSize: 12,
     color: OwnerTheme.colors.textSecondary,
-    marginTop: 2,
+    marginTop: 1,
   },
-  ebSplitterBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    borderRadius: OwnerTheme.radius.sm,
-    marginLeft: 10,
-  },
-  ebSplitterBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
+  bulkRemindAction: {
+    fontSize: 13,
+    fontWeight: '700',
     color: OwnerTheme.colors.primary,
   },
   cardsList: {
     gap: 12,
-  },
-  billCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    padding: 14,
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    marginBottom: 10,
-  },
-  resName: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  resRoom: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 2,
-  },
-  breakdownBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: OwnerTheme.radius.sm,
-    padding: 10,
-    gap: 8,
-  },
-  breakdownRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  breakdownLabelGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  breakdownLabel: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-  },
-  editLink: {
-    fontSize: 12,
-    color: OwnerTheme.colors.primary,
-    fontWeight: '600',
-  },
-  breakdownValue: {
-    fontSize: 13,
-    fontWeight: '500',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  wmRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  totalRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: OwnerTheme.colors.border,
-    paddingTop: 8,
-    marginTop: 2,
-  },
-  totalLabel: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  totalValue: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  paidInfoBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 10,
-    paddingVertical: 6,
-    paddingHorizontal: 8,
-    backgroundColor: OwnerTheme.colors.successLight,
-    borderRadius: OwnerTheme.radius.sm,
-  },
-  paidInfoText: {
-    fontSize: 12,
-    color: OwnerTheme.colors.success,
-    fontWeight: '500',
-  },
-  duePill: {
-    alignSelf: 'flex-start',
-    marginTop: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: OwnerTheme.radius.full,
-    backgroundColor: '#F1F5F9',
-  },
-  duePillOverdue: {
-    backgroundColor: '#FEE2E2',
-  },
-  duePillText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  duePillTextOverdue: {
-    color: OwnerTheme.colors.danger,
-  },
-  actionRow: {
-    marginTop: 10,
-    flexDirection: 'row',
-    gap: 8,
-  },
-  cashActionBtn: {
-    flex: 1,
-    height: 42,
-    paddingHorizontal: 10,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  cashActionBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  reminderActionBtn: {
-    flex: 1,
-    height: 42,
-    paddingHorizontal: 10,
-    flexDirection: 'row',
-    gap: 6,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  reminderActionBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.primary,
-  },
-  reviewActionBtn: {
-    flex: 1,
-    height: 42,
-    flexDirection: 'row',
-    gap: 6,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  reviewActionBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.primary,
   },
   loadingBox: {
     paddingVertical: 24,
@@ -2553,348 +1527,173 @@ const styles = StyleSheet.create({
   cardPressed: {
     opacity: 0.85,
   },
-  // Modals
-  modalOverlay: {
+  // Bulk Reminder Modal
+  bulkModalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
   },
-  modalCard: {
-    width: '100%',
-    maxWidth: 460,
+  bulkModalBackdrop: {
+    flex: 1,
+  },
+  bulkModalCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    padding: 20,
-    ...OwnerTheme.shadow,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 24,
+    maxHeight: '82%',
+    ...OwnerTheme.shadowElevated,
   },
-  modalHeaderRow: {
+  bulkModalHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#CBD5E1',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  bulkModalHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 10,
+    justifyContent: 'space-between',
+    marginBottom: 12,
   },
-  modalHeading: {
+  bulkModalTitle: {
     fontSize: 18,
     fontWeight: '700',
     color: OwnerTheme.colors.textPrimary,
   },
-  modalExplanation: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-    marginBottom: 14,
-    lineHeight: 18,
-  },
-  inputFieldLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-    marginBottom: 6,
-  },
-  inputBox: {
-    height: 48,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    borderRadius: OwnerTheme.radius.md,
-    paddingHorizontal: 12,
-    fontSize: 15,
-    color: OwnerTheme.colors.textPrimary,
-    backgroundColor: '#F8FAFC',
-    marginBottom: 16,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 10,
-  },
-  modalCancelBtn: {
-    height: 44,
-    paddingHorizontal: 16,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalCancelBtnText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  modalConfirmBtn: {
-    height: 44,
-    paddingHorizontal: 18,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: OwnerTheme.colors.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalConfirmBtnText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFFFFF',
-  },
-  btnDisabled: {
-    opacity: 0.6,
-  },
-  roomChipsWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 14,
-  },
-  roomChip: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: OwnerTheme.radius.full,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    backgroundColor: '#FFFFFF',
-  },
-  roomChipSelected: {
-    backgroundColor: OwnerTheme.colors.primary,
-    borderColor: OwnerTheme.colors.primary,
-  },
-  roomChipText: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textPrimary,
-  },
-  roomChipTextSelected: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  ebSplitPreviewBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: OwnerTheme.radius.md,
-    padding: 12,
-    marginBottom: 14,
-  },
-  ebPreviewTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-    marginBottom: 6,
-  },
-  ebPreviewRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 3,
-  },
-  ebPreviewName: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-  },
-  ebPreviewShare: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.warning,
-  },
-  noOccupantsText: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textMuted,
-  },
-  reviewSummaryBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: OwnerTheme.radius.md,
-    padding: 12,
-    marginBottom: 12,
-  },
-  modalResName: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  modalBillPeriod: {
+  bulkModalSub: {
     fontSize: 12,
     color: OwnerTheme.colors.textSecondary,
     marginTop: 2,
   },
-  detailRow: {
+  bulkWarningBanner: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: OwnerTheme.radius.sm,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    marginBottom: 10,
+  },
+  bulkWarningText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#92400E',
+    lineHeight: 16,
+  },
+  bulkListScroll: {
+    maxHeight: 340,
+  },
+  bulkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 6,
+    paddingVertical: 11,
     borderBottomWidth: 1,
     borderBottomColor: OwnerTheme.colors.borderLight,
   },
-  detailLabel: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-  },
-  detailValue: {
-    fontSize: 13,
-    fontWeight: '500',
+  bulkRowName: {
+    fontSize: 14,
+    fontWeight: '600',
     color: OwnerTheme.colors.textPrimary,
   },
-  detailValueBold: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  screenshotSection: {
-    marginTop: 10,
-  },
-  screenshotWrap: {
-    marginTop: 6,
-    alignItems: 'center',
-  },
-  screenshotThumb: {
-    width: 140,
-    height: 140,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: '#E2E8F0',
-  },
-  tapToViewText: {
-    fontSize: 11,
-    color: OwnerTheme.colors.primary,
-    marginTop: 4,
-    fontWeight: '600',
-  },
-  fullImageOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.92)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  fullImageCloseBtn: {
-    position: 'absolute',
-    top: 50,
-    right: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-    zIndex: 10,
-  },
-  fullImageCloseText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  modalRejectBtn: {
-    height: 44,
-    paddingHorizontal: 14,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    backgroundColor: '#FEF2F2',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalRejectBtnText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#DC2626',
-  },
-  rejectionCard: {
-    marginTop: 14,
-    padding: 12,
-    backgroundColor: '#FEF2F2',
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: '#FECACA',
-  },
-  rejectionHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  rejectionHeaderTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#991B1B',
-  },
-  rejectionCancelText: {
+  bulkRowRoom: {
     fontSize: 12,
-    fontWeight: '600',
-    color: '#64748B',
+    fontWeight: '500',
+    color: OwnerTheme.colors.textSecondary,
   },
-  rejectionHint: {
+  bulkRowMeta: {
     fontSize: 12,
-    color: '#7F1D1D',
-    marginBottom: 10,
-    lineHeight: 16,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 2,
   },
-  presetChipsWrap: {
+  bulkFlagsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 6,
-    marginBottom: 10,
+    marginTop: 5,
   },
-  presetChip: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
+  missingPhoneFlag: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
     borderRadius: OwnerTheme.radius.full,
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-    backgroundColor: '#FFFFFF',
-  },
-  presetChipSelected: {
-    backgroundColor: '#DC2626',
-    borderColor: '#DC2626',
-  },
-  presetChipText: {
-    fontSize: 12,
-    color: '#991B1B',
-    fontWeight: '500',
-  },
-  presetChipTextSelected: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  rejectionInput: {
-    minHeight: 64,
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-    borderRadius: OwnerTheme.radius.md,
-    padding: 10,
-    fontSize: 13,
-    color: '#0F172A',
-    backgroundColor: '#FFFFFF',
-    marginBottom: 12,
-    textAlignVertical: 'top',
-  },
-  confirmRejectBtn: {
-    height: 40,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: '#DC2626',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  confirmRejectBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  rejectedBannerWrap: {
-    backgroundColor: '#FEF2F2',
+    backgroundColor: '#FEE2E2',
     borderWidth: 1,
     borderColor: '#FECACA',
-    borderRadius: OwnerTheme.radius.sm,
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    marginTop: 8,
-    marginBottom: 4,
   },
-  rejectedBannerTitle: {
-    fontSize: 12,
+  missingPhoneFlagText: {
+    fontSize: 10,
     fontWeight: '700',
     color: '#B91C1C',
   },
-  rejectedBannerSub: {
-    fontSize: 11,
-    color: '#7F1D1D',
-    marginTop: 2,
-  },
-  wmPendingBadge: {
-    backgroundColor: '#FEF3C7',
-    borderWidth: 1,
-    borderColor: '#FCD34D',
-    paddingHorizontal: 6,
+  duplicatePhoneFlag: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 7,
     paddingVertical: 2,
     borderRadius: OwnerTheme.radius.full,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
   },
-  wmPendingBadgeText: {
+  duplicatePhoneFlagText: {
     fontSize: 10,
     fontWeight: '700',
     color: '#92400E',
+  },
+  bulkSendBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+  },
+  bulkSendBtnDisabled: {
+    backgroundColor: '#F1F5F9',
+  },
+  bulkSendBtnSent: {
+    backgroundColor: OwnerTheme.colors.successLight,
+  },
+  bulkSendBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  bulkSendBtnTextDisabled: {
+    color: OwnerTheme.colors.textMuted,
+  },
+  bulkSendBtnTextSent: {
+    color: OwnerTheme.colors.success,
+  },
+  bulkModalFooter: {
+    marginTop: 14,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: OwnerTheme.colors.borderLight,
+  },
+  copyAllBtn: {
+    height: 46,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  copyAllBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
 });
