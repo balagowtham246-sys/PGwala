@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { DoorOpen, HelpCircle, Home, LogOut } from 'lucide-react-native';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { GoingOutModal, GoingOutSubmitPayload } from '@/components/going-out-modal';
 import { BottomTabInset } from '@/constants/theme';
 import {
   countDaysOutThisMonth,
@@ -95,6 +96,7 @@ export default function StudentGateHistoryScreen() {
   const [logs, setLogs] = useState<MovementLog[]>([]);
   const [filter, setFilter] = useState<DateFilter>('all');
   const [savingMovement, setSavingMovement] = useState(false);
+  const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
   const [undoToast, setUndoToast] = useState<{
     message: string;
     undoDirection: 'IN' | 'OUT';
@@ -203,6 +205,30 @@ export default function StudentGateHistoryScreen() {
           targetDirection === 'IN' ? 'OUT' : 'IN'
         );
       }
+      await loadData();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      Alert.alert('Update Failed', msg || 'Could not update gate status.');
+    } finally {
+      setSavingMovement(false);
+    }
+  };
+
+  const handleConfirmGoingOut = async (payload: GoingOutSubmitPayload) => {
+    if (savingMovement) return;
+    setSavingMovement(true);
+    try {
+      const { data, error } = await supabase.rpc('record_student_movement', {
+        p_direction: 'OUT',
+        p_purpose: payload.purpose,
+        p_expected_return_time: payload.expectedReturnTime || undefined,
+        p_food_required: payload.foodRequired,
+      });
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Could not update gate status.');
+      setGoingOutModalVisible(false);
+      triggerSuccessHaptic();
+      showUndoToast('Marked Outside PG', 'IN');
       await loadData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -343,9 +369,13 @@ export default function StudentGateHistoryScreen() {
                   savingMovement && { opacity: 0.6 },
                 ]}
                 disabled={savingMovement}
-                onPress={() =>
-                  recordGateToggle(currentStatus === 'IN' ? 'OUT' : 'IN')
-                }>
+                onPress={() => {
+                  if (currentStatus === 'IN') {
+                    setGoingOutModalVisible(true);
+                  } else {
+                    recordGateToggle('IN');
+                  }
+                }}>
                 {savingMovement ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
@@ -485,6 +515,13 @@ export default function StudentGateHistoryScreen() {
           </Pressable>
         </View>
       )}
+
+      <GoingOutModal
+        visible={goingOutModalVisible}
+        saving={savingMovement}
+        onClose={() => setGoingOutModalVisible(false)}
+        onConfirm={handleConfirmGoingOut}
+      />
 
       <RoleBottomNav activeTab="gate" roleOverride="student" />
     </SafeAreaView>

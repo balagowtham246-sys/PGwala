@@ -1066,19 +1066,19 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   categoryChipActive: {
-    backgroundColor: '#E0F2FE',
-    borderColor: '#0284C7',
+    backgroundColor: '#087FAF',
+    borderColor: '#087FAF',
   },
   categoryChipIcon: {
     fontSize: 12,
   },
   categoryChipText: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#475569',
     fontWeight: '600',
   },
   categoryChipTextActive: {
-    color: '#0284C7',
+    color: '#FFFFFF',
     fontWeight: '700',
   },
   prioToggleRow: {

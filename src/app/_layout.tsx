@@ -1,10 +1,10 @@
 import { useEffect } from 'react';
 import { ActivityIndicator, StyleSheet, View } from 'react-native';
-import { DarkTheme, DefaultTheme, Stack, ThemeProvider, router, useSegments } from 'expo-router';
+import { DefaultTheme, Stack, ThemeProvider, router, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import { StatusBar } from 'expo-status-bar';
 import * as Sentry from '@sentry/react-native';
 
-import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { UpdateGuard } from '@/components/update-guard';
 import { AuthProvider, useAuth } from '@/context/auth-context';
@@ -64,6 +64,8 @@ function RootNavigationLayout() {
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="login" />
       <Stack.Screen name="(tabs)" />
+      <Stack.Screen name="owner-tabs" />
+      <Stack.Screen name="resident-tabs" />
       <Stack.Screen name="student-dashboard" />
       <Stack.Screen name="student-in-out" />
       <Stack.Screen name="add-resident" />
@@ -86,16 +88,16 @@ function RootNavigationLayout() {
       <Stack.Screen name="owner-notifications" />
       <Stack.Screen name="owner-wardens" />
       <Stack.Screen name="warden-dashboard" />
+      <Stack.Screen name="warden-settings" />
       <Stack.Screen name="student-food-updates" />
     </Stack>
   );
 }
 
 function RootLayout() {
-  const colorScheme = useColorScheme();
-
   return (
-    <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+    <ThemeProvider value={DefaultTheme}>
+      <StatusBar style="dark" />
       <AuthProvider>
         <PropertyProvider>
           <AnimatedSplashOverlay />

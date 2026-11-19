@@ -38,6 +38,7 @@ import { triggerLightHaptic, triggerSelectionHaptic, triggerSuccessHaptic } from
 import { WashingMachineCard } from '@/components/washing-machine-card';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { FoodStatusBanner } from '@/components/food-status-banner';
+import { GoingOutModal, GoingOutSubmitPayload } from '@/components/going-out-modal';
 import {
   getChatLastSeenStorageKey,
   getFirstName,
@@ -434,24 +435,16 @@ export default function ResidentDashboardScreen() {
   };
 
   // Confirm Going Out with Purpose, Return Time & Food Requirement
-  const handleConfirmGoingOut = async () => {
+  const handleConfirmGoingOut = async (payload: GoingOutSubmitPayload) => {
     if (savingMovement) return;
-    const resolvedPurpose = leavingPurpose === 'Other' ? customPurpose.trim() : leavingPurpose;
-    const resolvedReturn = returnTime === 'Custom' ? customReturnTime.trim() : returnTime;
-
-    if (!resolvedPurpose) {
-      Alert.alert('Purpose Required', 'Please specify the purpose of leaving.');
-      return;
-    }
-
     setSavingMovement(true);
 
     try {
       const { data, error } = await supabase.rpc('record_student_movement', {
         p_direction: 'OUT',
-        p_purpose: resolvedPurpose,
-        p_expected_return_time: resolvedReturn || undefined,
-        p_food_required: foodRequired,
+        p_purpose: payload.purpose,
+        p_expected_return_time: payload.expectedReturnTime || undefined,
+        p_food_required: payload.foodRequired,
       });
 
       if (error) throw error;
@@ -663,8 +656,7 @@ export default function ResidentDashboardScreen() {
                         UP NEXT • RENT ₹0 DUE
                       </Text>
                       <Text style={styles.heroFocusTitle}>
-                        {nextMealCfg.title} (
-                        {nextMealCfg.timeHint.replace(/^[^(]+\(([^)]+)\)$/, '$1')})
+                        {nextMealCfg.title}
                       </Text>
                       <Text style={styles.heroFocusSub} numberOfLines={1}>
                         {nextMealMenu
@@ -830,9 +822,6 @@ export default function ResidentDashboardScreen() {
                   <Text style={styles.mealDetailTitle}>
                     {MEAL_CONFIG[activeMealTab].title}
                   </Text>
-                  <Text style={styles.mealDetailTime}>
-                    {MEAL_CONFIG[activeMealTab].timeHint}
-                  </Text>
                 </View>
 
                 {menus[activeMealTab] ? (
@@ -876,129 +865,12 @@ export default function ResidentDashboardScreen() {
       </ScrollView>
 
       {/* Modal: Mark Going Out */}
-      <Modal
+      <GoingOutModal
         visible={goingOutModalVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setGoingOutModalVisible(false)}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          style={styles.modalOverlay}>
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeaderRow}>
-              <Text style={styles.modalTitle}>Going Out of PG</Text>
-              <Pressable hitSlop={8} onPress={() => setGoingOutModalVisible(false)}>
-                <X size={20} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            </View>
-            <Text style={styles.modalSubtitle}>
-              Inform PG management about your departure and dinner requirement.
-            </Text>
-
-            {/* Purpose Selection */}
-            <Text style={styles.inputSectionLabel}>Purpose of Leaving</Text>
-            <View style={styles.optionChipRow}>
-              {PURPOSE_OPTIONS.map((opt) => (
-                <Pressable
-                  key={opt}
-                  style={[
-                    styles.optionChip,
-                    leavingPurpose === opt && styles.optionChipSelected,
-                  ]}
-                  onPress={() => setLeavingPurpose(opt)}>
-                  <Text
-                    style={[
-                      styles.optionChipText,
-                      leavingPurpose === opt && styles.optionChipTextSelected,
-                    ]}>
-                    {opt}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {leavingPurpose === 'Other' && (
-              <TextInput
-                style={styles.textInput}
-                placeholder="Specify your purpose..."
-                placeholderTextColor={OwnerTheme.colors.textMuted}
-                value={customPurpose}
-                onChangeText={setCustomPurpose}
-              />
-            )}
-
-            {/* Expected Return */}
-            <Text style={styles.inputSectionLabel}>Expected Return Time</Text>
-            <View style={styles.optionChipRow}>
-              {RETURN_TIME_OPTIONS.map((opt) => (
-                <Pressable
-                  key={opt}
-                  style={[
-                    styles.optionChip,
-                    returnTime === opt && styles.optionChipSelected,
-                  ]}
-                  onPress={() => setReturnTime(opt)}>
-                  <Text
-                    style={[
-                      styles.optionChipText,
-                      returnTime === opt && styles.optionChipTextSelected,
-                    ]}>
-                    {opt}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {returnTime === 'Custom' && (
-              <TextInput
-                style={styles.textInput}
-                placeholder="e.g. 9:30 PM tonight"
-                placeholderTextColor={OwnerTheme.colors.textMuted}
-                value={customReturnTime}
-                onChangeText={setCustomReturnTime}
-              />
-            )}
-
-            {/* Dinner Requirement Switch */}
-            <View style={styles.switchRow}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.switchLabel}>Do you need Dinner tonight?</Text>
-                <Text style={styles.switchHint}>
-                  Helps the kitchen prepare the right quantity of food
-                </Text>
-              </View>
-              <Switch
-                value={foodRequired}
-                onValueChange={setFoodRequired}
-                trackColor={{ false: '#E2E8F0', true: OwnerTheme.colors.primary }}
-                thumbColor="#FFFFFF"
-              />
-            </View>
-
-            {/* Submit & Cancel Buttons */}
-            <View style={styles.modalBtnRow}>
-              <Pressable
-                style={styles.modalCancelBtn}
-                onPress={() => setGoingOutModalVisible(false)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.modalConfirmBtn,
-                  savingMovement && styles.btnDisabled,
-                ]}
-                disabled={savingMovement}
-                onPress={handleConfirmGoingOut}>
-                {savingMovement ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.modalConfirmText}>Confirm Departure</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+        saving={savingMovement}
+        onClose={() => setGoingOutModalVisible(false)}
+        onConfirm={handleConfirmGoingOut}
+      />
 
       {undoToast && (
         <View style={styles.undoToast}>

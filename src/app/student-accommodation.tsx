@@ -1,13 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Building2, MapPin, DoorClosed, Clock, Shield, CheckCircle2 } from 'lucide-react-native';
+import { router } from 'expo-router';
+import { Building2, MapPin, DoorClosed, Clock, Shield, CheckCircle2, User, Mail, Phone } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -23,7 +18,7 @@ interface AccommodationData {
 }
 
 export default function ResidentAccommodationScreen() {
-  const { user } = useAuth();
+  const { user, profile } = useAuth();
   const [loading, setLoading] = useState(true);
   const [accommodation, setAccommodation] = useState<AccommodationData | null>(null);
 
@@ -85,8 +80,8 @@ export default function ResidentAccommodationScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <OwnerHeader
-        title="My Accommodation"
-        subtitle="Assigned room and PG facility details"
+        title="My Information"
+        subtitle="Resident profile and PG details"
         showBack
       />
 
@@ -105,6 +100,37 @@ export default function ResidentAccommodationScreen() {
           />
         ) : (
           <>
+            {/* Resident Personal Info Card */}
+            <View style={styles.card}>
+              <Text style={styles.sectionLabel}>RESIDENT DETAILS</Text>
+              <View style={styles.infoRow}>
+                <User size={16} color={OwnerTheme.colors.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.infoLabel}>Full Name</Text>
+                  <Text style={styles.infoValue}>{profile?.full_name || 'Resident'}</Text>
+                </View>
+              </View>
+              <View style={styles.infoRow}>
+                <Mail size={16} color={OwnerTheme.colors.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.infoLabel}>Login Email</Text>
+                  <Text style={styles.infoValue}>{user?.email || '—'}</Text>
+                </View>
+              </View>
+              <View style={styles.infoRow}>
+                <Phone size={16} color={OwnerTheme.colors.primary} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.infoLabel}>Contact Phone</Text>
+                  <Text style={styles.infoValue}>{profile?.phone_number || 'Not added yet'}</Text>
+                </View>
+              </View>
+              <Pressable
+                style={styles.editLinkBtn}
+                onPress={() => router.push('/student-profile-edit')}>
+                <Text style={styles.editLinkText}>Edit Phone or Password ›</Text>
+              </Pressable>
+            </View>
+
             {/* Primary Room Card */}
             <View style={styles.card}>
               <View style={styles.cardHeader}>
@@ -325,6 +351,40 @@ const styles = StyleSheet.create({
   ruleBold: {
     fontWeight: '700',
     color: OwnerTheme.colors.textPrimary,
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textMuted,
+    letterSpacing: 0.6,
+    marginBottom: 8,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: OwnerTheme.colors.borderLight,
+  },
+  infoLabel: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  infoValue: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+    marginTop: 2,
+  },
+  editLinkBtn: {
+    paddingTop: 12,
+    alignItems: 'flex-end',
+  },
+  editLinkText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
   },
 });
 

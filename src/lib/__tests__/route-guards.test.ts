@@ -45,17 +45,17 @@ describe('navigation-guards', () => {
   });
 
   describe('owner persona', () => {
-    it('redirects an authenticated owner away from /login to /(tabs)', () => {
+    it('redirects an authenticated owner away from /login to /owner-tabs', () => {
       expect(
         evaluateNavigationRedirect({
           hasSession: true,
           role: 'owner',
           currentSegment: 'login',
         })
-      ).toBe('/(tabs)');
+      ).toBe('/owner-tabs');
     });
 
-    it('redirects an authenticated owner away from student routes to /(tabs)', () => {
+    it('redirects an authenticated owner away from student routes to /owner-tabs', () => {
       for (const studentRoute of STUDENT_ROUTES) {
         expect(
           evaluateNavigationRedirect({
@@ -63,11 +63,11 @@ describe('navigation-guards', () => {
             role: 'owner',
             currentSegment: studentRoute,
           })
-        ).toBe('/(tabs)');
+        ).toBe('/owner-tabs');
       }
     });
 
-    it('permits an authenticated owner on owner routes and shared routes', () => {
+    it('permits an authenticated owner on owner routes (except raw /(tabs) which redirects to /owner-tabs) and shared routes', () => {
       for (const ownerRoute of OWNER_ROUTES) {
         expect(
           evaluateNavigationRedirect({
@@ -75,7 +75,7 @@ describe('navigation-guards', () => {
             role: 'owner',
             currentSegment: ownerRoute,
           })
-        ).toBeNull();
+        ).toBe(ownerRoute === '(tabs)' ? '/owner-tabs' : null);
       }
 
       // Shared routes like receipt-detail
@@ -90,17 +90,17 @@ describe('navigation-guards', () => {
   });
 
   describe('student persona', () => {
-    it('redirects an authenticated student away from /login to /student-dashboard', () => {
+    it('redirects an authenticated student away from /login to /resident-tabs', () => {
       expect(
         evaluateNavigationRedirect({
           hasSession: true,
           role: 'student',
           currentSegment: 'login',
         })
-      ).toBe('/student-dashboard');
+      ).toBe('/resident-tabs');
     });
 
-    it('redirects an authenticated student away from owner routes to /student-dashboard', () => {
+    it('redirects an authenticated student away from owner routes to /resident-tabs', () => {
       for (const ownerRoute of OWNER_ROUTES) {
         expect(
           evaluateNavigationRedirect({
@@ -108,11 +108,11 @@ describe('navigation-guards', () => {
             role: 'student',
             currentSegment: ownerRoute,
           })
-        ).toBe('/student-dashboard');
+        ).toBe('/resident-tabs');
       }
     });
 
-    it('permits an authenticated student on student routes and shared routes', () => {
+    it('permits an authenticated student on student routes (except raw student-dashboard which redirects to /resident-tabs) and shared routes', () => {
       for (const studentRoute of STUDENT_ROUTES) {
         expect(
           evaluateNavigationRedirect({
@@ -120,7 +120,7 @@ describe('navigation-guards', () => {
             role: 'student',
             currentSegment: studentRoute,
           })
-        ).toBeNull();
+        ).toBe(studentRoute === 'student-dashboard' ? '/resident-tabs' : null);
       }
 
       // Shared routes like receipt-detail
@@ -148,13 +148,16 @@ describe('navigation-guards', () => {
       }
     });
 
-    it('blocks owners and students from the warden dashboard', () => {
+    it('blocks owners and students from the warden dashboard and warden settings', () => {
       expect(
         evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'warden-dashboard' })
-      ).toBe('/(tabs)');
+      ).toBe('/owner-tabs');
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'warden-settings' })
+      ).toBe('/owner-tabs');
       expect(
         evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'warden-dashboard' })
-      ).toBe('/student-dashboard');
+      ).toBe('/resident-tabs');
     });
 
     it('lets owners reach warden management and residents reach food updates', () => {
@@ -166,7 +169,7 @@ describe('navigation-guards', () => {
       ).toBeNull();
       expect(
         evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'owner-wardens' })
-      ).toBe('/student-dashboard');
+      ).toBe('/resident-tabs');
     });
   });
 });

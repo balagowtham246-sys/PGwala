@@ -3,22 +3,20 @@ import {
   Alert,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import {
-  ChevronRight,
-  LogOut,
-  ShieldCheck,
-} from 'lucide-react-native';
+import { ChevronRight, LogOut, ShieldCheck } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
 import { OwnerHeader } from '@/components/ui/owner';
+import { BiometricSettingsRow } from '@/components/biometric-settings-row';
 
 interface ResidentProfileSummary {
   roomNumber: string;
@@ -27,6 +25,7 @@ interface ResidentProfileSummary {
 
 export default function ResidentSettingsScreen() {
   const { user, profile, signOut } = useAuth();
+  const colors = OwnerTheme.colors;
   const [summary, setSummary] = useState<ResidentProfileSummary | null>(null);
 
   useEffect(() => {
@@ -92,121 +91,106 @@ export default function ResidentSettingsScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <OwnerHeader
-        title="Settings"
-        subtitle="Resident Portal"
-        showBack
-      />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
+      <OwnerHeader title="Settings" subtitle="Resident Portal" showBack />
 
-      <View style={styles.container}>
-        {/* Profile Card Header (Tap to Edit) */}
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+        {/* Profile Card Header (Read-only Info View) */}
         <Pressable
           accessibilityRole="button"
           style={({ pressed }) => [
             styles.profileCard,
-            pressed && styles.rowPressed,
+            { backgroundColor: colors.card, borderColor: colors.border },
+            pressed && { backgroundColor: colors.surfaceElevated },
           ]}
-          onPress={() => router.push('/student-profile-edit')}>
-          <View style={styles.avatarCircle}>
-            <Text style={styles.avatarText}>
-              {getInitials(profile?.full_name)}
-            </Text>
+          onPress={() => router.push('/student-accommodation')}>
+          <View style={[styles.avatarCircle, { backgroundColor: colors.primary }]}>
+            <Text style={styles.avatarText}>{getInitials(profile?.full_name)}</Text>
           </View>
           <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>
+            <Text style={[styles.profileName, { color: colors.textPrimary }]}>
               {profile?.full_name || 'Resident'}
             </Text>
-            <Text style={styles.profileSubtitle} numberOfLines={1}>
+            <Text style={[styles.profileSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
               {summary
                 ? `Room ${summary.roomNumber} • ${summary.propertyName}`
                 : profile?.phone_number || user?.email || 'Resident Account'}
             </Text>
           </View>
-          <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
+          <ChevronRight size={18} color={colors.textMuted} />
         </Pressable>
 
-        {/* Group 2: Account & Security */}
+        {/* Account & Security */}
         <View style={styles.section}>
-          <Text style={styles.sectionHeader}>ACCOUNT & SECURITY</Text>
-          <View style={styles.groupedCard}>
+          <Text style={[styles.sectionHeader, { color: colors.textMuted }]}>ACCOUNT & SECURITY</Text>
+          <View style={[styles.groupedCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Pressable
               accessibilityRole="button"
               style={({ pressed }) => [
                 styles.settingsRow,
-                pressed && styles.rowPressed,
+                pressed && { backgroundColor: colors.surfaceElevated },
               ]}
               onPress={() => router.push('/student-profile-edit')}>
-              <View
-                style={[
-                  styles.iconWrap,
-                  { backgroundColor: OwnerTheme.colors.successLight },
-                ]}>
-                <ShieldCheck size={18} color={OwnerTheme.colors.success} />
+              <View style={[styles.iconWrap, { backgroundColor: colors.successLight }]}>
+                <ShieldCheck size={18} color={colors.success} />
               </View>
               <View style={styles.rowContent}>
-                <Text style={styles.rowTitle}>Profile & Password</Text>
-                <Text style={styles.rowSubtitle}>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>Profile & Password</Text>
+                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>
                   Update contact phone & change private password
                 </Text>
               </View>
-              <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
+              <ChevronRight size={18} color={colors.textMuted} />
             </Pressable>
+
+            <BiometricSettingsRow />
           </View>
         </View>
 
-        {/* Group 3: Log Out */}
+        {/* Log Out */}
         <View style={styles.section}>
-          <View style={styles.groupedCard}>
+          <View style={[styles.groupedCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Pressable
               accessibilityRole="button"
               style={({ pressed }) => [
                 styles.settingsRow,
-                pressed && styles.rowPressed,
+                pressed && { backgroundColor: colors.surfaceElevated },
               ]}
               onPress={handleLogout}>
-              <View
-                style={[
-                  styles.iconWrap,
-                  { backgroundColor: OwnerTheme.colors.dangerLight },
-                ]}>
-                <LogOut size={18} color={OwnerTheme.colors.danger} />
+              <View style={[styles.iconWrap, { backgroundColor: colors.dangerLight }]}>
+                <LogOut size={18} color={colors.danger} />
               </View>
               <View style={styles.rowContent}>
-                <Text style={styles.logoutText}>Log Out of PGwala</Text>
+                <Text style={[styles.logoutText, { color: colors.danger }]}>Log Out of PGwala</Text>
               </View>
             </Pressable>
           </View>
         </View>
 
-        <Text style={styles.versionText}>PGwala v2.0 • Resident Edition</Text>
-      </View>
+        <Text style={[styles.versionText, { color: colors.textMuted }]}>
+          PGwala v2.0 • Resident Edition
+        </Text>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: OwnerTheme.colors.background,
-  },
+  safeArea: { flex: 1 },
   container: {
-    flex: 1,
     paddingHorizontal: 16,
     paddingTop: 8,
+    paddingBottom: 40,
     maxWidth: 720,
     width: '100%',
     alignSelf: 'center',
-    justifyContent: 'flex-start',
     gap: 12,
   },
   profileCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
     borderRadius: OwnerTheme.radius.card,
     borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
     padding: 14,
     gap: 12,
   },
@@ -214,7 +198,6 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: OwnerTheme.colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -224,34 +207,14 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     letterSpacing: 0.5,
   },
-  profileInfo: {
-    flex: 1,
-  },
-  profileName: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  profileSubtitle: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 2,
-  },
-  section: {
-    gap: 4,
-  },
-  sectionHeader: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textMuted,
-    letterSpacing: 0.6,
-    marginLeft: 4,
-  },
+  profileInfo: { flex: 1 },
+  profileName: { fontSize: 16, fontWeight: '700' },
+  profileSubtitle: { fontSize: 13, marginTop: 2 },
+  section: { gap: 4 },
+  sectionHeader: { fontSize: 11, fontWeight: '700', letterSpacing: 0.6, marginLeft: 4 },
   groupedCard: {
-    backgroundColor: '#FFFFFF',
     borderRadius: OwnerTheme.radius.card,
     borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
     overflow: 'hidden',
   },
   settingsRow: {
@@ -261,10 +224,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     gap: 12,
   },
-  rowDivider: {
-    borderBottomWidth: 1,
-    borderBottomColor: OwnerTheme.colors.borderLight,
-  },
   iconWrap: {
     width: 34,
     height: 34,
@@ -272,31 +231,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  rowContent: {
-    flex: 1,
-  },
-  rowTitle: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  rowSubtitle: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 2,
-  },
-  logoutText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: OwnerTheme.colors.danger,
-  },
-  rowPressed: {
-    backgroundColor: '#F8FAFC',
-  },
-  versionText: {
-    textAlign: 'center',
-    fontSize: 12,
-    color: OwnerTheme.colors.textMuted,
-    marginTop: 6,
-  },
+  rowContent: { flex: 1 },
+  rowTitle: { fontSize: 14, fontWeight: '600' },
+  rowSubtitle: { fontSize: 12, marginTop: 2 },
+  logoutText: { fontSize: 14, fontWeight: '700' },
+  versionText: { textAlign: 'center', fontSize: 12, marginTop: 6 },
 });

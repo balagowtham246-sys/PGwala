@@ -59,21 +59,18 @@ const MEAL_ORDER: MealType[] = ['breakfast', 'lunch', 'dinner'];
 
 const MEAL_CONFIG: Record<
   MealType,
-  { title: string; timeHint: string; defaultPlaceholder: string }
+  { title: string; defaultPlaceholder: string }
 > = {
   breakfast: {
     title: 'Breakfast',
-    timeHint: 'Morning (7:30 AM – 9:30 AM)',
     defaultPlaceholder: 'e.g., Idli, Sambar, Coconut Chutney, Tea / Coffee',
   },
   lunch: {
     title: 'Lunch',
-    timeHint: 'Afternoon (12:30 PM – 2:30 PM)',
     defaultPlaceholder: 'e.g., Rice, Dal Tadka, Paneer Butter Masala, Roti, Curd',
   },
   dinner: {
     title: 'Dinner',
-    timeHint: 'Night (8:00 PM – 10:00 PM)',
     defaultPlaceholder: 'e.g., Chapati, Mixed Veg Curry, Jeera Rice, Dal, Gulab Jamun',
   },
 };
@@ -842,7 +839,6 @@ export default function FoodMenuScreen() {
                       <Utensils size={18} color="#0284C7" style={{ marginRight: 10 }} />
                       <View>
                         <Text style={styles.mealTitle}>{config.title}</Text>
-                        <Text style={styles.mealTimeHint}>{config.timeHint}</Text>
                       </View>
                     </View>
 

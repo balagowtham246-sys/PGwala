@@ -18,6 +18,10 @@ import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader, PrimaryButton, ErrorState } from '@/components/ui/owner';
+import {
+  isBiometricSignInEnabled,
+  saveBiometricCredentials,
+} from '@/lib/biometric-auth';
 
 export default function ResidentProfileEditScreen() {
   const { user, profile, refreshProfile } = useAuth();
@@ -95,6 +99,10 @@ export default function ResidentProfileEditScreen() {
           .from('profiles')
           .update({ must_change_password: false })
           .eq('id', user.id);
+
+        if (user.email && (await isBiometricSignInEnabled())) {
+          await saveBiometricCredentials(user.email, newPassword);
+        }
 
         setNewPassword('');
         setConfirmPassword('');

@@ -13,6 +13,7 @@ import {
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useResidentTabs } from '@/context/resident-tabs-context';
 import { triggerSelectionHaptic } from '@/lib/haptics';
 import Animated, { FadeIn, useReducedMotion } from 'react-native-reanimated';
 
@@ -21,6 +22,8 @@ export type BottomNavTab = 'maintenance' | 'menu' | 'home' | 'gate' | 'bill';
 interface BottomNavProps {
   activeTab: BottomNavTab;
   roleOverride?: 'owner' | 'student';
+  isPagerShell?: boolean;
+  onSelectTab?: (tab: BottomNavTab) => void;
 }
 
 interface TabConfig {
@@ -50,8 +53,8 @@ const TABS: TabConfig[] = [
     key: 'home',
     label: 'Home',
     icon: Home,
-    ownerRoute: '/(tabs)',
-    studentRoute: '/student-dashboard',
+    ownerRoute: '/owner-tabs',
+    studentRoute: '/resident-tabs',
   },
   {
     key: 'gate',
@@ -69,15 +72,30 @@ const TABS: TabConfig[] = [
   },
 ];
 
-export function RoleBottomNav({ activeTab, roleOverride }: BottomNavProps) {
+export function RoleBottomNav({
+  activeTab,
+  roleOverride,
+  isPagerShell = false,
+  onSelectTab,
+}: BottomNavProps) {
   const { profile } = useAuth();
+  const { isInsidePager } = useResidentTabs();
   const insets = useSafeAreaInsets();
   const reducedMotion = useReducedMotion();
   const effectiveRole = roleOverride ?? (profile?.role === 'owner' ? 'owner' : 'student');
 
+  // Inside the swipeable resident-tabs pager, only the shell renders the pinned bottom bar.
+  if (isInsidePager && !isPagerShell) {
+    return null;
+  }
+
   const handlePress = (tab: TabConfig) => {
     if (tab.key === activeTab) return;
     triggerSelectionHaptic();
+    if (onSelectTab) {
+      onSelectTab(tab.key);
+      return;
+    }
     const target = effectiveRole === 'owner' ? tab.ownerRoute : tab.studentRoute;
     router.replace(target as any);
   };

@@ -25,10 +25,10 @@ interface StudentFoodMenuItem {
   notes: string | null;
 }
 
-const MEAL_META: Record<MealType, { title: string; timeHint: string }> = {
-  breakfast: { title: 'Breakfast', timeHint: '7:30 AM – 9:30 AM' },
-  lunch: { title: 'Lunch', timeHint: '12:30 PM – 2:30 PM' },
-  dinner: { title: 'Dinner', timeHint: '8:00 PM – 10:00 PM' },
+const MEAL_META: Record<MealType, { title: string }> = {
+  breakfast: { title: 'Breakfast' },
+  lunch: { title: 'Lunch' },
+  dinner: { title: 'Dinner' },
 };
 
 function getTodayIso(): string {
@@ -134,7 +134,6 @@ export default function StudentMenuScreen() {
                   <Utensils size={18} color={OwnerTheme.colors.primary} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.mealTitle}>{meta.title}</Text>
-                    <Text style={styles.mealTime}>{meta.timeHint}</Text>
                   </View>
                 </View>
                 <Text style={styles.mealItems}>

@@ -90,20 +90,11 @@ export interface OwnerFoodMenuRecord {
 
 const MEAL_CONFIG: Record<
   MealType,
-  { title: string; timeHint: string }
+  { title: string }
 > = {
-  breakfast: {
-    title: 'Breakfast',
-    timeHint: 'Morning (7:30 AM – 9:30 AM)',
-  },
-  lunch: {
-    title: 'Lunch',
-    timeHint: 'Afternoon (12:30 PM – 2:30 PM)',
-  },
-  dinner: {
-    title: 'Dinner',
-    timeHint: 'Night (8:00 PM – 10:00 PM)',
-  },
+  breakfast: { title: 'Breakfast' },
+  lunch: { title: 'Lunch' },
+  dinner: { title: 'Dinner' },
 };
 
 function toLocalIsoDate(date: Date = new Date()): string {
@@ -1113,9 +1104,6 @@ export default function OwnerDashboard() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.mealDetailTitle}>
                   {MEAL_CONFIG[activeMealTab].title}
-                </Text>
-                <Text style={styles.mealDetailTime}>
-                  {MEAL_CONFIG[activeMealTab].timeHint}
                 </Text>
               </View>
               {todayMenus[activeMealTab] ? (

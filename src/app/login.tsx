@@ -6,7 +6,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
@@ -18,9 +17,6 @@ import {
   EyeOff,
   AlertCircle,
   Fingerprint,
-  Receipt,
-  ShieldCheck,
-  Wrench,
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
@@ -32,6 +28,7 @@ import {
   clearBiometricCredentials,
   getBiometricAvailability,
   getSavedBiometricCredentials,
+  isBiometricSignInEnabled,
   saveBiometricCredentials,
   SavedBiometricCredentials,
 } from '@/lib/biometric-auth';
@@ -44,23 +41,20 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
-  const [biometricLabel, setBiometricLabel] = useState('Biometrics');
   const [savedCreds, setSavedCreds] = useState<SavedBiometricCredentials | null>(null);
-  const [enableBiometric, setEnableBiometric] = useState(false);
 
   useEffect(() => {
     let active = true;
     (async () => {
-      const [avail, creds] = await Promise.all([
+      const [avail, enabled, creds] = await Promise.all([
         getBiometricAvailability(),
+        isBiometricSignInEnabled(),
         getSavedBiometricCredentials(),
       ]);
       if (!active) return;
       setBiometricAvailable(avail.available);
-      setBiometricLabel(avail.label);
-      if (avail.available && creds) {
+      if (avail.available && enabled && creds) {
         setSavedCreds(creds);
-        setEnableBiometric(true);
         setEmail((prev) => prev || creds.email);
       }
     })();
@@ -133,22 +127,17 @@ export default function LoginScreen() {
 
       const profile = profileData as UserProfile;
 
-      // 3. Persist or clear biometric credentials based on user preference
-      if (!fromBiometric && biometricAvailable) {
-        if (enableBiometric) {
-          await saveBiometricCredentials(targetEmail, targetPassword);
-          setSavedCreds({ email: targetEmail, password: targetPassword });
-        } else {
-          await clearBiometricCredentials();
-          setSavedCreds(null);
-        }
+      // 3. Refresh stored biometric credentials only if user already enabled it in Settings for this account
+      if (!fromBiometric && biometricAvailable && savedCreds && savedCreds.email === targetEmail) {
+        await saveBiometricCredentials(targetEmail, targetPassword);
+        setSavedCreds({ email: targetEmail, password: targetPassword });
       }
 
       // 4. Enforce Role Check and Navigation
       if (profile.role === 'owner') {
-        router.replace('/(tabs)');
+        router.replace('/owner-tabs');
       } else if (profile.role === 'student') {
-        router.replace('/student-dashboard');
+        router.replace('/resident-tabs');
       } else if (profile.role === 'warden') {
         router.replace('/warden-dashboard');
       } else {
@@ -184,7 +173,7 @@ export default function LoginScreen() {
   const handleBiometricSignIn = async () => {
     if (!savedCreds || loading) return;
     const verified = await authenticateWithBiometrics(
-      `Sign in to PGwala with ${biometricLabel}`
+      'Verify your biometrics to sign in to PGwala'
     );
     if (!verified) return;
     await performSignIn(savedCreds.email, savedCreds.password, true);
@@ -193,7 +182,7 @@ export default function LoginScreen() {
   const handleForgotPassword = () => {
     Alert.alert(
       'Reset Password',
-      'If you have forgotten your password, please contact your PG administrator or support at support@pgwala.in to request a password reset link.',
+      'Please contact your PG owner or management to reset your password.',
       [{ text: 'OK' }]
     );
   };
@@ -209,28 +198,13 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled"
           keyboardDismissMode="on-drag"
           showsVerticalScrollIndicator={false}>
-          {/* Brand Header & Value Highlights */}
+          {/* Brand Header */}
           <View style={styles.brandContainer}>
             <View style={styles.logoBadge}>
               <Text style={styles.logoBadgeText}>PG</Text>
             </View>
             <Text style={styles.appTitle}>PGwala</Text>
             <Text style={styles.appSubtitle}>Run your PG effortlessly</Text>
-
-            <View style={styles.valuePillsRow}>
-              <View style={styles.valuePill}>
-                <Receipt size={13} color={OwnerTheme.colors.primary} />
-                <Text style={styles.valuePillText}>Rent & EB Billing</Text>
-              </View>
-              <View style={styles.valuePill}>
-                <ShieldCheck size={13} color={OwnerTheme.colors.primary} />
-                <Text style={styles.valuePillText}>Smart Gate Logs</Text>
-              </View>
-              <View style={styles.valuePill}>
-                <Wrench size={13} color={OwnerTheme.colors.primary} />
-                <Text style={styles.valuePillText}>Instant Maintenance</Text>
-              </View>
-            </View>
           </View>
 
           {/* Login Card */}
@@ -305,23 +279,6 @@ export default function LoginScreen() {
               </View>
             </View>
 
-            {/* Biometric Opt-in Toggle */}
-            {biometricAvailable && (
-              <View style={styles.biometricToggleRow}>
-                <Text style={styles.biometricToggleLabel}>
-                  Enable {biometricLabel} sign-in
-                </Text>
-                <Switch
-                  value={enableBiometric}
-                  onValueChange={setEnableBiometric}
-                  trackColor={{
-                    false: OwnerTheme.colors.border,
-                    true: OwnerTheme.colors.primary,
-                  }}
-                />
-              </View>
-            )}
-
             {/* Sign In Button */}
             <PrimaryButton
               label="Sign In"
@@ -330,7 +287,7 @@ export default function LoginScreen() {
               style={{ marginTop: 8 }}
             />
 
-            {/* Biometric Quick Sign-In */}
+            {/* Biometric Quick Sign-In (only shown when enabled in Settings) */}
             {biometricAvailable && savedCreds && (
               <Pressable
                 style={[styles.biometricBtn, loading && { opacity: 0.6 }]}
@@ -338,7 +295,7 @@ export default function LoginScreen() {
                 disabled={loading}>
                 <Fingerprint size={18} color={OwnerTheme.colors.primary} />
                 <Text style={styles.biometricBtnText}>
-                  Sign in with {biometricLabel}
+                  Sign in with Biometrics
                 </Text>
               </Pressable>
             )}

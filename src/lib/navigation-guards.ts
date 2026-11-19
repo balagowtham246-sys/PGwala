@@ -3,6 +3,7 @@
  */
 
 export const STUDENT_ROUTES = [
+  'resident-tabs',
   'student-dashboard',
   'student-billing',
   'student-complaints',
@@ -17,6 +18,7 @@ export const STUDENT_ROUTES = [
 
 export const OWNER_ROUTES = [
   '(tabs)',
+  'owner-tabs',
   'student-in-out',
   'add-resident',
   'edit-resident',
@@ -32,6 +34,7 @@ export const OWNER_ROUTES = [
 
 export const WARDEN_ROUTES = [
   'warden-dashboard',
+  'warden-settings',
   'student-profile-edit',
 ] as const;
 
@@ -58,11 +61,14 @@ export function evaluateNavigationRedirect(state: NavigationGuardState): string 
   if (role === 'owner') {
     if (
       inAuthGroup ||
+      currentSegment === '(tabs)' ||
+      !currentSegment ||
       (currentSegment &&
         ((STUDENT_ROUTES as readonly string[]).includes(currentSegment) ||
-          currentSegment === 'warden-dashboard'))
+          currentSegment === 'warden-dashboard' ||
+          currentSegment === 'warden-settings'))
     ) {
-      return '/(tabs)';
+      return '/owner-tabs';
     }
     return null; // Permitted on owner or shared routes
   }
@@ -71,12 +77,14 @@ export function evaluateNavigationRedirect(state: NavigationGuardState): string 
   if (role === 'student') {
     if (
       inAuthGroup ||
+      currentSegment === 'student-dashboard' ||
       (currentSegment &&
         ((OWNER_ROUTES as readonly string[]).includes(currentSegment) ||
-          currentSegment === 'warden-dashboard')) ||
+          currentSegment === 'warden-dashboard' ||
+          currentSegment === 'warden-settings')) ||
       !currentSegment
     ) {
-      return '/student-dashboard';
+      return '/resident-tabs';
     }
     return null; // Permitted on student or shared routes (e.g. receipt-detail)
   }

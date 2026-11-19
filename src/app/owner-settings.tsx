@@ -5,6 +5,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -31,10 +32,13 @@ import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader } from '@/components/ui/owner';
+import { BiometricSettingsRow } from '@/components/biometric-settings-row';
 
 export default function OwnerSettingsScreen() {
   const { user, profile, signOut } = useAuth();
   const { selectedProperty, properties } = useProperty();
+  const colors = OwnerTheme.colors;
+  const [ownerInfoVisible, setOwnerInfoVisible] = useState(false);
 
   const [wmModalVisible, setWmModalVisible] = useState(false);
   const [wmCount, setWmCount] = useState<number>(2);
@@ -119,22 +123,23 @@ export default function OwnerSettingsScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <OwnerHeader
         title="Settings"
         subtitle={selectedProperty?.name || 'Owner Portal'}
         showBack
       />
 
-      <View style={styles.container}>
-        {/* Profile Card Header (Tap to Edit) */}
+      <ScrollView contentContainerStyle={[styles.container, { flex: undefined, paddingBottom: 40 }]} showsVerticalScrollIndicator={false}>
+        {/* Profile Card Header (Read-only Info Modal) */}
         <Pressable
           accessibilityRole="button"
           style={({ pressed }) => [
             styles.profileCard,
-            pressed && styles.rowPressed,
+            { backgroundColor: colors.card, borderColor: colors.border },
+            pressed && { backgroundColor: colors.surfaceElevated },
           ]}
-          onPress={() => router.push('/owner-profile-edit')}>
+          onPress={() => setOwnerInfoVisible(true)}>
           <View style={styles.avatarCircle}>
             <Text style={styles.avatarText}>
               {getInitials(profile?.full_name)}
@@ -308,6 +313,8 @@ export default function OwnerSettingsScreen() {
               </View>
               <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
             </Pressable>
+
+            <BiometricSettingsRow />
           </View>
         </View>
 
@@ -335,8 +342,44 @@ export default function OwnerSettingsScreen() {
           </View>
         </View>
 
-        <Text style={styles.versionText}>PGwala v2.0 • Owner Portal</Text>
-      </View>
+        <Text style={[styles.versionText, { color: colors.textMuted }]}>PGwala v2.0 • Owner Portal</Text>
+      </ScrollView>
+
+      {/* Read-only Owner Information Modal */}
+      <Modal
+        visible={ownerInfoVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setOwnerInfoVisible(false)}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Owner Information</Text>
+              <Pressable hitSlop={8} onPress={() => setOwnerInfoVisible(false)}>
+                <X size={20} color={colors.textSecondary} />
+              </Pressable>
+            </View>
+            <View style={{ gap: 10, marginTop: 12 }}>
+              <View>
+                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>Full Name</Text>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>{profile?.full_name || 'PG Owner'}</Text>
+              </View>
+              <View>
+                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>Email</Text>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>{user?.email || '—'}</Text>
+              </View>
+              <View>
+                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>Phone</Text>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>{profile?.phone_number || 'Not added'}</Text>
+              </View>
+              <View>
+                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>Properties Managed</Text>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>{properties.length}</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Configure Washing Machines Stepper Modal */}
       <Modal

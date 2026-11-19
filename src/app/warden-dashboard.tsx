@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { AlertTriangle, Check, KeyRound, LogOut, Megaphone, Send } from 'lucide-react-native';
+import { AlertTriangle, Check, Megaphone, Send, Settings } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -57,7 +57,8 @@ function defaultMealForNow(): FoodMealType {
 }
 
 export default function WardenDashboardScreen() {
-  const { profile, user, signOut } = useAuth();
+  const { profile, user } = useAuth();
+  const colors = OwnerTheme.colors;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -219,49 +220,39 @@ export default function WardenDashboardScreen() {
     setRefreshing(false);
   };
 
-  const confirmSignOut = () => {
-    Alert.alert('Sign out?', undefined, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Sign out', style: 'destructive', onPress: () => signOut().then(() => router.replace('/login')) },
-    ]);
-  };
-
   const headerActions = (
-    <View style={{ flexDirection: 'row', gap: 4 }}>
-      <Pressable
-        accessibilityLabel="Profile and password"
-        hitSlop={8}
-        style={styles.headerIconBtn}
-        onPress={() => router.push('/student-profile-edit')}>
-        <KeyRound size={20} color={OwnerTheme.colors.textPrimary} />
-      </Pressable>
-      <Pressable accessibilityLabel="Sign out" hitSlop={8} style={styles.headerIconBtn} onPress={confirmSignOut}>
-        <LogOut size={20} color={OwnerTheme.colors.textPrimary} />
-      </Pressable>
-    </View>
+    <Pressable
+      accessibilityLabel="Warden Settings"
+      hitSlop={8}
+      style={styles.headerIconBtn}
+      onPress={() => router.push('/warden-settings')}>
+      <Settings size={20} color={colors.textPrimary} />
+    </Pressable>
   );
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
         <OwnerHeader title="Food Alerts" rightAction={headerActions} />
-        <ActivityIndicator style={{ marginTop: 48 }} size="large" color={OwnerTheme.colors.primary} />
+        <ActivityIndicator style={{ marginTop: 48 }} size="large" color={colors.primary} />
       </SafeAreaView>
     );
   }
 
   if (!property) {
     return (
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
         <OwnerHeader title="Food Alerts" rightAction={headerActions} />
         <View style={styles.emptyWrap}>
-          <Megaphone size={36} color={OwnerTheme.colors.textMuted} />
-          <Text style={styles.emptyTitle}>No property assigned</Text>
-          <Text style={styles.emptyText}>
+          <Megaphone size={36} color={colors.textMuted} />
+          <Text style={[styles.emptyTitle, { color: colors.textPrimary }]}>No property assigned</Text>
+          <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
             {loadError ?? 'Ask the PG owner to assign you to a property. Pull down to refresh after that.'}
           </Text>
-          <Pressable style={styles.retryBtn} onPress={handleRefresh}>
-            <Text style={styles.retryText}>Refresh</Text>
+          <Pressable
+            style={[styles.retryBtn, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            onPress={handleRefresh}>
+            <Text style={[styles.retryText, { color: colors.textPrimary }]}>Refresh</Text>
           </Pressable>
         </View>
       </SafeAreaView>
@@ -269,7 +260,7 @@ export default function WardenDashboardScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
       <OwnerHeader title="Food Alerts" subtitle={property.name} rightAction={headerActions} />
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>

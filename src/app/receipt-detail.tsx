@@ -169,8 +169,8 @@ export default function ReceiptDetailScreen() {
   return (
     <SafeAreaView style={styles.safeArea}>
       <OwnerHeader
-        title="Official Receipt"
-        subtitle={payment?.receipt_number || 'Loading...'}
+        title="Payment Summary"
+        subtitle={payment?.payment_date || 'Loading...'}
         showBack
       />
       <ScrollView contentContainerStyle={styles.scrollContent}>
@@ -204,30 +204,35 @@ export default function ReceiptDetailScreen() {
               </View>
             )}
 
-            {/* Receipt Paper Card */}
+            {/* Simplified Payment Summary Card */}
             <View style={styles.receiptPaper}>
-              {/* Receipt Header */}
               <View style={styles.receiptHeader}>
-                <View style={styles.receiptBrandBadge}>
-                  <Text style={styles.receiptBrandText}>PG</Text>
+                <View
+                  style={[
+                    styles.footerStamp,
+                    {
+                      borderTopWidth: 0,
+                      marginTop: 0,
+                      paddingTop: 0,
+                      marginBottom: 8,
+                    },
+                  ]}>
+                  <Text
+                    style={[
+                      styles.footerStampText,
+                      {
+                        color: isReversed ? '#DC2626' : '#16A34A',
+                        letterSpacing: 0.6,
+                      },
+                    ]}>
+                    {isReversed ? 'REVERSED' : 'PAID'}
+                  </Text>
                 </View>
+                <Text style={styles.totalAmount}>
+                  ₹{(payment.amount_paise / 100).toLocaleString('en-IN')}
+                </Text>
                 <Text style={styles.propertyName}>{payment.property?.name || 'PG Accommodation'}</Text>
-                {payment.property?.address && (
-                  <Text style={styles.propertyAddress}>{payment.property.address}</Text>
-                )}
                 <View style={styles.divider} />
-              </View>
-
-              {/* Receipt Number & Status */}
-              <View style={styles.metaRow}>
-                <View>
-                  <Text style={styles.metaLabel}>Receipt Number</Text>
-                  <Text style={styles.metaValHighlight}>{payment.receipt_number}</Text>
-                </View>
-                <View style={{ alignItems: 'flex-end' }}>
-                  <Text style={styles.metaLabel}>Payment Date</Text>
-                  <Text style={styles.metaVal}>{payment.payment_date}</Text>
-                </View>
               </View>
 
               <View style={styles.metaRow}>
@@ -238,6 +243,13 @@ export default function ReceiptDetailScreen() {
                   </Text>
                 </View>
                 <View style={{ alignItems: 'flex-end' }}>
+                  <Text style={styles.metaLabel}>Payment Date</Text>
+                  <Text style={styles.metaVal}>{payment.payment_date}</Text>
+                </View>
+              </View>
+
+              <View style={styles.metaRow}>
+                <View>
                   <Text style={styles.metaLabel}>Payment Method</Text>
                   <Text style={styles.metaVal}>{payment.method.toUpperCase()}</Text>
                 </View>
@@ -245,22 +257,14 @@ export default function ReceiptDetailScreen() {
 
               <View style={styles.dashedDivider} />
 
-              {/* Settled Charges Breakdown */}
-              <Text style={styles.sectionHeader}>Settled Charges</Text>
+              <Text style={styles.sectionHeader}>Bill Details</Text>
               {payment.allocations && payment.allocations.length > 0 ? (
                 payment.allocations.map((alloc, idx) => (
                   <View key={alloc.id || idx} style={styles.chargeItemRow}>
                     <View style={{ flex: 1, paddingRight: 8 }}>
                       <Text style={styles.chargeItemDesc}>
-                        {alloc.charge?.description || 'Charge'}
+                        {alloc.charge?.description || 'Monthly Bill'}
                         {alloc.status === 'reversed' ? ' (Reversed)' : ''}
-                      </Text>
-                      <Text style={styles.chargeItemMeta}>
-                        Category: {alloc.charge?.category?.toUpperCase()}
-                        {alloc.charge?.billing_period_start
-                          ? ` • Period: ${alloc.charge.billing_period_start}`
-                          : ''}
-                        {alloc.charge?.due_date ? ` • Due: ${alloc.charge.due_date}` : ''}
                       </Text>
                     </View>
                     <Text style={styles.chargeItemAmount}>
@@ -270,62 +274,16 @@ export default function ReceiptDetailScreen() {
                 ))
               ) : (
                 <Text style={styles.emptyNote}>
-                  No complete charges were settled by this payment.
+                  Payment recorded for your account.
                 </Text>
               )}
-
-              {/* Remaining Balance / Unallocated Amount Row */}
-              <View
-                style={[
-                  styles.unallocRow,
-                  payment.unallocated_amount_paise > 0
-                    ? styles.unallocRowCredit
-                    : styles.unallocRowZero,
-                ]}>
-                <Text
-                  style={[
-                    styles.unallocLabel,
-                    payment.unallocated_amount_paise > 0
-                      ? styles.unallocLabelCredit
-                      : styles.unallocLabelZero,
-                  ]}>
-                  Remaining Balance / Credit
-                </Text>
-                <Text
-                  style={[
-                    styles.unallocVal,
-                    payment.unallocated_amount_paise > 0
-                      ? styles.unallocValCredit
-                      : styles.unallocValZero,
-                  ]}>
-                  ₹{(payment.unallocated_amount_paise / 100).toLocaleString('en-IN')}
-                  {payment.unallocated_amount_paise === 0 ? ' (Fully Allocated)' : ''}
-                </Text>
-              </View>
-
-              <View style={styles.dashedDivider} />
-
-              {/* Total Paid Row */}
-              <View style={styles.totalRow}>
-                <Text style={styles.totalLabel}>Total Received</Text>
-                <Text style={styles.totalAmount}>
-                  ₹{(payment.amount_paise / 100).toLocaleString('en-IN')}
-                </Text>
-              </View>
 
               {payment.notes && (
                 <View style={styles.notesBox}>
-                  <Text style={styles.notesLabel}>Notes / Reference:</Text>
+                  <Text style={styles.notesLabel}>Reference / Note:</Text>
                   <Text style={styles.notesContent}>{payment.notes}</Text>
                 </View>
               )}
-
-              {/* Footer Stamp */}
-              <View style={styles.footerStamp}>
-                <Text style={styles.footerStampText}>
-                  {isReversed ? 'CANCELLED / REVERSED' : 'VERIFIED & APPROVED'}
-                </Text>
-              </View>
             </View>
 
             {/* Owner Reversal Button */}

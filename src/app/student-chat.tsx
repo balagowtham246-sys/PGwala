@@ -12,6 +12,7 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -95,8 +96,8 @@ export default function StudentChatScreen() {
       }
 
       const propName = Array.isArray(resData.property)
-        ? resData.property[0]?.name || 'PG Lounge'
-        : (resData.property as { name?: string } | null)?.name || 'PG Lounge';
+        ? resData.property[0]?.name || 'PG'
+        : (resData.property as { name?: string } | null)?.name || 'PG';
 
       const curResident: CurrentResident = {
         id: resData.id,
@@ -384,12 +385,19 @@ export default function StudentChatScreen() {
     );
   };
 
+  useEffect(() => {
+    const sub = Keyboard.addListener('keyboardDidShow', () => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    });
+    return () => sub.remove();
+  }, []);
+
   if (loading) {
     return (
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color="#0284C7" />
-          <Text style={styles.loadingText}>Opening PG Lounge...</Text>
+          <Text style={styles.loadingText}>Opening PG Chat...</Text>
         </View>
       </SafeAreaView>
     );
@@ -429,7 +437,7 @@ export default function StudentChatScreen() {
 
         <View style={styles.headerTextWrap}>
           <Text style={styles.headerTitle} numberOfLines={1}>
-            {resident.propertyName} Lounge
+            {resident.propertyName} Chat
           </Text>
           <View style={styles.securityBadge}>
             <Lock size={11} color="#059669" />
@@ -440,7 +448,7 @@ export default function StudentChatScreen() {
 
       <KeyboardAvoidingView
         style={styles.keyboardView}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
         {/* Messages List */}
         <FlatList
@@ -455,7 +463,7 @@ export default function StudentChatScreen() {
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
               <MessageCircle size={36} color="#0284C7" style={{ marginBottom: 10 }} />
-              <Text style={styles.emptyTitle}>Welcome to Your PG Lounge!</Text>
+              <Text style={styles.emptyTitle}>Welcome to {resident.propertyName} Chat</Text>
               <Text style={styles.emptySub}>
                 Say hello to your flatmates. Discuss maintenance issues, EB bill splits, food
                 updates, and daily PG coordination in complete privacy.
