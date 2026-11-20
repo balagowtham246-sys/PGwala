@@ -9,11 +9,12 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
-import { ChevronRight, LogOut, ShieldCheck } from 'lucide-react-native';
+import { Href, router } from 'expo-router';
+import { Bell, ChevronRight, LogOut, Megaphone, ShieldCheck } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { formatRoomLabel } from '@/lib/ux-utils';
 import { supabase } from '@/lib/supabase';
 import { OwnerHeader } from '@/components/ui/owner';
 import { BiometricSettingsRow } from '@/components/biometric-settings-row';
@@ -29,6 +30,7 @@ export default function ResidentSettingsScreen() {
   const [summary, setSummary] = useState<ResidentProfileSummary | null>(null);
 
   useEffect(() => {
+    let active = true;
     (async () => {
       if (!user?.id) return;
       try {
@@ -44,17 +46,19 @@ export default function ResidentSettingsScreen() {
           .eq('is_active', true)
           .maybeSingle();
 
-        if (data) {
-          const prop = Array.isArray(data.property) ? data.property[0] : data.property;
-          setSummary({
-            roomNumber: data.room_number,
-            propertyName: prop?.name || 'My PG',
-          });
-        }
+        if (!active || !data) return;
+        const prop = Array.isArray(data.property) ? data.property[0] : data.property;
+        setSummary({
+          roomNumber: data.room_number,
+          propertyName: prop?.name || 'My PG',
+        });
       } catch (err) {
         console.warn('Failed to load resident summary:', err);
       }
     })();
+    return () => {
+      active = false;
+    };
   }, [user?.id]);
 
   const handleLogout = async () => {
@@ -92,7 +96,14 @@ export default function ResidentSettingsScreen() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      <OwnerHeader title="Settings" subtitle="Resident Portal" showBack />
+      <OwnerHeader
+        title="Settings"
+        subtitle="Resident Portal"
+        showBack
+        onBack={() =>
+          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+        }
+      />
 
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
         {/* Profile Card Header (Read-only Info View) */}
@@ -113,12 +124,57 @@ export default function ResidentSettingsScreen() {
             </Text>
             <Text style={[styles.profileSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
               {summary
-                ? `Room ${summary.roomNumber} • ${summary.propertyName}`
+                ? `${formatRoomLabel(summary.roomNumber)} · ${summary.propertyName}`
                 : profile?.phone_number || user?.email || 'Resident Account'}
             </Text>
           </View>
           <ChevronRight size={18} color={colors.textMuted} />
         </Pressable>
+
+        {/* Preferences & Alerts */}
+        <View style={styles.section}>
+          <Text style={[styles.sectionHeader, { color: colors.textMuted }]}>Preferences & Alerts</Text>
+          <View style={[styles.groupedCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.settingsRow,
+                { borderBottomWidth: 1, borderBottomColor: colors.borderLight },
+                pressed && { backgroundColor: colors.surfaceElevated },
+              ]}
+              onPress={() => router.push('/student-notifications' as Href)}>
+              <View style={[styles.iconWrap, { backgroundColor: colors.warningLight }]}>
+                <Bell size={18} color={colors.warning} />
+              </View>
+              <View style={styles.rowContent}>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>Notification Settings</Text>
+                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>
+                  Rent reminders, meal alerts & quiet hours
+                </Text>
+              </View>
+              <ChevronRight size={18} color={colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.settingsRow,
+                pressed && { backgroundColor: colors.surfaceElevated },
+              ]}
+              onPress={() => router.push('/student-announcements' as Href)}>
+              <View style={[styles.iconWrap, { backgroundColor: colors.primaryLight }]}>
+                <Megaphone size={18} color={colors.primary} />
+              </View>
+              <View style={styles.rowContent}>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>Notices & Announcements</Text>
+                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>
+                  View PG updates & food status alerts
+                </Text>
+              </View>
+              <ChevronRight size={18} color={colors.textMuted} />
+            </Pressable>
+          </View>
+        </View>
 
         {/* Account & Security */}
         <View style={styles.section}>

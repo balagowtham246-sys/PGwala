@@ -13,6 +13,8 @@ import { ChevronRight, Disc3 } from 'lucide-react-native';
 
 import { supabase } from '@/lib/supabase';
 import { OwnerTheme } from '@/constants/theme';
+import { useToast } from '@/context/toast-context';
+import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import {
   fetchWashingMachineStatus,
   getRemainingWashSeconds,
@@ -55,6 +57,7 @@ export function WashingMachineCard({
   compact = false,
   style,
 }: WashingMachineCardProps) {
+  const { showToast } = useToast();
   const [machines, setMachines] = useState<WashingMachineUnitData[]>([]);
   const [residentEnabled, setResidentEnabled] = useState(true);
   const [requestStatus, setRequestStatus] =
@@ -99,10 +102,7 @@ export function WashingMachineCard({
         if (notifId && notifId !== 'in_app_only') {
           Notifications.cancelScheduledNotificationAsync(notifId).catch(() => {});
         }
-        Alert.alert(
-          'Washing Machine Free',
-          `${unit.machine_name} is now free to use.`
-        );
+        showToast(`${unit.machine_name} is now free to use`);
       }
       setNotifyMap((prev) => {
         const next = { ...prev };
@@ -114,7 +114,7 @@ export function WashingMachineCard({
     }, 0);
 
     return () => clearTimeout(timer);
-  }, [machines, notifyMap]);
+  }, [machines, notifyMap, showToast]);
 
   const handleToggleNotify = async (unit: WashingMachineUnitData) => {
     const existingId = notifyMap[unit.id];
@@ -163,10 +163,7 @@ export function WashingMachineCard({
     }
 
     setNotifyMap((prev) => ({ ...prev, [unit.id]: 'in_app_only' }));
-    Alert.alert(
-      'In-App Reminder Set',
-      `We will alert you here as soon as ${unit.machine_name} becomes free.`
-    );
+    showToast(`In-app reminder set for ${unit.machine_name}`);
   };
 
   // Fetch authoritative multi-unit state from the server
@@ -317,10 +314,7 @@ export function WashingMachineCard({
         throw new Error(result.error.message);
       }
       setRequestStatus('pending');
-      Alert.alert(
-        'Request Submitted',
-        'Your request for washing machine access has been sent to the PG owner. Once approved in your monthly bill, you can use any machine.'
-      );
+      showToast('Access request sent to PG owner');
     } catch (err: any) {
       Alert.alert('Request Failed', err.message || 'Could not submit request.');
     } finally {
@@ -362,14 +356,10 @@ export function WashingMachineCard({
 
       await fetchStatus(false);
       if (result.data.usedLegacyFallback) {
-        Alert.alert(
-          'Wash Started',
-          'Machine is now marked in use. Please mark it free when done.'
-        );
+        showToast('Wash started — mark machine free when done');
       } else {
-        Alert.alert(
-          'Wash Started',
-          `Session active on ${result.data.machineName || 'selected machine'}. Please mark it free when your laundry is done.`
+        showToast(
+          `Wash started on ${result.data.machineName || 'selected machine'}`
         );
       }
     } catch (err: any) {
@@ -414,10 +404,7 @@ export function WashingMachineCard({
               }
 
               await fetchStatus(false);
-              Alert.alert(
-                'Session Finished',
-                'Machine is now marked free for fellow residents.'
-              );
+              showToast('Machine marked free for fellow residents');
             } catch (err: any) {
               console.warn('[WashingMachine] Release error:', err.message);
               Alert.alert(
@@ -530,12 +517,12 @@ export function WashingMachineCard({
               {loading
                 ? '...'
                 : isUserWashing
-                ? 'YOUR WASH'
+                ? toSentenceCaseStatus('your_wash')
                 : !residentEnabled
-                ? 'NOT ENABLED'
+                ? toSentenceCaseStatus('not_enabled')
                 : hasFree
-                ? `${freeMachines.length} FREE`
-                : 'ALL IN USE'}
+                ? `${freeMachines.length} free`
+                : toSentenceCaseStatus('all_in_use')}
             </Text>
           </View>
         </View>
@@ -752,7 +739,7 @@ const styles = StyleSheet.create({
   compactPillText: {
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.5,
+    letterSpacing: 0.2,
   },
   compactCardTitle: {
     fontSize: 13,

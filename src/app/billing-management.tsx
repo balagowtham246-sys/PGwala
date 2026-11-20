@@ -34,6 +34,7 @@ import { EmptyState, OwnerHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { useToast } from '@/context/toast-context';
 import {
   buildWhatsAppReminderUrl,
   formatDueStatus,
@@ -63,6 +64,7 @@ import {
 export default function SimplifiedBillingManagementScreen() {
   const { user } = useAuth();
   const { selectedProperty, selectedPropertyId } = useProperty();
+  const { showToast } = useToast();
   const params = useLocalSearchParams<{ residentId?: string | string[] }>();
   const rawParamResidentId = Array.isArray(params.residentId)
     ? params.residentId[0]
@@ -364,9 +366,9 @@ export default function SimplifiedBillingManagementScreen() {
       );
     }
 
-    Alert.alert(
-      'Rent Bills Updated',
-      `${parts.join(', ') || 'Bills ready'} for ${monthLabel}.${skipped > 0 ? ` (${skipped} paid bills preserved)` : ''
+    showToast(
+      `${parts.join(', ') || 'Bills ready'} for ${monthLabel}.${
+        skipped > 0 ? ` (${skipped} paid bills preserved)` : ''
       }`
     );
     await loadBillingData({ forceNetwork: true });
@@ -413,8 +415,7 @@ export default function SimplifiedBillingManagementScreen() {
     const residentName = selectedResidentForEdit.full_name;
     setEditRentModalVisible(false);
     setSelectedResidentForEdit(null);
-    Alert.alert(
-      'Rent Updated',
+    showToast(
       `Monthly rent for ${residentName} set to ₹${parsedRupees.toLocaleString(
         'en-IN'
       )}.`
@@ -470,9 +471,8 @@ export default function SimplifiedBillingManagementScreen() {
     const targetRoom = selectedRoomForEb;
     setSplitEbModalVisible(false);
     setEbTotalRupeesInput('');
-    Alert.alert(
-      'EB Bill Split',
-      `Split ₹${parsedRupees.toLocaleString('en-IN')} equally across ${roomResidents.length
+    showToast(
+      `Split ₹${parsedRupees.toLocaleString('en-IN')} EB across ${roomResidents.length
       } resident${roomResidents.length > 1 ? 's' : ''} in Room ${targetRoom}.`
     );
     await loadBillingData({ forceNetwork: true });
@@ -519,10 +519,7 @@ export default function SimplifiedBillingManagementScreen() {
 
     setReviewModalVisible(false);
     setSelectedReviewItem(null);
-    Alert.alert(
-      'Payment Confirmed',
-      `Receipt Number: ${result.data.receipt_number}`
-    );
+    showToast(`Payment confirmed · Receipt ${result.data.receipt_number}`);
     await loadBillingData({ forceNetwork: true });
   };
 
@@ -554,10 +551,7 @@ export default function SimplifiedBillingManagementScreen() {
     setSelectedReviewItem(null);
     setShowRejectForm(false);
     setRejectionReason('');
-    Alert.alert(
-      'Payment Proof Rejected',
-      'The resident can view the rejection feedback and resubmit their payment proof.'
-    );
+    showToast('Payment proof rejected · Resident can resubmit.');
     await loadBillingData({ forceNetwork: true });
   };
 
@@ -733,9 +727,8 @@ export default function SimplifiedBillingManagementScreen() {
     }
     setConfirmingPayment(false);
 
-    Alert.alert(
-      'Payment Confirmed',
-      `Receipt Number${receipts.length > 1 ? 's' : ''}: ${receipts.join(', ')}`
+    showToast(
+      `Payment confirmed · Receipt${receipts.length > 1 ? 's' : ''}: ${receipts.join(', ')}`
     );
     await loadBillingData({ forceNetwork: true });
   };
@@ -864,10 +857,7 @@ export default function SimplifiedBillingManagementScreen() {
     ) {
       try {
         await navigator.clipboard.writeText(fullText);
-        Alert.alert(
-          'Copied',
-          'All unpaid payment reminders copied to clipboard.'
-        );
+        showToast('All unpaid payment reminders copied to clipboard.');
         return;
       } catch {
         // Fall through to Share

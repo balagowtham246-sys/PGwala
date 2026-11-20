@@ -1,11 +1,10 @@
-import React from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Href, router } from 'expo-router';
 import { LogIn, LogOut } from 'lucide-react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { EmptyState, SectionHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
-import { toSentenceCaseStatus } from '@/lib/ux-utils';
+import { formatRoomLabel, toSentenceCaseStatus } from '@/lib/ux-utils';
 import type { OwnerActivityItem } from '@/services/dashboard.service';
 
 interface RecentActivitySectionProps {
@@ -14,14 +13,16 @@ interface RecentActivitySectionProps {
 }
 
 export function RecentActivitySection({ loading, activities }: RecentActivitySectionProps) {
+  const visibleActivities = activities.slice(0, 4);
+
   return (
-    <>
+    <View>
       {/* Priority Area 4: Recent Gate Movements */}
       <SectionHeader
         title="Recent Movement"
         actionText="View all ›"
         onAction={() => router.push('/student-in-out')}
-        style={{ marginTop: 12, marginBottom: 8 }}
+        style={{ marginTop: 4, marginBottom: 8 }}
       />
 
       <View style={styles.activityCard}>
@@ -29,16 +30,19 @@ export function RecentActivitySection({ loading, activities }: RecentActivitySec
           <View style={styles.activityLoading}>
             <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
           </View>
-        ) : activities.length === 0 ? (
+        ) : visibleActivities.length === 0 ? (
           <EmptyState
             title="No recent movements"
             description="Resident gate check-ins and check-outs will display here."
           />
         ) : (
-          activities.map((item, index) => {
+          visibleActivities.map((item, index) => {
             const isEntry = item.direction === 'IN';
             const statusLabel = toSentenceCaseStatus(item.direction);
             const actionLabel = isEntry ? 'Checked in' : 'Checked out';
+            const roomLabel = item.roomNumber?.trim()
+              ? formatRoomLabel(item.roomNumber)
+              : '';
 
             const rowContent = (
               <>
@@ -60,7 +64,7 @@ export function RecentActivitySection({ loading, activities }: RecentActivitySec
                 <View style={styles.activityDetails}>
                   <Text style={styles.activityResidentName}>
                     {item.residentName}
-                    {item.roomNumber ? ` (Room ${item.roomNumber})` : ''}
+                    {roomLabel ? ` (${roomLabel})` : ''}
                   </Text>
                   <Text style={styles.activityActionText}>
                     {actionLabel}
@@ -95,7 +99,7 @@ export function RecentActivitySection({ loading, activities }: RecentActivitySec
                   accessibilityLabel={`View profile for ${item.residentName}`}
                   style={({ pressed }) => [
                     styles.activityRow,
-                    index === activities.length - 1 && styles.activityRowLast,
+                    index === visibleActivities.length - 1 && styles.activityRowLast,
                     pressed && styles.activityRowPressed,
                   ]}
                   onPress={() =>
@@ -114,7 +118,7 @@ export function RecentActivitySection({ loading, activities }: RecentActivitySec
                 key={item.id}
                 style={[
                   styles.activityRow,
-                  index === activities.length - 1 && styles.activityRowLast,
+                  index === visibleActivities.length - 1 && styles.activityRowLast,
                 ]}>
                 {rowContent}
               </View>
@@ -122,7 +126,7 @@ export function RecentActivitySection({ loading, activities }: RecentActivitySec
           })
         )}
       </View>
-    </>
+    </View>
   );
 }
 
@@ -134,6 +138,7 @@ const styles = StyleSheet.create({
     borderColor: OwnerTheme.colors.border,
     paddingHorizontal: 12,
     paddingVertical: 2,
+    ...OwnerTheme.shadow,
   },
   activityLoading: {
     paddingVertical: 16,

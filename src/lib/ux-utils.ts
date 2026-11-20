@@ -84,7 +84,7 @@ export function validateIndianPhone(raw: string | null | undefined): IndianPhone
       valid: false,
       normalized10: '',
       formatted: '',
-      error: 'Phone number is required (+91, 10 digits).',
+      error: 'Phone number is required (10 digits).',
     };
   }
 
@@ -95,12 +95,12 @@ export function validateIndianPhone(raw: string | null | undefined): IndianPhone
     digits = digits.slice(1);
   }
 
-  if (digits.length !== 10 || !/^[6-9]\d{9}$/.test(digits)) {
+  if (digits.length !== 10 || !/^\d{10}$/.test(digits)) {
     return {
       valid: false,
       normalized10: digits,
       formatted: digits,
-      error: 'Enter a valid 10-digit Indian mobile number (starts with 6–9).',
+      error: 'Enter a valid 10-digit mobile number.',
     };
   }
 
@@ -175,6 +175,21 @@ const STATUS_MAP: Record<string, string> = {
   free: 'Free',
   published: 'Published',
   draft: 'Draft',
+  gate_in: 'Gate in',
+  'gate in': 'Gate in',
+  gate_out: 'Gate out',
+  'gate out': 'Gate out',
+  under_review: 'Under review',
+  'under review': 'Under review',
+  review: 'Under review',
+  rejected: 'Rejected',
+  active: 'Active',
+  your_wash: 'Your wash',
+  'your wash': 'Your wash',
+  not_enabled: 'Not enabled',
+  'not enabled': 'Not enabled',
+  all_in_use: 'All in use',
+  'all in use': 'All in use',
 };
 
 /**
@@ -301,10 +316,30 @@ export function calculateProRataFinalBillPaise(
 }
 
 /**
+ * Strips any accidental leading "Room " / "Rm " prefixes (even repeated like "Room Room D")
+ * so room codes normalize consistently across DB rows and UI forms.
+ */
+export function normalizeRoomCode(raw: string | null | undefined): string {
+  let clean = (raw || '').trim().replace(/\s+/g, ' ');
+  while (/^(?:room|rm)\s+/i.test(clean)) {
+    clean = clean.replace(/^(?:room|rm)\s+/i, '').trim();
+  }
+  return clean;
+}
+
+/**
+ * Formats any room code into a single clean display label (e.g. "Room D", "Room 101").
+ */
+export function formatRoomLabel(raw: string | null | undefined): string {
+  const code = normalizeRoomCode(raw);
+  return code ? `Room ${code}` : 'Unassigned';
+}
+
+/**
  * Natural numeric-aware sort comparator for room codes ("101", "102", "Room D", "A-2").
  */
 export function sortRoomCodes(a: string, b: string): number {
-  return (a || '').localeCompare(b || '', undefined, {
+  return normalizeRoomCode(a).localeCompare(normalizeRoomCode(b), undefined, {
     numeric: true,
     sensitivity: 'base',
   });

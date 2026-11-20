@@ -1,7 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Linking,
   Platform,
   Pressable,
@@ -19,6 +18,7 @@ import * as Notifications from 'expo-notifications';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useToast } from '@/context/toast-context';
 import { useOfflineMutation } from '@/hooks/use-offline-mutation';
 import { extractErrorMessage } from '@/lib/error-utils';
 import {
@@ -60,6 +60,7 @@ function propertyName(p: FoodUpdate['properties']): string {
 
 export default function StudentFoodUpdatesScreen() {
   const { user } = useAuth();
+  const { showToast } = useToast();
   const userId = user?.id;
   const [updates, setUpdates] = useState<FoodUpdate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -149,10 +150,7 @@ export default function StudentFoodUpdatesScreen() {
 
     if (outcome.queued) {
       setPendingOfflineCount(await getPendingCount());
-      Alert.alert(
-        'Saved Offline',
-        'You appear to be offline. Your meal alert preference has been queued and will sync automatically when you reconnect.'
-      );
+      showToast('Meal alert preference queued — will sync automatically');
     }
   };
 

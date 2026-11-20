@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Alert,
   Modal,
   Pressable,
   RefreshControl,
@@ -26,7 +25,6 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { supabase } from '@/lib/supabase';
-import { ownerRecordMovement } from '@/services/residents.service';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import {
   groupLogsByLocalDay,
@@ -112,16 +110,12 @@ export default function StudentInOutScreen() {
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [propertyId, setPropertyId] = useState<string | null>(
-    activeSelectedPropertyId ?? null
-  );
   const [propertyName, setPropertyName] = useState('Shalom Residency');
 
   const [residents, setResidents] = useState<ResidentRecord[]>([]);
   const [allResidents, setAllResidents] = useState<ResidentRecord[]>([]);
   const [logs, setLogs] = useState<MovementLogRecord[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [savingResidentIds, setSavingResidentIds] = useState<string[]>([]);
   const [clearedResidentId, setClearedResidentId] = useState<string | null>(
     null
   );
@@ -185,7 +179,6 @@ export default function StudentInOutScreen() {
         if (propError) throw propError;
 
         if (!properties || properties.length === 0) {
-          setPropertyId(null);
           setResidents([]);
           setAllResidents([]);
           setLogs([]);
@@ -197,7 +190,6 @@ export default function StudentInOutScreen() {
         activePropName = properties[0].name;
       }
 
-      setPropertyId(activePropId);
       setPropertyName(activePropName || 'Shalom Residency');
 
       // 2. Fetch all residents
@@ -277,37 +269,6 @@ export default function StudentInOutScreen() {
   const handleRefresh = () => {
     setRefreshing(true);
     loadData();
-  };
-
-  const handleQuickToggleGate = async (
-    resident: ResidentRecord,
-    nextDirection: ResidentStatus
-  ) => {
-    const activePropId =
-      propertyId ?? activeSelectedPropertyId ?? resident.property_id;
-    if (!activePropId) {
-      Alert.alert('Error', 'Property could not be determined.');
-      return;
-    }
-
-    setSavingResidentIds((prev) =>
-      prev.includes(resident.id) ? prev : [...prev, resident.id]
-    );
-    try {
-      const res = await ownerRecordMovement(
-        activePropId,
-        resident.id,
-        nextDirection,
-        user?.id
-      );
-      if (!res.ok) {
-        Alert.alert('Gate Update Failed', res.error.message);
-        return;
-      }
-      await loadData();
-    } finally {
-      setSavingResidentIds((prev) => prev.filter((id) => id !== resident.id));
-    }
   };
 
   const getLatestResidentLog = (
@@ -577,8 +538,6 @@ export default function StudentInOutScreen() {
               const isLate = Boolean(
                 isOutside && latestLog && isLateReturn(latestLog.expected_return_time)
               );
-              const isSavingMovement = savingResidentIds.includes(resident.id);
-              const nextDirection: ResidentStatus = isInside ? 'OUT' : 'IN';
 
               return (
                 <View
@@ -689,45 +648,6 @@ export default function StudentInOutScreen() {
                       </View>
                     )}
                   </Pressable>
-
-                  <View style={styles.cardActionRow}>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`${isInside ? 'Mark Out' : 'Mark In'} ${resident.full_name}`}
-                      disabled={isSavingMovement}
-                      style={({ pressed }) => [
-                        styles.quickGateBtn,
-                        isInside
-                          ? styles.quickGateBtnOut
-                          : styles.quickGateBtnIn,
-                        isSavingMovement && styles.quickGateBtnDisabled,
-                        pressed && !isSavingMovement && styles.cardPressed,
-                      ]}
-                      onPress={(e) => {
-                        e?.stopPropagation?.();
-                        void handleQuickToggleGate(resident, nextDirection);
-                      }}>
-                      {isSavingMovement ? (
-                        <ActivityIndicator
-                          size="small"
-                          color={isInside ? '#B45309' : OwnerTheme.colors.success}
-                        />
-                      ) : isInside ? (
-                        <LogOut size={14} color="#B45309" />
-                      ) : (
-                        <LogIn size={14} color={OwnerTheme.colors.success} />
-                      )}
-                      <Text
-                        style={[
-                          styles.quickGateBtnText,
-                          isInside
-                            ? styles.quickGateBtnTextOut
-                            : styles.quickGateBtnTextIn,
-                        ]}>
-                        {isInside ? 'Mark Out' : 'Mark In'}
-                      </Text>
-                    </Pressable>
-                  </View>
                 </View>
               );
             })}
@@ -1140,41 +1060,6 @@ const styles = StyleSheet.create({
   dinnerText: {
     fontSize: 13,
     fontWeight: '600',
-  },
-  cardActionRow: {
-    marginTop: 10,
-    flexDirection: 'row',
-  },
-  quickGateBtn: {
-    flex: 1,
-    height: 38,
-    borderRadius: OwnerTheme.radius.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    borderWidth: 1,
-  },
-  quickGateBtnOut: {
-    backgroundColor: OwnerTheme.colors.warningLight,
-    borderColor: '#FDE68A',
-  },
-  quickGateBtnIn: {
-    backgroundColor: OwnerTheme.colors.successLight,
-    borderColor: '#BBF7D0',
-  },
-  quickGateBtnDisabled: {
-    opacity: 0.65,
-  },
-  quickGateBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  quickGateBtnTextOut: {
-    color: '#B45309',
-  },
-  quickGateBtnTextIn: {
-    color: OwnerTheme.colors.success,
   },
   historySectionHeader: {
     flexDirection: 'row',

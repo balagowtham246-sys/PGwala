@@ -18,12 +18,14 @@ let lastRegisteredToken: string | null = null;
 
 async function ensureAndroidChannel() {
   if (Platform.OS !== 'android') return;
-  await Notifications.setNotificationChannelAsync(FOOD_ALERT_CHANNEL_ID, {
-    name: 'Food alerts',
-    importance: 6, // Notifications.AndroidImportance.HIGH
-    vibrationPattern: [0, 250, 250, 250],
-    lightColor: '#0284C7',
-  });
+  try {
+    await Notifications.setNotificationChannelAsync(FOOD_ALERT_CHANNEL_ID, {
+      name: 'Food alerts',
+      importance: 6, // AndroidImportance.HIGH === 6
+    });
+  } catch (err) {
+    console.warn('[PushNotifications] Android channel setup skipped:', err);
+  }
 }
 
 function resolveProjectId(): string | undefined {

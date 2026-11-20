@@ -4,10 +4,12 @@ import {
   formatGateEventTimestamp,
   formatIsoDateDisplay,
   formatPropertyGenderLabel,
+  formatRoomLabel,
   inferPropertyGender,
   isPropertyCompatibleWithGender,
   maskIndianPhone,
   normalizeDishName,
+  normalizeRoomCode,
   parseDishList,
   serializeDishList,
   sortRoomCodes,
@@ -42,6 +44,11 @@ describe('ux-utils', () => {
       normalized10: '8667413899',
       formatted: '+91 86674 13899',
     });
+    expect(validateIndianPhone('1234567890')).toEqual({
+      valid: true,
+      normalized10: '1234567890',
+      formatted: '+91 12345 67890',
+    });
 
     const dupes = findDuplicatePhones([
       { id: 'r1', phone_number: '8667413899' },
@@ -62,6 +69,15 @@ describe('ux-utils', () => {
     expect(toSentenceCaseStatus('URGENT')).toBe('Urgent');
     expect(toSentenceCaseStatus('IN_PROGRESS')).toBe('In progress');
     expect(toSentenceCaseStatus('out_of_order')).toBe('Out of order');
+    expect(toSentenceCaseStatus('GATE IN')).toBe('Gate in');
+    expect(toSentenceCaseStatus('GATE OUT')).toBe('Gate out');
+    expect(toSentenceCaseStatus('UNDER REVIEW')).toBe('Under review');
+    expect(toSentenceCaseStatus('REVIEW')).toBe('Under review');
+    expect(toSentenceCaseStatus('REJECTED')).toBe('Rejected');
+    expect(toSentenceCaseStatus('ACTIVE')).toBe('Active');
+    expect(toSentenceCaseStatus('YOUR WASH')).toBe('Your wash');
+    expect(toSentenceCaseStatus('NOT ENABLED')).toBe('Not enabled');
+    expect(toSentenceCaseStatus('ALL IN USE')).toBe('All in use');
   });
 
   it('formats gate event timestamp with date when not from today', () => {
@@ -94,5 +110,10 @@ describe('ux-utils', () => {
       '102',
       'Room D',
     ]);
+    expect(normalizeRoomCode('Room D')).toBe('D');
+    expect(normalizeRoomCode('Room Room D')).toBe('D');
+    expect(normalizeRoomCode('ROOM B')).toBe('B');
+    expect(formatRoomLabel('Room Room A')).toBe('Room A');
+    expect(formatRoomLabel('101')).toBe('Room 101');
   });
 });

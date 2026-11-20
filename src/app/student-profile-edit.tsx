@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  Alert,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -15,6 +14,7 @@ import { Lock, User, CheckCircle2, AlertCircle, Eye, EyeOff } from 'lucide-react
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useToast } from '@/context/toast-context';
 import { supabase } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader, PrimaryButton, ErrorState } from '@/components/ui/owner';
@@ -25,6 +25,7 @@ import {
 
 export default function ResidentProfileEditScreen() {
   const { user, profile, refreshProfile } = useAuth();
+  const { showToast } = useToast();
 
   const [phoneNumber, setPhoneNumber] = useState(profile?.phone_number || '');
   const [newPassword, setNewPassword] = useState('');
@@ -110,7 +111,7 @@ export default function ResidentProfileEditScreen() {
 
       await refreshProfile();
       setSuccessMessage('Profile details and credentials updated successfully.');
-      Alert.alert('Saved', 'Your resident profile has been updated.');
+      showToast('Your resident profile has been updated');
     } catch (err: unknown) {
       setErrorMessage(extractErrorMessage(err, 'Failed to update profile.'));
     } finally {

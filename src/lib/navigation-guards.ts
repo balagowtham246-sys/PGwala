@@ -14,6 +14,8 @@ export const STUDENT_ROUTES = [
   'student-profile-edit',
   'student-accommodation',
   'student-food-updates',
+  'student-announcements',
+  'student-notifications',
 ] as const;
 
 export const OWNER_ROUTES = [
@@ -32,6 +34,8 @@ export const OWNER_ROUTES = [
   'owner-properties',
   'owner-notifications',
   'owner-wardens',
+  'owner-announcements',
+  'notification-center',
 ] as const;
 
 export const WARDEN_ROUTES = [

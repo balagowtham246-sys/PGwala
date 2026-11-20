@@ -1,4 +1,16 @@
-import { router, useFocusEffect } from 'expo-router';
+import { Href, router, useFocusEffect } from 'expo-router';
+import {
+  Bell,
+  Building2,
+  Check,
+  ChevronDown,
+  Clock,
+  Disc3,
+  Plus,
+  User,
+  Utensils,
+  X,
+} from 'lucide-react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -13,25 +25,18 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import {
-  BellRing,
-  Building2,
-  Check,
-  ChevronDown,
-  Clock,
-  Disc3,
-  Plus,
-  User,
-  Utensils,
-  X,
-} from 'lucide-react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { OwnerMetricsGrid } from '@/components/owner-dashboard/OwnerMetricsGrid';
+import { OwnerQuickActions } from '@/components/owner-dashboard/OwnerQuickActions';
+import { RecentActivitySection } from '@/components/owner-dashboard/RecentActivitySection';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { ErrorState } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useResidentTabs } from '@/context/resident-tabs-context';
 import { triggerSelectionHaptic } from '@/lib/haptics';
+import { invalidatePrefix } from '@/lib/query-cache';
 import { supabase } from '@/lib/supabase';
 import {
   formatPropertyGenderLabel,
@@ -39,15 +44,9 @@ import {
   PropertyGenderType,
   toSentenceCaseStatus,
 } from '@/lib/ux-utils';
-import { RoleBottomNav } from '@/components/ui/bottom-nav';
-import { ErrorState } from '@/components/ui/owner';
-import { OwnerMetricsGrid } from '@/components/owner-dashboard/OwnerMetricsGrid';
-import { OwnerQuickActions } from '@/components/owner-dashboard/OwnerQuickActions';
-import { RecentActivitySection } from '@/components/owner-dashboard/RecentActivitySection';
 import {
   createEmptyOwnerMenus,
   DashboardWmUnit,
-  fetchMovementAlertResident,
   fetchOwnerDashboard,
   getCachedOwnerDashboard,
   MealType,
@@ -59,17 +58,9 @@ import {
   setWashingMachineOutOfOrder,
   toLocalIsoDate,
 } from '@/services/dashboard.service';
+import { getUnreadInboxCount } from '@/services/notification-center.service';
 
-export type { MealType, OwnerFoodMenuRecord, DashboardWmUnit };
-
-interface MovementLogRealtimePayload {
-  id: string;
-  resident_id: string;
-  property_id?: string;
-  direction: 'IN' | 'OUT';
-  event_time: string;
-  purpose?: string | null;
-}
+export type { DashboardWmUnit, MealType, OwnerFoodMenuRecord };
 
 const MEAL_CONFIG: Record<MealType, { title: string }> = {
   breakfast: { title: 'Breakfast' },
@@ -186,17 +177,8 @@ export default function OwnerDashboard() {
   const [busyMachineId, setBusyMachineId] = useState<string | null>(null);
 
   const [recentActivities, setRecentActivities] = useState<OwnerActivityItem[]>([]);
+  const [unreadInboxCount, setUnreadInboxCount] = useState(0);
 
-  // Non-college Departure In-App Push Alert State
-  const [departureAlert, setDepartureAlert] = useState<{
-    residentName: string;
-    roomNumber: string;
-    purpose: string;
-    time: string;
-  } | null>(null);
-
-  // Anti-flooding: Track recent alert timestamps per resident (15-min throttle)
-  const alertThrottleRef = useRef<Map<string, number>>(new Map());
   const hasFocusedOnceRef = useRef(false);
 
   // Instant render from unified query cache (stale-while-revalidate for slow networks)
@@ -280,7 +262,40 @@ export default function OwnerDashboard() {
     return () => clearTimeout(timer);
   }, [authLoading, session, userId, profileRole, selectedPropertyId, applyDashboardResult]);
 
-  // Refetch latest operational status and menu whenever returning to dashboard
+  const refreshUnreadInboxCount = useCallback(
+    async (forceInvalidate = false) => {
+      if (!userId || profileRole !== 'owner' || !selectedPropertyId) {
+        setUnreadInboxCount(0);
+        return;
+      }
+      if (forceInvalidate) {
+        await invalidatePrefix('inbox:');
+      }
+      const count = await getUnreadInboxCount(userId, selectedPropertyId);
+      setUnreadInboxCount(count);
+    },
+    [userId, profileRole, selectedPropertyId]
+  );
+
+  useEffect(() => {
+    if (!userId || profileRole !== 'owner' || !selectedPropertyId) {
+      const timer = setTimeout(() => {
+        setUnreadInboxCount(0);
+      }, 0);
+      return () => clearTimeout(timer);
+    }
+    let cancelled = false;
+    void getUnreadInboxCount(userId, selectedPropertyId).then((count) => {
+      if (!cancelled) {
+        setUnreadInboxCount(count);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, profileRole, selectedPropertyId]);
+
+  // Refetch latest operational status, menu, and unread notifications whenever returning to dashboard
   useFocusEffect(
     useCallback(() => {
       if (!hasFocusedOnceRef.current) {
@@ -289,8 +304,16 @@ export default function OwnerDashboard() {
       }
       if (!authLoading && userId && profileRole === 'owner' && selectedPropertyId) {
         void loadDashboardData();
+        void refreshUnreadInboxCount(true);
       }
-    }, [authLoading, userId, profileRole, selectedPropertyId, loadDashboardData])
+    }, [
+      authLoading,
+      userId,
+      profileRole,
+      selectedPropertyId,
+      loadDashboardData,
+      refreshUnreadInboxCount,
+    ])
   );
 
   const handleOpenFoodMenu = () => {
@@ -374,12 +397,19 @@ export default function OwnerDashboard() {
     void applyChange();
   };
 
-  // Non-college Movement Realtime Push Listener
+  // Realtime listener for gate movements & complaints (updates dashboard & Notification Center badge)
   useEffect(() => {
-    if (!selectedPropertyId) return;
+    if (!userId || profileRole !== 'owner' || !selectedPropertyId) return;
+
+    let active = true;
+    const handleRealtimeEvent = async () => {
+      await invalidatePrefix('inbox:');
+      if (!active) return;
+      await Promise.all([loadDashboardData(), refreshUnreadInboxCount()]);
+    };
 
     const channel = supabase
-      .channel(`non_college_alerts_${selectedPropertyId}`)
+      .channel(`owner_home_alerts_${selectedPropertyId}`)
       .on(
         'postgres_changes',
         {
@@ -388,106 +418,40 @@ export default function OwnerDashboard() {
           table: 'movement_logs',
           filter: `property_id=eq.${selectedPropertyId}`,
         },
-        async (payload) => {
-          const newLog = payload.new as MovementLogRealtimePayload;
-          if (newLog.direction === 'OUT') {
-            const rawPurpose = (newLog.purpose || '').trim().toLowerCase();
-            const isCollege =
-              rawPurpose === 'college' ||
-              rawPurpose.includes('college') ||
-              rawPurpose.includes('class');
-
-            // Non-college departure detected
-            if (!isCollege) {
-              // 1. Fetch resident details and strictly enforce property isolation
-              const res = await fetchMovementAlertResident(
-                newLog.resident_id,
-                selectedPropertyId
-              );
-              if (!res) {
-                return;
-              }
-
-              // 2. Read owner notification preferences from storage
-              let nonCollegeEnabled = true;
-              let eveningOnly = true;
-              let rateLimitEnabled = true;
-
-              try {
-                const prefsStr = await AsyncStorage.getItem('@pgwala_owner_notif_prefs');
-                if (prefsStr) {
-                  const prefs = JSON.parse(prefsStr);
-                  if (typeof prefs.nonCollegeAlerts === 'boolean')
-                    nonCollegeEnabled = prefs.nonCollegeAlerts;
-                  if (typeof prefs.eveningOnly === 'boolean')
-                    eveningOnly = prefs.eveningOnly;
-                  if (typeof prefs.rateLimitEnabled === 'boolean')
-                    rateLimitEnabled = prefs.rateLimitEnabled;
-                }
-              } catch {
-                // Keep defaults if prefs failed to load
-              }
-
-              // If non-college alerts disabled by owner, refresh stats silently without showing alert banner
-              if (!nonCollegeEnabled) {
-                void loadDashboardData();
-                return;
-              }
-
-              // If evening only is enabled, only alert after 6:00 PM (18:00) or before 6:00 AM
-              if (eveningOnly) {
-                const currentHour = new Date().getHours();
-                const isEveningOrNight = currentHour >= 18 || currentHour < 6;
-                if (!isEveningOrNight) {
-                  void loadDashboardData();
-                  return;
-                }
-              }
-
-              // Anti-flooding throttle: Skip if alerted within 15 minutes for this resident
-              const now = Date.now();
-              if (rateLimitEnabled) {
-                const lastAlertTime =
-                  alertThrottleRef.current.get(newLog.resident_id) || 0;
-                if (now - lastAlertTime < 15 * 60 * 1000) {
-                  void loadDashboardData();
-                  return;
-                }
-              }
-              alertThrottleRef.current.set(newLog.resident_id, now);
-
-              const resName = res.full_name || 'Resident';
-              const resRoom = res.room_number || '';
-              const eventDate = new Date(newLog.event_time);
-              const formattedTime = eventDate.toLocaleTimeString('en-IN', {
-                hour: '2-digit',
-                minute: '2-digit',
-                hour12: true,
-              });
-
-              setDepartureAlert({
-                residentName: resName,
-                roomNumber: resRoom,
-                purpose: newLog.purpose || 'Personal Outing',
-                time: formattedTime,
-              });
-
-              // Also refresh dashboard stats in background
-              void loadDashboardData();
-            }
-          }
+        () => {
+          void handleRealtimeEvent();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'complaints',
+          filter: `property_id=eq.${selectedPropertyId}`,
+        },
+        () => {
+          void handleRealtimeEvent();
         }
       )
       .subscribe();
 
     return () => {
+      active = false;
       void supabase.removeChannel(channel);
     };
-  }, [selectedPropertyId, loadDashboardData]);
+  }, [
+    userId,
+    profileRole,
+    selectedPropertyId,
+    loadDashboardData,
+    refreshUnreadInboxCount,
+  ]);
 
   const handleRefresh = () => {
     setRefreshing(true);
     void loadDashboardData();
+    void refreshUnreadInboxCount(true);
   };
 
   // Add new PG property from modal
@@ -536,31 +500,7 @@ export default function OwnerDashboard() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      {/* Non-College Departure Push Alert Banner */}
-      {departureAlert && (
-        <View style={styles.pushAlertBanner}>
-          <View style={styles.pushAlertIconWrap}>
-            <BellRing size={16} color="#B91C1C" />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.pushAlertTitle}>
-              Departure Alert: {departureAlert.residentName} (Room{' '}
-              {departureAlert.roomNumber})
-            </Text>
-            <Text style={styles.pushAlertText}>
-              Left for: {departureAlert.purpose} at {departureAlert.time}
-            </Text>
-          </View>
-          <Pressable
-            hitSlop={8}
-            onPress={() => setDepartureAlert(null)}
-            style={styles.pushAlertClose}>
-            <X size={16} color="#7F1D1D" />
-          </Pressable>
-        </View>
-      )}
-
-      {/* Top Header: Brand + Global Property Switcher + Account */}
+      {/* Top Header: Brand + Global Property Switcher + Notification Bell + Account */}
       <View style={styles.headerRow}>
         <View style={styles.headerLeft}>
           <Text style={styles.brandTitle}>PGwala</Text>
@@ -575,21 +515,48 @@ export default function OwnerDashboard() {
             pressed && styles.cardPressed,
           ]}
           onPress={() => setSwitcherVisible(true)}>
-          <Building2 size={15} color={OwnerTheme.colors.primary} />
+          <Building2
+            size={14}
+            color={OwnerTheme.colors.primary}
+            style={styles.switcherIcon}
+          />
           <Text style={styles.propertySwitcherText} numberOfLines={1}>
             {selectedProperty?.name || 'Select PG'}
           </Text>
-          <ChevronDown size={14} color={OwnerTheme.colors.textSecondary} />
+          <ChevronDown
+            size={14}
+            color={OwnerTheme.colors.textSecondary}
+            style={styles.switcherIcon}
+          />
         </Pressable>
 
-        {/* Dedicated Account Button */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Account and Settings"
-          style={({ pressed }) => [styles.accountBtn, pressed && styles.cardPressed]}
-          onPress={() => router.push('/owner-settings')}>
-          <User size={18} color={OwnerTheme.colors.primary} />
-        </Pressable>
+        {/* Notification Bell & Account Actions */}
+        <View style={styles.headerActions}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Notification center"
+            hitSlop={4}
+            style={({ pressed }) => [styles.iconCircleBtn, pressed && styles.cardPressed]}
+            onPress={() => router.push('/notification-center' as Href)}>
+            <Bell size={18} color={OwnerTheme.colors.primary} />
+            {unreadInboxCount > 0 && (
+              <View style={styles.bellBadge}>
+                <Text style={styles.bellBadgeText}>
+                  {unreadInboxCount > 9 ? '9+' : String(unreadInboxCount)}
+                </Text>
+              </View>
+            )}
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Account and Settings"
+            hitSlop={4}
+            style={({ pressed }) => [styles.iconCircleBtn, pressed && styles.cardPressed]}
+            onPress={() => router.push('/owner-settings')}>
+            <User size={18} color={OwnerTheme.colors.primary} />
+          </Pressable>
+        </View>
       </View>
 
       <ScrollView
@@ -623,7 +590,7 @@ export default function OwnerDashboard() {
               <View style={styles.wmIconBadge}>
                 <Disc3 size={18} color="#0284C7" />
               </View>
-              <View style={{ flex: 1 }}>
+              <View style={{ flex: 1, minWidth: 0 }}>
                 <View style={styles.wmSummaryTitleRow}>
                   <Text style={styles.wmSummaryTitle}>Washing Machines</Text>
                   {wmSummary.inUseCount > 0 && (
@@ -666,7 +633,9 @@ export default function OwnerDashboard() {
             ]}
             onPress={() => setWmModalVisible(true)}>
             <View style={styles.wmCompactLeft}>
-              <Disc3 size={15} color="#0284C7" />
+              <View style={styles.wmCompactIconBadge}>
+                <Disc3 size={16} color="#0284C7" />
+              </View>
               <Text style={styles.wmCompactTitle}>Washing Machines</Text>
               <View style={styles.wmAllFreeChip}>
                 <Text style={styles.wmAllFreeChipText}>
@@ -715,17 +684,18 @@ export default function OwnerDashboard() {
           <Text style={styles.menuManageText}>Manage ›</Text>
         </Pressable>
 
-        {/* Priority Area 3: Residents Summary Card */}
+        {/* Priority Area 3: Residents Insights & Announcements */}
         <OwnerQuickActions
           totalResidents={stats.totalResidents}
           studentsInside={stats.studentsInside}
           unpaidResidentsCount={stats.unpaidResidentsCount ?? 0}
+          totalBeds={selectedProperty?.total_beds ?? 0}
+          rentCollectedPaise={stats.rentCollectedPaise}
+          rentTotalPaise={stats.rentTotalPaise}
         />
 
         {/* Priority Area 4: Recent Gate Movements */}
         <RecentActivitySection loading={loading} activities={recentActivities} />
-
-        <View style={{ height: 24 }} />
       </ScrollView>
 
       {/* Global Property Switcher Modal */}
@@ -1102,7 +1072,8 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: 16,
-    paddingTop: 8,
+    paddingTop: 12,
+    paddingBottom: 28,
     maxWidth: 960,
     width: '100%',
     alignSelf: 'center',
@@ -1117,73 +1088,77 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
     borderBottomColor: OwnerTheme.colors.border,
-    gap: 10,
+    gap: 8,
   },
   headerLeft: {
     justifyContent: 'center',
+    flexShrink: 0,
   },
   brandTitle: {
-    fontSize: 22,
+    fontSize: 21,
     fontWeight: '800',
     color: OwnerTheme.colors.primary,
     letterSpacing: -0.5,
   },
   propertySwitcherPill: {
     flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
+    gap: 5,
+    paddingVertical: 7,
+    paddingHorizontal: 10,
     borderRadius: OwnerTheme.radius.full,
     backgroundColor: OwnerTheme.colors.background,
     borderWidth: 1,
     borderColor: OwnerTheme.colors.border,
-    maxWidth: 240,
+    maxWidth: 220,
+  },
+  switcherIcon: {
+    flexShrink: 0,
   },
   propertySwitcherText: {
     fontSize: 13,
     fontWeight: '600',
     color: OwnerTheme.colors.textPrimary,
     flex: 1,
+    minWidth: 0,
   },
-  accountBtn: {
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  iconCircleBtn: {
     width: 38,
     height: 38,
     borderRadius: OwnerTheme.radius.full,
     backgroundColor: OwnerTheme.colors.primaryLight,
     justifyContent: 'center',
     alignItems: 'center',
+    position: 'relative',
   },
-  pushAlertBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FEF2F2',
-    borderBottomWidth: 1,
-    borderBottomColor: '#FCA5A5',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    gap: 8,
-  },
-  pushAlertIconWrap: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: '#FEE2E2',
+  bellBadge: {
+    position: 'absolute',
+    top: -3,
+    right: -3,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: '#DC2626',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  pushAlertTitle: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#991B1B',
-  },
-  pushAlertText: {
-    fontSize: 11,
-    color: '#B91C1C',
-  },
-  pushAlertClose: {
-    padding: 4,
+  bellBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    lineHeight: 12,
+    includeFontPadding: false,
   },
   wmCompactChipRow: {
     flexDirection: 'row',
@@ -1194,12 +1169,26 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: OwnerTheme.colors.border,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 11,
+    gap: 8,
+    ...OwnerTheme.shadow,
   },
   wmCompactLeft: {
+    flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
+    flexWrap: 'wrap',
     gap: 8,
+  },
+  wmCompactIconBadge: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: '#E0F2FE',
+    justifyContent: 'center',
+    alignItems: 'center',
+    flexShrink: 0,
   },
   wmCompactTitle: {
     fontSize: 13,
@@ -1215,17 +1204,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: OwnerTheme.colors.border,
     padding: 12,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
+    ...OwnerTheme.shadow,
   },
   wmSummaryLeft: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
     flex: 1,
+    minWidth: 0,
   },
   wmIconBadge: {
     width: 36,
@@ -1286,11 +1272,13 @@ const styles = StyleSheet.create({
   },
   wmSummaryRight: {
     paddingLeft: 8,
+    flexShrink: 0,
   },
   wmViewUsageBtnText: {
     fontSize: 12,
     fontWeight: '700',
     color: OwnerTheme.colors.primary,
+    flexShrink: 0,
   },
   wmModalContent: {
     width: '90%',

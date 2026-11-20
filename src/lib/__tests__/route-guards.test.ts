@@ -182,6 +182,30 @@ describe('navigation-guards', () => {
       expect(
         evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'owner-wardens' })
       ).toBe('/resident-tabs');
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'owner-announcements' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'notification-center' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'owner-announcements' })
+      ).toBe('/resident-tabs');
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: 'notification-center' })
+      ).toBe('/warden-dashboard');
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'student-announcements' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'student-notifications' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'student-announcements' })
+      ).toBe('/owner-tabs');
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: 'student-notifications' })
+      ).toBe('/warden-dashboard');
     });
   });
 });

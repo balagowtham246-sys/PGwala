@@ -14,14 +14,17 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Href, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
+  AlertCircle,
   AlertTriangle,
   Calendar,
   CheckCircle2,
+  X,
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { useToast } from '@/context/toast-context';
 import { invalidatePrefix } from '@/lib/query-cache';
 import { supabase } from '@/lib/supabase';
 import {
@@ -148,6 +151,7 @@ function paiseToRupeesInput(paise: number): string {
 export default function EditResidentScreen() {
   const { user } = useAuth();
   const { properties, selectedPropertyId } = useProperty();
+  const { showToast } = useToast();
   const { id } = useLocalSearchParams<{ id?: string }>();
 
   const [loading, setLoading] = useState(true);
@@ -177,7 +181,18 @@ export default function EditResidentScreen() {
   const [linking, setLinking] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isLoadError, setIsLoadError] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  const clearError = useCallback(() => {
+    setIsLoadError(false);
+    setErrorMessage(null);
+  }, []);
+
+  const showFormError = useCallback((msg: string) => {
+    setIsLoadError(false);
+    setErrorMessage(msg);
+  }, []);
 
   // Refs used exclusively inside effects/callbacks (never read/written during render)
   const propertiesRef = useRef(properties);
@@ -294,14 +309,14 @@ export default function EditResidentScreen() {
   const loadResident = useCallback(async () => {
     if (!id || !user?.id) {
       if (!id) {
-        setErrorMessage('No resident ID provided.');
+        showFormError('No resident ID provided.');
       }
       setLoading(false);
       return;
     }
 
     try {
-      setErrorMessage(null);
+      clearError();
       setLoading(true);
 
       const profileRes = await fetchResidentProfile(id);
@@ -417,11 +432,12 @@ export default function EditResidentScreen() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[EditResident] Error fetching resident:', err);
+      setIsLoadError(true);
       setErrorMessage(`Failed to load resident: ${msg}`);
     } finally {
       setLoading(false);
     }
-  }, [id, user?.id]);
+  }, [id, user?.id, clearError, showFormError]);
 
   useEffect(() => {
     let active = true;
@@ -499,45 +515,45 @@ export default function EditResidentScreen() {
     const trimmedNotes = notes.trim();
 
     if (!trimmedName) {
-      setErrorMessage('Full name cannot be empty.');
+      showFormError('Full name cannot be empty.');
       return;
     }
 
     if (!trimmedRoom) {
-      setErrorMessage('Please select a room and bed.');
+      showFormError('Please select a room and bed.');
       return;
     }
 
     if (trimmedRoom !== resident.room_number && !trimmedBed) {
-      setErrorMessage('Please select a free bed in the chosen room.');
+      showFormError('Please select a free bed in the chosen room.');
       return;
     }
 
     if (!phoneValidation.valid) {
-      setErrorMessage(
+      showFormError(
         phoneValidation.error ||
-          'Please enter a valid 10-digit Indian mobile number.'
+          'Please enter a valid 10-digit mobile number.'
       );
       return;
     }
 
     if (!isValidIsoDate(trimmedJoiningDate)) {
-      setErrorMessage('Please select a valid joining date.');
+      showFormError('Please select a valid joining date.');
       return;
     }
 
     if (!rentParsed.valid) {
-      setErrorMessage('Please enter a valid monthly rent amount in ₹.');
+      showFormError('Please enter a valid monthly rent amount in ₹.');
       return;
     }
 
     if (!depositParsed.valid) {
-      setErrorMessage('Please enter a valid security deposit amount in ₹.');
+      showFormError('Please enter a valid security deposit amount in ₹.');
       return;
     }
 
     setSaving(true);
-    setErrorMessage(null);
+    clearError();
     setSuccessMessage(null);
 
     try {
@@ -562,7 +578,7 @@ export default function EditResidentScreen() {
       );
 
       if (!res.ok) {
-        setErrorMessage(`Update Failed: ${res.error.message}`);
+        showFormError(`Update Failed: ${res.error.message}`);
         return;
       }
 
@@ -588,7 +604,7 @@ export default function EditResidentScreen() {
 
       if (outcome.status === 'bed_taken' || outcome.status === 'gender_mismatch') {
         setRoomRefreshSignal((n) => n + 1);
-        setErrorMessage(outcome.message);
+        showFormError(outcome.message);
         Alert.alert(
           outcome.status === 'bed_taken'
             ? 'Bed No Longer Available'
@@ -637,26 +653,16 @@ export default function EditResidentScreen() {
       setDepositAmount(nextForm.depositAmount);
       setSuccessMessage('Resident details updated successfully.');
 
-      Alert.alert(
-        'Changes Saved',
-        `${trimmedName}'s details have been updated.`,
-        [
-          {
-            text: 'OK',
-            onPress: () => {
-              if (router.canGoBack()) {
-                router.back();
-              } else {
-                router.replace('/residents-directory' as unknown as Href);
-              }
-            },
-          },
-        ]
-      );
+      showToast(`${trimmedName}'s details updated.`);
+      if (router.canGoBack()) {
+        router.back();
+      } else {
+        router.replace('/residents-directory' as unknown as Href);
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[EditResident] Update error:', err);
-      setErrorMessage(`Update Failed: ${msg}`);
+      showFormError(`Update Failed: ${msg}`);
     } finally {
       setSaving(false);
     }
@@ -668,18 +674,18 @@ export default function EditResidentScreen() {
 
     const trimmedEmail = studentEmail.trim().toLowerCase();
     if (!trimmedEmail) {
-      setErrorMessage('Please enter the student account email address.');
+      showFormError('Please enter the student account email address.');
       return;
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(trimmedEmail)) {
-      setErrorMessage('Please enter a valid email address.');
+      showFormError('Please enter a valid email address.');
       return;
     }
 
     setLinking(true);
-    setErrorMessage(null);
+    clearError();
     setSuccessMessage(null);
 
     try {
@@ -697,11 +703,11 @@ export default function EditResidentScreen() {
       const successMsg = res.message || 'Student account linked successfully.';
       setSuccessMessage(successMsg);
       setStudentEmail('');
-      Alert.alert('Account Linked', successMsg);
+      showToast(successMsg);
       await loadResident();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setErrorMessage(msg);
+      showFormError(msg);
     } finally {
       setLinking(false);
     }
@@ -729,7 +735,7 @@ export default function EditResidentScreen() {
     if (!user?.id || !resident) return;
 
     setUnlinking(true);
-    setErrorMessage(null);
+    clearError();
     setSuccessMessage(null);
 
     try {
@@ -745,11 +751,11 @@ export default function EditResidentScreen() {
 
       const successMsg = res.message || 'Student account unlinked successfully.';
       setSuccessMessage(successMsg);
-      Alert.alert('Account Unlinked', successMsg);
+      showToast(successMsg);
       await loadResident();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setErrorMessage(msg);
+      showFormError(msg);
     } finally {
       setUnlinking(false);
     }
@@ -777,7 +783,7 @@ export default function EditResidentScreen() {
     if (!resident || !user?.id) return;
 
     setDeactivating(true);
-    setErrorMessage(null);
+    clearError();
     setSuccessMessage(null);
 
     try {
@@ -796,19 +802,11 @@ export default function EditResidentScreen() {
         invalidatePrefix('dashboard:'),
       ]);
 
-      Alert.alert(
-        'Resident Deactivated',
-        `${resident.full_name} has been moved to inactive status. Historical records are preserved.`,
-        [
-          {
-            text: 'OK',
-            onPress: () => router.replace('/(tabs)'),
-          },
-        ]
-      );
+      showToast(`${resident.full_name} deactivated. Historical records preserved.`);
+      router.replace('/(tabs)');
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setErrorMessage(`Deactivation Failed: ${msg}`);
+      showFormError(`Deactivation Failed: ${msg}`);
     } finally {
       setDeactivating(false);
     }
@@ -853,16 +851,32 @@ export default function EditResidentScreen() {
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled">
           {errorMessage && (
-            <ErrorState
-              message={errorMessage}
-              onRetry={() => {
-                if (!resident) {
-                  void loadResident();
-                } else {
-                  setErrorMessage(null);
-                }
-              }}
-            />
+            isLoadError || (!resident && Boolean(id)) ? (
+              <ErrorState
+                message={errorMessage}
+                onRetry={() => void loadResident()}
+              />
+            ) : (
+              <View style={styles.validationErrorBanner}>
+                <AlertCircle
+                  size={18}
+                  color={OwnerTheme.colors.danger}
+                  style={{ marginRight: 8, marginTop: 1 }}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.validationErrorText}>{errorMessage}</Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Dismiss error"
+                  hitSlop={8}
+                  onPress={clearError}
+                  style={styles.dismissErrorBtn}>
+                  <X size={14} color={OwnerTheme.colors.danger} />
+                  <Text style={styles.dismissErrorText}>Dismiss</Text>
+                </Pressable>
+              </View>
+            )
           )}
 
           {successMessage && (
@@ -974,12 +988,15 @@ export default function EditResidentScreen() {
                         setErrorMessage(null);
                         setSuccessMessage(null);
                       }}
-                      placeholder="9876543210"
+                      placeholder="Enter 10-digit mobile number"
                       placeholderTextColor={OwnerTheme.colors.textMuted}
                       keyboardType="phone-pad"
-                      maxLength={14}
+                      maxLength={16}
                     />
                   </View>
+                  <Text style={styles.helperText}>
+                    Enter any 10-digit mobile number (with or without +91).
+                  </Text>
 
                   {duplicatePhoneResident && (
                     <View style={[styles.warningBox, { marginTop: 8 }]}>
@@ -1236,6 +1253,36 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     color: OwnerTheme.colors.textSecondary,
+  },
+  validationErrorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: OwnerTheme.colors.dangerLight,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 12,
+    marginVertical: 8,
+  },
+  validationErrorText: {
+    fontSize: 13,
+    color: OwnerTheme.colors.danger,
+    fontWeight: '500',
+  },
+  dismissErrorBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginLeft: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: OwnerTheme.radius.sm,
+    backgroundColor: '#FFFFFF',
+  },
+  dismissErrorText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.danger,
   },
   successBanner: {
     flexDirection: 'row',

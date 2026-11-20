@@ -51,7 +51,7 @@ import {
   SWITCH_THUMB_COLOR,
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
-import { useAuth } from '@/context/auth-context';
+import { useToast } from '@/context/toast-context';
 import {
   buildWhatsAppReminderUrl,
   formatPaiseToRupees,
@@ -72,7 +72,6 @@ import {
 import {
   checkoutResident,
   fetchResidentProfile,
-  ownerRecordMovement,
   ResidentProfileData,
   subscribePropertyResidentsRealtime,
   updateResidentWithLock,
@@ -103,9 +102,9 @@ function getComplaintBadgeVariant(status: string): StatusBadgeVariant {
 }
 
 export default function ResidentProfileScreen() {
-  const { user } = useAuth();
   const { id } = useLocalSearchParams<{ id?: string }>();
   const residentId = typeof id === 'string' ? id : Array.isArray(id) ? id[0] : '';
+  const { showToast } = useToast();
 
   const [profile, setProfile] = useState<ResidentProfileData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -114,9 +113,6 @@ export default function ResidentProfileScreen() {
 
   // Privacy toggle for phone number
   const [showFullPhone, setShowFullPhone] = useState(false);
-
-  // Gate quick toggle state
-  const [recordingGate, setRecordingGate] = useState(false);
 
   // Inline Owner Notes editor
   const [editingNotes, setEditingNotes] = useState(false);
@@ -281,26 +277,6 @@ export default function ResidentProfileScreen() {
     });
   }, [profile]);
 
-  const handleQuickGateToggle = useCallback(async () => {
-    if (!profile || recordingGate) return;
-    const nextDirection = profile.gateStatus === 'IN' ? 'OUT' : 'IN';
-    setRecordingGate(true);
-    const res = await ownerRecordMovement(
-      profile.propertyId,
-      profile.id,
-      nextDirection,
-      user?.id
-    );
-    setRecordingGate(false);
-
-    if (!res.ok) {
-      Alert.alert('Gate Update Failed', res.error.message);
-      return;
-    }
-    triggerSuccessHaptic();
-    await loadProfile(false);
-  }, [profile, recordingGate, user?.id, loadProfile]);
-
   const handleStartEditNotes = useCallback(() => {
     if (!profile) return;
     setNotesDraft(profile.notes ?? '');
@@ -425,12 +401,11 @@ export default function ResidentProfileScreen() {
 
     triggerSuccessHaptic();
     setPaymentModalVisible(false);
-    Alert.alert(
-      'Payment Recorded',
+    showToast(
       `Marked ${formatPaiseToRupees(firstUnpaidCharge.amount_paise)} paid via ${paymentMethod.toUpperCase()} (Receipt #${res.data.receipt_number}).`
     );
     await loadProfile(false);
-  }, [profile, firstUnpaidCharge, confirmingPayment, paymentMethod, loadProfile]);
+  }, [profile, firstUnpaidCharge, confirmingPayment, paymentMethod, loadProfile, showToast]);
 
   const handleOpenCheckoutModal = useCallback(() => {
     if (!profile) return;
@@ -461,19 +436,13 @@ export default function ResidentProfileScreen() {
     await loadProfile(false);
 
     const summaryNote = res.data.finalBillCreated
-      ? `Final bill of ${formatPaiseToRupees(proRataFinalBillPaise)} was added, and ${profile.bedLabel || 'the bed'} in Room ${profile.roomNumber} is now free.`
-      : `${profile.bedLabel || 'The bed'} in Room ${profile.roomNumber} is now free. Historical bills, gate logs, and complaints are preserved.`;
+      ? `${profile.fullName} checked out · Final bill ${formatPaiseToRupees(proRataFinalBillPaise)} added.`
+      : `${profile.fullName} checked out · ${profile.bedLabel || 'Bed'} in Room ${profile.roomNumber} is free.`;
 
-    Alert.alert('Resident Checked Out', summaryNote, [
-      {
-        text: 'OK',
-        onPress: () => {
-          if (router.canGoBack()) {
-            router.back();
-          }
-        },
-      },
-    ]);
+    showToast(summaryNote);
+    if (router.canGoBack()) {
+      router.back();
+    }
   }, [
     profile,
     checkingOut,
@@ -481,6 +450,7 @@ export default function ResidentProfileScreen() {
     generateFinalBill,
     proRataFinalBillPaise,
     loadProfile,
+    showToast,
   ]);
 
   if (loading && !profile) {
@@ -721,34 +691,11 @@ export default function ResidentProfileScreen() {
                 <DoorOpen size={16} color={OwnerTheme.colors.primary} />
                 <Text style={styles.sectionTitle}>Gate</Text>
               </View>
-              <View style={styles.gateHeaderRight}>
-                <StatusBadge
-                  label={gateStatusLabel}
-                  variant={gateStatusVariant}
-                  size="sm"
-                />
-                {profile.isActive && (
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={recordingGate}
-                    onPress={handleQuickGateToggle}
-                    style={[
-                      styles.quickGateBtn,
-                      recordingGate && { opacity: 0.55 },
-                    ]}>
-                    {recordingGate ? (
-                      <ActivityIndicator
-                        size="small"
-                        color={OwnerTheme.colors.primary}
-                      />
-                    ) : (
-                      <Text style={styles.quickGateBtnText}>
-                        {profile.gateStatus === 'IN' ? 'Mark Outside' : 'Mark Inside'}
-                      </Text>
-                    )}
-                  </Pressable>
-                )}
-              </View>
+              <StatusBadge
+                label={gateStatusLabel}
+                variant={gateStatusVariant}
+                size="sm"
+              />
             </View>
 
             <Text style={styles.subLabel}>Last 7 days movements</Text>
@@ -1418,24 +1365,6 @@ const styles = StyleSheet.create({
   },
   sectionFooterLinkText: {
     fontSize: 13,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  gateHeaderRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  quickGateBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: OwnerTheme.radius.full,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    borderWidth: 1,
-    borderColor: '#BAE6FD',
-  },
-  quickGateBtnText: {
-    fontSize: 11,
     fontWeight: '700',
     color: OwnerTheme.colors.primary,
   },

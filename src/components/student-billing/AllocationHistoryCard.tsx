@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
+import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import { StudentBillCardItem } from '@/services/billing.service';
 
 export interface AllocationHistoryCardProps {
@@ -28,19 +29,23 @@ export function AllocationHistoryCard({ bill }: AllocationHistoryCardProps) {
       <View style={styles.historyCardRight}>
         {bill.status === 'paid' ? (
           <View style={[styles.statusBadge, styles.badgePaid]}>
-            <Text style={styles.badgePaidText}>PAID</Text>
+            <Text style={styles.badgePaidText}>{toSentenceCaseStatus('paid')}</Text>
           </View>
         ) : bill.pending_report?.status === 'pending' ? (
           <View style={[styles.statusBadge, styles.badgeReview]}>
-            <Text style={styles.badgeReviewText}>REVIEW</Text>
+            <Text style={styles.badgeReviewText}>
+              {toSentenceCaseStatus('under_review')}
+            </Text>
           </View>
         ) : bill.pending_report?.status === 'rejected' ? (
           <View style={[styles.statusBadge, styles.badgeRejected]}>
-            <Text style={styles.badgeRejectedText}>REJECTED</Text>
+            <Text style={styles.badgeRejectedText}>
+              {toSentenceCaseStatus('rejected')}
+            </Text>
           </View>
         ) : (
           <View style={[styles.statusBadge, styles.badgeUnpaid]}>
-            <Text style={styles.badgeUnpaidText}>UNPAID</Text>
+            <Text style={styles.badgeUnpaidText}>{toSentenceCaseStatus('unpaid')}</Text>
           </View>
         )}
 

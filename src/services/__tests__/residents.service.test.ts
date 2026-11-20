@@ -546,4 +546,79 @@ describe('residents.service', () => {
       expect(residentUpdateEqMock).toHaveBeenCalledWith('id', 'res-2');
     });
   });
+
+  describe('room code normalization & deduplication', () => {
+    it('merges "Room D" definitions with existing residents in "D" without duplication', async () => {
+      mockedFrom.mockImplementation((table: string) => {
+        if (table === 'rooms') {
+          return {
+            select: () => ({
+              eq: jest.fn().mockResolvedValue({
+                data: [
+                  {
+                    id: 'room-dup-d',
+                    property_id: 'prop-1',
+                    room_number: 'Room D',
+                    total_beds: 4,
+                    gender_type: 'boys',
+                  },
+                ],
+                error: null,
+              }),
+            }),
+          };
+        }
+        if (table === 'residents') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  order: jest.fn().mockResolvedValue({
+                    data: [
+                      {
+                        id: 'res-d1',
+                        property_id: 'prop-1',
+                        full_name: 'Balagowtham',
+                        room_number: 'D',
+                        bed_label: 'Bed 1',
+                        phone_number: '9876543210',
+                        gender: 'male',
+                        is_active: true,
+                      },
+                      {
+                        id: 'res-d2',
+                        property_id: 'prop-1',
+                        full_name: 'Naveen',
+                        room_number: 'D',
+                        bed_label: 'Bed 2',
+                        phone_number: '9876543211',
+                        gender: 'male',
+                        is_active: true,
+                      },
+                    ],
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      });
+
+      const res = await fetchRoomsWithOccupancy('prop-1', {
+        residentGender: 'male',
+        propertyGender: 'boys',
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.data).toHaveLength(1);
+        expect(res.data[0].roomNumber).toBe('D');
+        expect(res.data[0].totalBeds).toBe(4);
+        expect(res.data[0].occupiedBeds).toBe(2);
+        expect(res.data[0].freeBeds).toBe(2);
+      }
+    });
+  });
 });

@@ -1,67 +1,47 @@
 import React from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Check, ChevronRight, LogIn, LogOut, Receipt } from 'lucide-react-native';
+import { Check, CheckCircle2, LogIn, LogOut, Receipt } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { isOutOverHours } from '@/lib/movement-utils';
-import { getNextUpcomingMeal } from '@/lib/resident-home-utils';
+import { formatGateEventTimestamp, toSentenceCaseStatus } from '@/lib/ux-utils';
 import type {
   MealType,
   ResidentFoodMenu,
   ResidentMovementRecord,
 } from '@/services/dashboard.service';
 
-const MEAL_TITLES: Record<MealType, string> = {
-  breakfast: 'Breakfast',
-  lunch: 'Lunch',
-  dinner: 'Dinner',
-};
-
-function formatMovementTime(isoString: string): string {
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleTimeString('en-IN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
-  } catch {
-    return isoString;
-  }
-}
-
 interface ResidentQuickTilesProps {
   pendingDuesPaise: number | null;
-  menus: Record<MealType, ResidentFoodMenu | null>;
+  menus?: Record<MealType, ResidentFoodMenu | null>;
   latestMovement: ResidentMovementRecord | null;
   savingMovement: boolean;
   washingMachineSlot: React.ReactNode;
   onPressRentDue: () => void;
-  onPressUpNextMeal: () => void;
+  onPressUpNextMeal?: () => void;
   onOpenGoingOut: () => void;
   onMarkBackIn: () => void;
 }
 
 export function ResidentQuickTiles({
   pendingDuesPaise,
-  menus,
   latestMovement,
   savingMovement,
   washingMachineSlot,
   onPressRentDue,
-  onPressUpNextMeal,
   onOpenGoingOut,
   onMarkBackIn,
 }: ResidentQuickTilesProps) {
   const isInside = !latestMovement || latestMovement.direction === 'IN';
   const outNudge = isOutOverHours(latestMovement?.direction, latestMovement?.event_time);
-  const nextMeal = getNextUpcomingMeal();
-  const nextMealMenu = menus[nextMeal];
+  const formattedMovementTime = latestMovement?.event_time
+    ? formatGateEventTimestamp(latestMovement.event_time)
+    : '';
 
   return (
     <>
-      {/* Lead Hero Card: Pending Rent or Next Upcoming Meal */}
+      {/* Lead Hero Card: Rent Due or Settled Summary */}
       {pendingDuesPaise !== null && pendingDuesPaise > 0 ? (
         <Pressable
           accessibilityRole="button"
@@ -72,7 +52,7 @@ export function ResidentQuickTiles({
           ]}
           onPress={onPressRentDue}>
           <View style={styles.heroFocusLeft}>
-            <Text style={styles.heroFocusLabelDue}>RENT DUE</Text>
+            <Text style={styles.heroFocusLabelDue}>Rent due</Text>
             <Text style={styles.heroFocusTitle}>
               ₹{(pendingDuesPaise / 100).toLocaleString('en-IN')} due
             </Text>
@@ -83,18 +63,22 @@ export function ResidentQuickTiles({
       ) : (
         <Pressable
           accessibilityRole="button"
-          style={({ pressed }) => [styles.heroFocusCard, pressed && styles.btnPressed]}
-          onPress={onPressUpNextMeal}>
+          style={({ pressed }) => [
+            styles.heroFocusCard,
+            styles.heroFocusCardSettled,
+            pressed && styles.btnPressed,
+          ]}
+          onPress={onPressRentDue}>
+          <View style={styles.settledIconWrap}>
+            <CheckCircle2 size={20} color={OwnerTheme.colors.success} />
+          </View>
           <View style={styles.heroFocusLeft}>
-            <Text style={styles.heroFocusLabel}>UP NEXT • RENT ₹0 DUE</Text>
-            <Text style={styles.heroFocusTitle}>{MEAL_TITLES[nextMeal]}</Text>
-            <Text style={styles.heroFocusSub} numberOfLines={1}>
-              {nextMealMenu
-                ? nextMealMenu.items
-                : 'All rent & dues settled for this month'}
+            <Text style={styles.settledTitle}>All dues settled</Text>
+            <Text style={styles.settledSub} numberOfLines={1}>
+              All rent & dues settled for this month
             </Text>
           </View>
-          <ChevronRight size={20} color={OwnerTheme.colors.primary} />
+          <Text style={styles.settledLink}>View bills ›</Text>
         </Pressable>
       )}
 
@@ -126,15 +110,15 @@ export function ResidentQuickTiles({
                   styles.gatePillText,
                   isInside ? styles.gateTextIn : styles.gateTextOut,
                 ]}>
-                {isInside ? 'INSIDE' : 'OUTSIDE'}
+                {toSentenceCaseStatus(isInside ? 'inside' : 'outside')}
               </Text>
             </View>
           </View>
 
           <Text style={styles.gateTitle}>Gate Attendance</Text>
           <Text style={styles.gateSubtitle} numberOfLines={1}>
-            {latestMovement?.event_time
-              ? `${isInside ? 'In since' : 'Out at'} ${formatMovementTime(latestMovement.event_time)}`
+            {formattedMovementTime
+              ? `${isInside ? 'In since' : 'Out at'} ${formattedMovementTime}`
               : 'Present on campus'}
           </Text>
           {!isInside && outNudge.isOver && (
@@ -206,21 +190,44 @@ const styles = StyleSheet.create({
     borderLeftColor: OwnerTheme.colors.danger,
     backgroundColor: '#FFFBFB',
   },
+  heroFocusCardSettled: {
+    borderLeftColor: OwnerTheme.colors.success,
+    borderColor: '#BBF7D0',
+    backgroundColor: '#F0FDF4',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  settledIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: OwnerTheme.colors.successLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  settledTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#166534',
+  },
+  settledSub: {
+    fontSize: 12,
+    color: '#15803D',
+  },
+  settledLink: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.success,
+  },
   heroFocusLeft: {
     flex: 1,
     gap: 3,
   },
-  heroFocusLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-    letterSpacing: 0.6,
-  },
   heroFocusLabelDue: {
-    fontSize: 11,
+    fontSize: 12,
     fontWeight: '700',
     color: OwnerTheme.colors.danger,
-    letterSpacing: 0.6,
+    letterSpacing: 0.1,
   },
   heroFocusTitle: {
     fontSize: 18,
@@ -277,7 +284,7 @@ const styles = StyleSheet.create({
   gatePillText: {
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.5,
+    letterSpacing: 0.2,
   },
   gateTextIn: {
     color: OwnerTheme.colors.success,

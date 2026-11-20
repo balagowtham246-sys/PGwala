@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { DoorOpen, HelpCircle, Home, LogOut } from 'lucide-react-native';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { OwnerHeader } from '@/components/ui/owner';
 import { GoingOutModal, GoingOutSubmitPayload } from '@/components/going-out-modal';
 import { BottomTabInset } from '@/constants/theme';
 import {
@@ -21,9 +22,11 @@ import {
   isOutOverHours,
 } from '@/lib/movement-utils';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
+import { formatRoomLabel, toSentenceCaseStatus } from '@/lib/ux-utils';
 import { router } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
+import { useToast } from '@/context/toast-context';
 import { supabase } from '@/lib/supabase';
 
 interface StudentResident {
@@ -89,6 +92,8 @@ function formatDateHeader(isoString: string): string {
 
 export default function StudentGateHistoryScreen() {
   const { user } = useAuth();
+  const { showToast } = useToast();
+  const userId = user?.id;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -97,28 +102,13 @@ export default function StudentGateHistoryScreen() {
   const [filter, setFilter] = useState<DateFilter>('all');
   const [savingMovement, setSavingMovement] = useState(false);
   const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
-  const [undoToast, setUndoToast] = useState<{
-    message: string;
-    undoDirection: 'IN' | 'OUT';
-  } | null>(null);
-  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    };
-  }, []);
-
-  const showUndoToast = (message: string, undoDirection: 'IN' | 'OUT') => {
-    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    setUndoToast({ message, undoDirection });
-    undoTimerRef.current = setTimeout(() => {
-      setUndoToast(null);
-    }, 8000);
-  };
+  const savingRef = useRef(false);
+  const recordGateToggleRef = useRef<
+    ((targetDirection: 'IN' | 'OUT', isUndo?: boolean) => Promise<void>) | null
+  >(null);
 
   const loadData = useCallback(async () => {
-    if (!user?.id) return;
+    if (!userId) return;
     try {
       setLoading(true);
 
@@ -134,7 +124,7 @@ export default function StudentGateHistoryScreen() {
             name
           )
         `)
-        .eq('profile_id', user.id)
+        .eq('profile_id', userId)
         .eq('is_active', true)
         .maybeSingle();
 
@@ -171,10 +161,19 @@ export default function StudentGateHistoryScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user?.id]);
+  }, [userId]);
 
   useEffect(() => {
-    loadData();
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (!cancelled) {
+        void loadData();
+      }
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [loadData]);
 
   // Current status based on most recent log (default IN if no logs yet)
@@ -184,38 +183,59 @@ export default function StudentGateHistoryScreen() {
   const outNudge = isOutOverHours(currentStatus, logs[0]?.event_time);
   const daysOutThisMonth = useMemo(() => countDaysOutThisMonth(logs), [logs]);
 
-  const recordGateToggle = async (targetDirection: 'IN' | 'OUT', isUndo: boolean = false) => {
-    if (savingMovement) return;
-    if (isUndo) {
-      triggerLightHaptic();
-    } else {
-      triggerSuccessHaptic();
-    }
-    setSavingMovement(true);
-    try {
-      const { data, error } = await supabase.rpc('record_student_movement', {
-        p_direction: targetDirection,
-        p_note: isUndo ? 'Undo previous gate tap' : undefined,
-      });
-      if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Could not update gate status.');
-      if (!isUndo) {
-        showUndoToast(
-          targetDirection === 'IN' ? 'Marked Inside PG' : 'Marked Outside PG',
-          targetDirection === 'IN' ? 'OUT' : 'IN'
-        );
+  const recordGateToggle = useCallback(
+    async (targetDirection: 'IN' | 'OUT', isUndo: boolean = false) => {
+      if (savingRef.current) return;
+      savingRef.current = true;
+      if (isUndo) {
+        triggerLightHaptic();
+      } else {
+        triggerSuccessHaptic();
       }
-      await loadData();
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      Alert.alert('Update Failed', msg || 'Could not update gate status.');
-    } finally {
-      setSavingMovement(false);
-    }
-  };
+      setSavingMovement(true);
+      try {
+        const { data, error } = await supabase.rpc('record_student_movement', {
+          p_direction: targetDirection,
+          p_note: isUndo ? 'Undo previous gate tap' : undefined,
+        });
+        if (error) throw error;
+        if (!data?.success) throw new Error(data?.error || 'Could not update gate status.');
+        if (!isUndo) {
+          showToast(
+            targetDirection === 'IN' ? 'Marked Inside PG' : 'Marked Outside PG',
+            {
+              actionLabel: 'Undo',
+              onAction: () => {
+                void recordGateToggleRef.current?.(
+                  targetDirection === 'IN' ? 'OUT' : 'IN',
+                  true
+                );
+              },
+            }
+          );
+        }
+        await loadData();
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        Alert.alert('Update Failed', msg || 'Could not update gate status.');
+      } finally {
+        savingRef.current = false;
+        setSavingMovement(false);
+      }
+    },
+    [loadData, showToast]
+  );
+
+  useEffect(() => {
+    recordGateToggleRef.current = recordGateToggle;
+    return () => {
+      recordGateToggleRef.current = null;
+    };
+  }, [recordGateToggle]);
 
   const handleConfirmGoingOut = async (payload: GoingOutSubmitPayload) => {
-    if (savingMovement) return;
+    if (savingRef.current) return;
+    savingRef.current = true;
     setSavingMovement(true);
     try {
       const { data, error } = await supabase.rpc('record_student_movement', {
@@ -228,12 +248,18 @@ export default function StudentGateHistoryScreen() {
       if (!data?.success) throw new Error(data?.error || 'Could not update gate status.');
       setGoingOutModalVisible(false);
       triggerSuccessHaptic();
-      showUndoToast('Marked Outside PG', 'IN');
+      showToast('Marked Outside PG', {
+        actionLabel: 'Undo',
+        onAction: () => {
+          void recordGateToggleRef.current?.('IN', true);
+        },
+      });
       await loadData();
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       Alert.alert('Update Failed', msg || 'Could not update gate status.');
     } finally {
+      savingRef.current = false;
       setSavingMovement(false);
     }
   };
@@ -270,8 +296,22 @@ export default function StudentGateHistoryScreen() {
     [filteredLogs]
   );
 
+  const propertyName = resident?.property?.name || 'PG Accommodation';
+  const headerSubtitle = resident?.room_number
+    ? `${propertyName} · ${formatRoomLabel(resident.room_number)}`
+    : propertyName;
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+      <OwnerHeader
+        title="My Gate History"
+        subtitle={headerSubtitle}
+        showBack
+        onBack={() =>
+          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+        }
+      />
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={
@@ -284,28 +324,6 @@ export default function StudentGateHistoryScreen() {
             colors={['#0284C7']}
           />
         }>
-        {/* Header Bar */}
-        <View style={styles.topBar}>
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-            onPress={() => {
-              if (router.canGoBack()) {
-                router.back();
-              } else {
-                router.replace('/student-dashboard');
-              }
-            }}>
-            <Text style={styles.backButtonText}>‹ Back</Text>
-          </Pressable>
-          <View style={styles.headerTitleWrap}>
-            <Text style={styles.screenTitle}>My Gate History</Text>
-            <Text style={styles.screenSubtitle}>
-              {resident?.property?.name || 'PG Accommodation'} • Room {resident?.room_number}
-            </Text>
-          </View>
-        </View>
-
         {loading ? (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="small" color="#0284C7" />
@@ -351,9 +369,9 @@ export default function StudentGateHistoryScreen() {
                       : styles.textUnknown,
                   ]}>
                   {currentStatus === 'IN'
-                    ? 'Checked IN (Inside PG)'
+                    ? 'Checked in (Inside PG)'
                     : currentStatus === 'OUT'
-                    ? 'Checked OUT (Outside PG)'
+                    ? 'Checked out (Outside PG)'
                     : 'No Gate Logs Recorded'}
                 </Text>
                 {lastEventTime && (
@@ -465,7 +483,7 @@ export default function StudentGateHistoryScreen() {
                               styles.directionText,
                               isIn ? styles.directionTextIn : styles.directionTextOut,
                             ]}>
-                            {isIn ? 'GATE IN' : 'GATE OUT'}
+                            {toSentenceCaseStatus(isIn ? 'gate_in' : 'gate_out')}
                           </Text>
                         </View>
 
@@ -499,22 +517,6 @@ export default function StudentGateHistoryScreen() {
           </>
         )}
       </ScrollView>
-
-      {undoToast && (
-        <View style={styles.undoToast}>
-          <Text style={styles.undoToastText}>{undoToast.message}</Text>
-          <Pressable
-            hitSlop={8}
-            onPress={() => {
-              const dir = undoToast.undoDirection;
-              setUndoToast(null);
-              if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-              recordGateToggle(dir, true);
-            }}>
-            <Text style={styles.undoToastAction}>UNDO</Text>
-          </Pressable>
-        </View>
-      )}
 
       <GoingOutModal
         visible={goingOutModalVisible}
@@ -591,65 +593,6 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     color: '#0F172A',
-  },
-  undoToast: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    bottom: BottomTabInset + 14,
-    backgroundColor: '#0F172A',
-    borderRadius: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  undoToastText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  undoToastAction: {
-    color: '#38BDF8',
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  backButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginRight: 10,
-  },
-  backButtonPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  backButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
-  headerTitleWrap: {
-    flex: 1,
-  },
-  screenTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  screenSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
   },
   loadingBox: {
     paddingVertical: 40,
@@ -729,7 +672,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#64748B',
     fontWeight: '600',
-    textTransform: 'uppercase',
   },
   statusValue: {
     fontSize: 16,

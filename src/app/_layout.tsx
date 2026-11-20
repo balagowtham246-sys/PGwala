@@ -9,6 +9,7 @@ import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { UpdateGuard } from '@/components/update-guard';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { PropertyProvider } from '@/context/property-context';
+import { ToastProvider } from '@/context/toast-context';
 import { evaluateNavigationRedirect } from '@/lib/navigation-guards';
 import { registerForPushNotifications, subscribeToPushTokenChanges } from '@/lib/push-notifications';
 
@@ -72,6 +73,8 @@ function RootNavigationLayout() {
       <Stack.Screen name="edit-resident" />
       <Stack.Screen name="residents-directory" />
       <Stack.Screen name="resident-profile" />
+      <Stack.Screen name="owner-announcements" />
+      <Stack.Screen name="notification-center" />
       <Stack.Screen name="food-menu" />
       <Stack.Screen name="billing-management" />
       <Stack.Screen name="student-billing" />
@@ -92,6 +95,8 @@ function RootNavigationLayout() {
       <Stack.Screen name="warden-dashboard" />
       <Stack.Screen name="warden-settings" />
       <Stack.Screen name="student-food-updates" />
+      <Stack.Screen name="student-announcements" />
+      <Stack.Screen name="student-notifications" />
     </Stack>
   );
 }
@@ -102,9 +107,11 @@ function RootLayout() {
       <StatusBar style="dark" />
       <AuthProvider>
         <PropertyProvider>
-          <AnimatedSplashOverlay />
-          <UpdateGuard />
-          <RootNavigationLayout />
+          <ToastProvider>
+            <AnimatedSplashOverlay />
+            <UpdateGuard />
+            <RootNavigationLayout />
+          </ToastProvider>
         </PropertyProvider>
       </AuthProvider>
     </ThemeProvider>

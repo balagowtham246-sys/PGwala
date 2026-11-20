@@ -8,6 +8,7 @@ import React, {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/auth-context';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { inferPropertyGender, PropertyGenderType } from '@/lib/ux-utils';
 
 export interface PropertyItem {
@@ -25,6 +26,7 @@ export interface PropertyMetaInput {
   gender_type?: PropertyGenderType;
   total_beds?: number;
   explicit_gender?: boolean;
+  prefer_local?: boolean;
 }
 
 interface PropertyContextType {
@@ -66,7 +68,14 @@ const PropertyContext = createContext<PropertyContextType>({
 function isMissingColumnError(err: { code?: string; message?: string } | null): boolean {
   if (!err) return false;
   const msg = (err.message || '').toLowerCase();
-  return err.code === '42703' || err.code === 'PGRST204' || msg.includes('does not exist') || msg.includes('column');
+  return (
+    err.code === '42703' ||
+    err.code === 'PGRST204' ||
+    err.code === '42501' ||
+    msg.includes('does not exist') ||
+    msg.includes('column') ||
+    msg.includes('permission denied')
+  );
 }
 
 async function readLocalPropertyMeta(
@@ -161,16 +170,19 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       const hydratedList: PropertyItem[] = await Promise.all(
         rawRows.map(async (p) => {
           const localMeta = await readLocalPropertyMeta(p.id);
-          const dbGender =
-            p.gender_type === 'coed' && !localMeta?.explicit_gender
+          const preferLocal = Boolean(localMeta?.prefer_local);
+          const dbGender = preferLocal
+            ? null
+            : p.gender_type === 'coed' && !localMeta?.explicit_gender
               ? null
               : p.gender_type;
           const resolvedGender = inferPropertyGender(
             p.name,
             dbGender ?? localMeta?.gender_type ?? null
           );
-          const resolvedBeds =
-            typeof p.total_beds === 'number' && p.total_beds > 0
+          const resolvedBeds = preferLocal
+            ? localMeta?.total_beds ?? p.total_beds ?? 0
+            : typeof p.total_beds === 'number' && p.total_beds > 0
               ? p.total_beds
               : localMeta?.total_beds ?? 0;
 
@@ -243,7 +255,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       .select('id, name, address, owner_id, is_active, gender_type, total_beds')
       .single();
 
-    if (richInsert.error && isMissingColumnError(richInsert.error)) {
+    if (richInsert.error) {
+      // Fallback to core columns whenever rich schema columns/grants are not yet applied on DB.
       const basicInsert = await supabase
         .from('properties')
         .insert({
@@ -255,10 +268,10 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         .select('id, name, address, owner_id, is_active')
         .single();
 
-      if (basicInsert.error) throw basicInsert.error;
+      if (basicInsert.error) {
+        throw new Error(extractErrorMessage(basicInsert.error, 'Could not add property.'));
+      }
       inserted = basicInsert.data as PropertyItem;
-    } else if (richInsert.error) {
-      throw richInsert.error;
     } else {
       inserted = richInsert.data as PropertyItem;
     }
@@ -269,6 +282,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       gender_type: genderType,
       total_beds: totalBeds,
       explicit_gender: Boolean(meta?.gender_type),
+      prefer_local: Boolean(richInsert.error),
     });
 
     const newProp: PropertyItem = {
@@ -313,7 +327,8 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       .eq('id', id)
       .eq('owner_id', user.id);
 
-    if (richUpdate.error && isMissingColumnError(richUpdate.error)) {
+    if (richUpdate.error) {
+      // Fallback to core columns (name, address) so edits succeed even before new column GRANT/ALTER runs.
       const basicUpdate = await supabase
         .from('properties')
         .update({
@@ -323,15 +338,16 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         .eq('id', id)
         .eq('owner_id', user.id);
 
-      if (basicUpdate.error) throw basicUpdate.error;
-    } else if (richUpdate.error) {
-      throw richUpdate.error;
+      if (basicUpdate.error) {
+        throw new Error(extractErrorMessage(basicUpdate.error, 'Failed to update property details.'));
+      }
     }
 
     await writeLocalPropertyMeta(id, {
       gender_type: genderType,
       total_beds: totalBeds,
       explicit_gender: Boolean(meta?.gender_type),
+      prefer_local: Boolean(richUpdate.error),
     });
 
     setProperties((prev) =>

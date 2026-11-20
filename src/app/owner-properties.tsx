@@ -24,7 +24,9 @@ import {
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { PropertyItem, useProperty } from '@/context/property-context';
+import { useToast } from '@/context/toast-context';
 import {
   formatPropertyGenderLabel,
   inferPropertyGender,
@@ -202,6 +204,7 @@ function PropertyEditForm({
 export default function OwnerPropertiesScreen() {
   const { properties, selectedProperty, addProperty, updateProperty } =
     useProperty();
+  const { showToast } = useToast();
 
   const [editingPropertyId, setEditingPropertyId] = useState<string | null>(
     null
@@ -243,10 +246,9 @@ export default function OwnerPropertiesScreen() {
       await updateProperty(id, name, address, meta);
 
       setSuccessMessage('Property details saved successfully.');
-      Alert.alert('Saved', `"${name}" updated.`);
+      showToast(`"${name}" updated.`);
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : 'Failed to update property details.';
+      const msg = extractErrorMessage(err, 'Failed to update property details.');
       setErrorMessage(msg);
     }
   };
@@ -285,10 +287,9 @@ export default function OwnerPropertiesScreen() {
       resetAddModal();
       setEditingPropertyId(created.id);
       setSuccessMessage(`Added "${created.name}".`);
-      Alert.alert('Success', `"${created.name}" has been added.`);
+      showToast(`"${created.name}" has been added.`);
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : 'Could not add property.';
+      const msg = extractErrorMessage(err, 'Could not add property.');
       Alert.alert('Failed', msg);
     } finally {
       setCreating(false);
@@ -401,7 +402,7 @@ export default function OwnerPropertiesScreen() {
                           <Text style={styles.metaText}>
                             {bedsCount > 0
                               ? `${occupiedCount}/${bedsCount} beds`
-                              : `${occupiedCount} residents`}
+                              : `${occupiedCount} ${occupiedCount === 1 ? 'resident' : 'residents'}`}
                           </Text>
                         </View>
                       </View>

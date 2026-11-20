@@ -1,6 +1,5 @@
 import React, { useState } from 'react';
 import {
-  Alert,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -14,12 +13,14 @@ import { Lock, User, CheckCircle2 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useToast } from '@/context/toast-context';
 import { supabase } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader, PrimaryButton, ErrorState } from '@/components/ui/owner';
 
 export default function OwnerProfileEditScreen() {
   const { user, profile, refreshProfile } = useAuth();
+  const { showToast } = useToast();
 
   const [fullName, setFullName] = useState(profile?.full_name || '');
   const [phoneNumber, setPhoneNumber] = useState(profile?.phone_number || '');
@@ -89,7 +90,7 @@ export default function OwnerProfileEditScreen() {
 
       await refreshProfile();
       setSuccessMessage('Profile and credentials updated successfully.');
-      Alert.alert('Saved', 'Your profile details have been updated.');
+      showToast('Your profile details have been updated.');
     } catch (err: unknown) {
       setErrorMessage(extractErrorMessage(err, 'Failed to update profile.'));
     } finally {

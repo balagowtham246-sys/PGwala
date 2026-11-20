@@ -181,3 +181,91 @@ BEGIN
       );
   END IF;
 END $$;
+
+-- 6. Column-level UPDATE grants for new property & resident fields (critical for RLS + column-scoped schemas)
+GRANT SELECT, INSERT ON TABLE public.properties TO authenticated;
+GRANT UPDATE (name, address, is_active, gender_type, total_beds) ON TABLE public.properties TO authenticated;
+GRANT UPDATE (full_name, phone_number, room_number, is_active, gender, joining_date, monthly_rent_paise, deposit_paise, bed_label, emergency_contact, notes, left_at) ON TABLE public.residents TO authenticated;
+
+-- 7. Announcements broadcast table (All residents or a single room, via Push or WhatsApp)
+CREATE TABLE IF NOT EXISTS public.announcements (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  property_id UUID NOT NULL REFERENCES public.properties(id) ON DELETE CASCADE,
+  owner_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  audience TEXT NOT NULL DEFAULT 'all' CHECK (audience IN ('all', 'room')),
+  room_number TEXT,
+  channel TEXT NOT NULL DEFAULT 'push' CHECK (channel IN ('push', 'whatsapp')),
+  recipient_count INTEGER NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'announcements' AND policyname = 'Owners manage their announcements'
+  ) THEN
+    CREATE POLICY "Owners manage their announcements"
+      ON public.announcements
+      FOR ALL
+      USING (
+        EXISTS (
+          SELECT 1 FROM public.properties p
+          WHERE p.id = announcements.property_id AND p.owner_id = auth.uid()
+        )
+      )
+      WITH CHECK (
+        EXISTS (
+          SELECT 1 FROM public.properties p
+          WHERE p.id = announcements.property_id AND p.owner_id = auth.uid()
+        )
+      );
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'announcements' AND policyname = 'Residents view announcements for their property'
+  ) THEN
+    CREATE POLICY "Residents view announcements for their property"
+      ON public.announcements
+      FOR SELECT
+      USING (
+        EXISTS (
+          SELECT 1 FROM public.residents r
+          WHERE r.property_id = announcements.property_id
+            AND r.profile_id = auth.uid()
+            AND r.is_active = true
+            AND (
+              announcements.audience = 'all'
+              OR LOWER(TRIM(COALESCE(announcements.room_number, ''))) = LOWER(TRIM(COALESCE(r.room_number, '')))
+            )
+        )
+      );
+  END IF;
+END $$;
+
+-- 8. Resident self-service emergency contact RPC (mirrors set_my_meal_opt_in)
+CREATE OR REPLACE FUNCTION public.set_my_emergency_contact(p_value TEXT)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL THEN
+    RAISE EXCEPTION 'Not authenticated';
+  END IF;
+
+  UPDATE public.residents
+  SET emergency_contact = NULLIF(TRIM(COALESCE(p_value, '')), '')
+  WHERE profile_id = auth.uid()
+    AND is_active = true;
+END;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.set_my_emergency_contact(TEXT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.set_my_emergency_contact(TEXT) TO authenticated;

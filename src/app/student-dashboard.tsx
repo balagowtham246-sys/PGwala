@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -11,15 +12,18 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, useFocusEffect } from 'expo-router';
-import { AlertCircle, ChevronRight, ClipboardList } from 'lucide-react-native';
+import * as Notifications from 'expo-notifications';
+import { Href, router, useFocusEffect } from 'expo-router';
+import { AlertCircle, ChevronRight, ClipboardList, Megaphone } from 'lucide-react-native';
 
 import { BottomTabInset, OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useToast } from '@/context/toast-context';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { flushOfflineQueue, getPendingCount } from '@/lib/offline-queue';
 import { invalidatePrefix } from '@/lib/query-cache';
 import { getFirstName, getNextUpcomingMeal } from '@/lib/resident-home-utils';
+import { formatRoomLabel } from '@/lib/ux-utils';
 import { defaultOfflineExecutors } from '@/services/offline-executors';
 import {
   createEmptyResidentMenus,
@@ -32,6 +36,11 @@ import {
   ResidentMovementRecord,
   studentDashboardCacheKey,
 } from '@/services/dashboard.service';
+import {
+  getUnreadResidentNoticesSummary,
+  RESIDENT_NOTICES_CACHE_PREFIX,
+  ResidentNoticeItem,
+} from '@/services/resident-notices.service';
 import { WashingMachineCard } from '@/components/washing-machine-card';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { FoodStatusBanner } from '@/components/food-status-banner';
@@ -44,6 +53,7 @@ export type { MealType, ResidentFoodMenu, ResidentMovementRecord };
 
 export default function ResidentDashboardScreen() {
   const { user, profile, refreshProfile } = useAuth();
+  const { showToast } = useToast();
   const userId = user?.id;
 
   const [loading, setLoading] = useState(true);
@@ -54,6 +64,13 @@ export default function ResidentDashboardScreen() {
   // Active Meal Tab for in-place detail view (defaults to next upcoming meal)
   const [activeMealTab, setActiveMealTab] = useState<MealType>(() => getNextUpcomingMeal());
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
+  const [unreadSummary, setUnreadSummary] = useState<{
+    unreadCount: number;
+    latestUnreadAnnouncement: ResidentNoticeItem | null;
+  }>({
+    unreadCount: 0,
+    latestUnreadAnnouncement: null,
+  });
   const [menus, setMenus] = useState<Record<MealType, ResidentFoodMenu | null>>(() =>
     createEmptyResidentMenus()
   );
@@ -70,25 +87,26 @@ export default function ResidentDashboardScreen() {
   // Feedback State
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const hasMountedRef = useRef(false);
-  const [undoToast, setUndoToast] = useState<{
-    message: string;
-    undoDirection: 'IN' | 'OUT';
-  } | null>(null);
-  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savingMovementRef = useRef(false);
 
-  useEffect(() => {
-    return () => {
-      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    };
-  }, []);
+  const residentPropertyId = resident?.property_id ?? null;
+  const residentRoomNumber = resident?.room_number ?? '';
 
-  const showUndoToast = (message: string, undoDirection: 'IN' | 'OUT') => {
-    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    setUndoToast({ message, undoDirection });
-    undoTimerRef.current = setTimeout(() => {
-      setUndoToast(null);
-    }, 8000);
-  };
+  const loadUnreadNotices = useCallback(
+    async (forceInvalidate = false) => {
+      if (!userId || !residentPropertyId) return;
+      if (forceInvalidate) {
+        await invalidatePrefix(RESIDENT_NOTICES_CACHE_PREFIX);
+      }
+      const summary = await getUnreadResidentNoticesSummary(
+        userId,
+        residentPropertyId,
+        residentRoomNumber
+      );
+      setUnreadSummary(summary);
+    },
+    [userId, residentPropertyId, residentRoomNumber]
+  );
 
   const applyStudentDashboardResult = useCallback(
     (result: Awaited<ReturnType<typeof fetchStudentDashboard>>) => {
@@ -158,6 +176,33 @@ export default function ResidentDashboardScreen() {
     };
   }, [userId]);
 
+  // Load unread PG notices & announcements summary when resident property is known
+  useEffect(() => {
+    if (!userId || !residentPropertyId) return;
+    let cancelled = false;
+    void getUnreadResidentNoticesSummary(
+      userId,
+      residentPropertyId,
+      residentRoomNumber
+    ).then((summary) => {
+      if (!cancelled) {
+        setUnreadSummary(summary);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, residentPropertyId, residentRoomNumber]);
+
+  // Refresh unread notices immediately when a push notification arrives in foreground
+  useEffect(() => {
+    if (Platform.OS === 'web' || !userId || !residentPropertyId) return;
+    const sub = Notifications.addNotificationReceivedListener(() => {
+      void loadUnreadNotices(true);
+    });
+    return () => sub.remove();
+  }, [userId, residentPropertyId, loadUnreadNotices]);
+
   // Flush offline gate mutations when app returns to foreground
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -170,16 +215,17 @@ export default function ResidentDashboardScreen() {
     };
   }, [flushOfflineAndSync]);
 
-  // Refresh profile & flush offline queue when returning to dashboard
+  // Refresh profile, notices & flush offline queue when returning to dashboard
   useFocusEffect(
     useCallback(() => {
       void flushOfflineAndSync();
+      void loadUnreadNotices();
       if (!hasMountedRef.current) {
         hasMountedRef.current = true;
         return;
       }
       void refreshProfile();
-    }, [flushOfflineAndSync, refreshProfile])
+    }, [flushOfflineAndSync, loadUnreadNotices, refreshProfile])
   );
 
   const handleRefresh = () => {
@@ -190,13 +236,56 @@ export default function ResidentDashboardScreen() {
       await flushOfflineQueue(defaultOfflineExecutors);
       const count = await getPendingCount();
       setPendingOfflineCount(count);
-      await loadResidentData();
+      await Promise.all([loadResidentData(), loadUnreadNotices(true)]);
     })();
   };
 
+  const performUndoDirection = useCallback(
+    async (targetDir: 'IN' | 'OUT') => {
+      if (savingMovementRef.current) return;
+      savingMovementRef.current = true;
+      triggerLightHaptic();
+      setSavingMovement(true);
+      try {
+        const result = await recordStudentMovement({
+          direction: targetDir,
+          note: 'Undo previous gate tap',
+          userId,
+        });
+        if (!result.ok) {
+          Alert.alert(
+            'Undo Failed',
+            result.error.message || 'Could not undo last gate action.'
+          );
+          return;
+        }
+        if (result.data.queued) {
+          setLatestMovement({
+            id: 'offline-queued',
+            direction: targetDir,
+            event_time: new Date().toISOString(),
+            purpose: null,
+            expected_return_time: null,
+            food_required: true,
+            note: 'Undo previous gate tap',
+          });
+          setPendingOfflineCount(await getPendingCount());
+          showToast('Saved offline — will sync automatically');
+          return;
+        }
+        await loadResidentData();
+      } finally {
+        savingMovementRef.current = false;
+        setSavingMovement(false);
+      }
+    },
+    [userId, loadResidentData, showToast]
+  );
+
   // 1-tap Check-In when back at PG
   const handleMarkBackIn = async () => {
-    if (savingMovement) return;
+    if (savingMovementRef.current) return;
+    savingMovementRef.current = true;
     setSavingMovement(true);
 
     try {
@@ -222,23 +311,27 @@ export default function ResidentDashboardScreen() {
           note: null,
         });
         setPendingOfflineCount(await getPendingCount());
-        Alert.alert(
-          'Queued Offline',
-          'You appear to be offline. Your check-in has been saved and will sync automatically when you are back online.'
-        );
+        showToast('Saved offline — will sync automatically');
         return;
       }
 
-      showUndoToast('Marked Inside PG', 'OUT');
       await loadResidentData();
+      showToast('Marked Inside PG', {
+        actionLabel: 'Undo',
+        onAction: () => {
+          void performUndoDirection('OUT');
+        },
+      });
     } finally {
+      savingMovementRef.current = false;
       setSavingMovement(false);
     }
   };
 
   // Confirm Going Out with Purpose, Return Time & Food Requirement
   const handleConfirmGoingOut = async (payload: GoingOutSubmitPayload) => {
-    if (savingMovement) return;
+    if (savingMovementRef.current) return;
+    savingMovementRef.current = true;
     setSavingMovement(true);
 
     try {
@@ -269,70 +362,35 @@ export default function ResidentDashboardScreen() {
           note: null,
         });
         setPendingOfflineCount(await getPendingCount());
-        Alert.alert(
-          'Queued Offline',
-          'You appear to be offline. Your departure has been saved and will sync automatically when you are back online.'
-        );
+        showToast('Saved offline — will sync automatically');
         return;
       }
 
-      showUndoToast('Marked Outside PG', 'IN');
       await loadResidentData();
-    } finally {
-      setSavingMovement(false);
-    }
-  };
-
-  const handleUndoMovement = async () => {
-    if (!undoToast || savingMovement) return;
-    const targetDir = undoToast.undoDirection;
-    setUndoToast(null);
-    if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
-    triggerLightHaptic();
-    setSavingMovement(true);
-    try {
-      const result = await recordStudentMovement({
-        direction: targetDir,
-        note: 'Undo previous gate tap',
-        userId,
+      showToast('Marked Outside PG', {
+        actionLabel: 'Undo',
+        onAction: () => {
+          void performUndoDirection('IN');
+        },
       });
-      if (!result.ok) {
-        Alert.alert('Undo Failed', result.error.message || 'Could not undo last gate action.');
-        return;
-      }
-      if (result.data.queued) {
-        setLatestMovement({
-          id: 'offline-queued',
-          direction: targetDir,
-          event_time: new Date().toISOString(),
-          purpose: null,
-          expected_return_time: null,
-          food_required: true,
-          note: 'Undo previous gate tap',
-        });
-        setPendingOfflineCount(await getPendingCount());
-        Alert.alert(
-          'Queued Offline',
-          'You appear to be offline. Your gate update has been saved and will sync automatically when you are back online.'
-        );
-        return;
-      }
-      await loadResidentData();
     } finally {
+      savingMovementRef.current = false;
       setSavingMovement(false);
     }
   };
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
-      {/* Top Header: Brand + Chat Icon (with Unread Dot) + Settings Cog */}
+      {/* Top Header: Brand + Chat Icon + Notices Bell + Settings Cog */}
       <ResidentStatusHeader
         showChat={Boolean(resident)}
         hasUnreadChat={hasUnreadChat}
+        unreadNoticesCount={unreadSummary.unreadCount}
         onPressChat={() => {
           setHasUnreadChat(false);
           router.push('/student-chat');
         }}
+        onPressNotices={() => router.push('/student-announcements' as Href)}
         onPressSettings={() => router.push('/student-settings')}
       />
 
@@ -417,9 +475,36 @@ export default function ResidentDashboardScreen() {
                 Hi, {getFirstName(resident.full_name)}
               </Text>
               <View style={styles.roomPill}>
-                <Text style={styles.roomPillText}>Room {resident.room_number}</Text>
+                <Text style={styles.roomPillText}>
+                  {formatRoomLabel(resident.room_number)}
+                </Text>
               </View>
             </View>
+
+            {/* Unread Notice Preview Card */}
+            {unreadSummary.latestUnreadAnnouncement && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Notice: ${unreadSummary.latestUnreadAnnouncement.title}`}
+                style={({ pressed }) => [
+                  styles.noticePreviewCard,
+                  pressed && styles.btnPressed,
+                ]}
+                onPress={() => router.push('/student-announcements' as Href)}>
+                <View style={styles.noticePreviewIconWrap}>
+                  <Megaphone size={16} color={OwnerTheme.colors.primary} />
+                </View>
+                <View style={styles.noticePreviewTextWrap}>
+                  <Text style={styles.noticePreviewTitle} numberOfLines={1}>
+                    {unreadSummary.latestUnreadAnnouncement.title}
+                  </Text>
+                  <Text style={styles.noticePreviewBody} numberOfLines={1}>
+                    {unreadSummary.latestUnreadAnnouncement.message}
+                  </Text>
+                </View>
+                <Text style={styles.noticePreviewViewText}>View ›</Text>
+              </Pressable>
+            )}
 
             {/* Food Alerts: today's latest status per meal (delayed / cancelled highlighted) */}
             <FoodStatusBanner refreshKey={foodRefreshKey} />
@@ -427,7 +512,6 @@ export default function ResidentDashboardScreen() {
             {/* Lead Hero Card + Washing Machine & Gate Attendance 1x2 Hero */}
             <ResidentQuickTiles
               pendingDuesPaise={pendingDuesPaise}
-              menus={menus}
               latestMovement={latestMovement}
               savingMovement={savingMovement}
               washingMachineSlot={
@@ -440,7 +524,6 @@ export default function ResidentDashboardScreen() {
                 />
               }
               onPressRentDue={() => router.push('/student-billing')}
-              onPressUpNextMeal={() => router.push('/student-menu')}
               onOpenGoingOut={() => setGoingOutModalVisible(true)}
               onMarkBackIn={handleMarkBackIn}
             />
@@ -482,15 +565,6 @@ export default function ResidentDashboardScreen() {
         onConfirm={handleConfirmGoingOut}
       />
 
-      {undoToast && (
-        <View style={styles.undoToast}>
-          <Text style={styles.undoToastText}>{undoToast.message}</Text>
-          <Pressable hitSlop={8} onPress={handleUndoMovement}>
-            <Text style={styles.undoToastAction}>UNDO</Text>
-          </Pressable>
-        </View>
-      )}
-
       <RoleBottomNav activeTab="home" roleOverride="student" />
     </SafeAreaView>
   );
@@ -525,30 +599,46 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: OwnerTheme.colors.primary,
   },
-  undoToast: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    bottom: BottomTabInset + 14,
-    backgroundColor: '#0F172A',
-    borderRadius: OwnerTheme.radius.md,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
+  noticePreviewCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    ...OwnerTheme.shadow,
+    gap: 10,
+    backgroundColor: OwnerTheme.colors.primarySoft,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: OwnerTheme.radius.card,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
-  undoToastText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '600',
+  noticePreviewIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  undoToastAction: {
-    color: '#38BDF8',
+  noticePreviewTextWrap: {
+    flex: 1,
+    gap: 1,
+  },
+  noticePreviewTitle: {
     fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: 0.5,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  noticePreviewBody: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  noticePreviewViewText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  btnPressed: {
+    opacity: 0.85,
+    transform: [{ scale: 0.99 }],
   },
   scrollContent: {
     paddingHorizontal: 16,

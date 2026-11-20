@@ -4,7 +4,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -20,7 +19,10 @@ import {
 } from '@/components/student-billing/PaymentProofModal';
 import { StudentChargeList } from '@/components/student-billing/StudentChargeList';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { OwnerHeader } from '@/components/ui/owner';
 import { useAuth } from '@/context/auth-context';
+import { useToast } from '@/context/toast-context';
+import { formatRoomLabel } from '@/lib/ux-utils';
 import {
   getStudentBilling,
   PaymentMethod,
@@ -31,6 +33,7 @@ import {
 
 export default function SimplifiedStudentBillingScreen() {
   const { user } = useAuth();
+  const { showToast } = useToast();
   const userId = user?.id;
 
   const [loading, setLoading] = useState(true);
@@ -198,15 +201,25 @@ export default function SimplifiedStudentBillingScreen() {
     setSelectedScreenshot(null);
     setReferenceNumber('');
     setStudentNotes('');
-    Alert.alert(
-      'Payment Sent',
-      `Your ${billTitle} payment report has been sent to the owner for review.`
-    );
+    showToast(`${billTitle} payment proof sent for review`);
     await loadStudentBills({ forceNetwork: true });
   };
 
+  const headerSubtitle = roomNumber
+    ? `${propertyName} · ${formatRoomLabel(roomNumber)}`
+    : propertyName;
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+      <OwnerHeader
+        title="My Monthly Bills"
+        subtitle={headerSubtitle}
+        showBack
+        onBack={() =>
+          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+        }
+      />
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
@@ -217,28 +230,6 @@ export default function SimplifiedStudentBillingScreen() {
             colors={['#0284C7']}
           />
         }>
-        {/* Top Header */}
-        <View style={styles.topBar}>
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [styles.backBtn, pressed && styles.pressed]}
-            onPress={() => {
-              if (router.canGoBack()) {
-                router.back();
-              } else {
-                router.replace('/student-dashboard');
-              }
-            }}>
-            <Text style={styles.backBtnText}>‹ Back</Text>
-          </Pressable>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.screenTitle}>My Monthly Bills</Text>
-            <Text style={styles.screenSubtitle}>
-              {propertyName} • Room {roomNumber}
-            </Text>
-          </View>
-        </View>
-
         {loading ? (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="small" color="#0284C7" />
@@ -313,35 +304,6 @@ const styles = StyleSheet.create({
     padding: 16,
     paddingBottom: 40,
   },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 16,
-  },
-  backBtn: {
-    paddingVertical: 7,
-    paddingHorizontal: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-  },
-  backBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0F172A',
-  },
-  screenTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  screenSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
-  },
   loadingBox: {
     padding: 40,
     alignItems: 'center',
@@ -361,8 +323,5 @@ const styles = StyleSheet.create({
   },
   historyList: {
     gap: 10,
-  },
-  pressed: {
-    opacity: 0.8,
   },
 });

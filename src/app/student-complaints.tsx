@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { OwnerHeader } from '@/components/ui/owner';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import {
@@ -31,6 +32,7 @@ import {
 } from 'lucide-react-native';
 
 import { useAuth } from '@/context/auth-context';
+import { useToast } from '@/context/toast-context';
 import { extractErrorMessage } from '@/lib/error-utils';
 import {
   enqueueOfflineMutation,
@@ -39,6 +41,7 @@ import {
 } from '@/lib/offline-queue';
 import { isLikelyNetworkError } from '@/lib/service-result';
 import { supabase, decodeBase64ToBytes, getSignedComplaintPhotoUrl } from '@/lib/supabase';
+import { formatRoomLabel, toSentenceCaseStatus } from '@/lib/ux-utils';
 import {
   ComplaintOfflinePayload,
   defaultOfflineExecutors,
@@ -99,24 +102,25 @@ const PRIORITY_CONFIG: Record<
   ComplaintPriority,
   { label: string; color: string; bgColor: string }
 > = {
-  urgent: { label: 'URGENT', color: '#DC2626', bgColor: '#FEE2E2' },
-  high: { label: 'HIGH', color: '#EA580C', bgColor: '#FFEDD5' },
-  medium: { label: 'MEDIUM', color: '#D97706', bgColor: '#FEF3C7' },
-  low: { label: 'LOW', color: '#64748B', bgColor: '#F1F5F9' },
+  urgent: { label: toSentenceCaseStatus('urgent'), color: '#DC2626', bgColor: '#FEE2E2' },
+  high: { label: toSentenceCaseStatus('high'), color: '#EA580C', bgColor: '#FFEDD5' },
+  medium: { label: toSentenceCaseStatus('medium'), color: '#D97706', bgColor: '#FEF3C7' },
+  low: { label: toSentenceCaseStatus('low'), color: '#64748B', bgColor: '#F1F5F9' },
 };
 
 const STATUS_CONFIG: Record<
   ComplaintStatus,
   { label: string; color: string; bgColor: string }
 > = {
-  open: { label: 'OPEN', color: '#0284C7', bgColor: '#E0F2FE' },
-  in_progress: { label: 'IN PROGRESS', color: '#D97706', bgColor: '#FEF3C7' },
-  resolved: { label: 'RESOLVED', color: '#16A34A', bgColor: '#DCFCE7' },
-  rejected: { label: 'REJECTED', color: '#DC2626', bgColor: '#FEE2E2' },
+  open: { label: toSentenceCaseStatus('open'), color: '#0284C7', bgColor: '#E0F2FE' },
+  in_progress: { label: toSentenceCaseStatus('in_progress'), color: '#D97706', bgColor: '#FEF3C7' },
+  resolved: { label: toSentenceCaseStatus('resolved'), color: '#16A34A', bgColor: '#DCFCE7' },
+  rejected: { label: toSentenceCaseStatus('rejected'), color: '#DC2626', bgColor: '#FEE2E2' },
 };
 
 export default function StudentComplaintsScreen() {
   const { user } = useAuth();
+  const { showToast } = useToast();
   const userId = user?.id;
 
   const [loading, setLoading] = useState(true);
@@ -362,10 +366,7 @@ export default function StudentComplaintsScreen() {
 
       if (error) throw error;
 
-      Alert.alert(
-        'Complaint Submitted',
-        'Your request has been forwarded to your PG owner. You can track progress right here.'
-      );
+      showToast('Complaint submitted to PG owner');
 
       setShowModal(false);
       setTitle('');
@@ -391,10 +392,7 @@ export default function StudentComplaintsScreen() {
         await enqueueOfflineMutation('complaint_submit', offlinePayload, idempotencyKey);
         setPendingOfflineCount(await getPendingCount());
 
-        Alert.alert(
-          'Complaint Queued Offline',
-          'You appear to be offline. Your complaint has been saved and will be submitted automatically once you are back online.'
-        );
+        showToast('Saved offline — complaint will submit when back online');
 
         setShowModal(false);
         setTitle('');
@@ -429,8 +427,22 @@ export default function StudentComplaintsScreen() {
     (c) => c.status === 'open' || c.status === 'in_progress'
   ).length;
 
+  const propertyName = resident?.property?.name || 'PG Accommodation';
+  const headerSubtitle = resident?.room_number
+    ? `${propertyName} · ${formatRoomLabel(resident.room_number)}`
+    : propertyName;
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
+      <OwnerHeader
+        title="Complaints & Requests"
+        subtitle={headerSubtitle}
+        showBack
+        onBack={() =>
+          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+        }
+      />
+
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={
@@ -447,28 +459,6 @@ export default function StudentComplaintsScreen() {
             colors={['#0284C7']}
           />
         }>
-        {/* Top Header */}
-        <View style={styles.topBar}>
-          <Pressable
-            accessibilityRole="button"
-            style={({ pressed }) => [styles.backButton, pressed && styles.backButtonPressed]}
-            onPress={() => {
-              if (router.canGoBack()) {
-                router.back();
-              } else {
-                router.replace('/student-dashboard');
-              }
-            }}>
-            <Text style={styles.backButtonText}>‹ Back</Text>
-          </Pressable>
-          <View style={styles.headerTitleWrap}>
-            <Text style={styles.screenTitle}>Complaints & Requests</Text>
-            <Text style={styles.screenSubtitle}>
-              {resident?.property?.name || 'PG Accommodation'} • Room {resident?.room_number}
-            </Text>
-          </View>
-        </View>
-
         {loading ? (
           <View style={styles.loadingBox}>
             <ActivityIndicator size="small" color="#0284C7" />
@@ -839,41 +829,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingTop: 10,
     paddingBottom: 40,
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  backButton: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginRight: 10,
-  },
-  backButtonPressed: {
-    backgroundColor: '#F1F5F9',
-  },
-  backButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
-  headerTitleWrap: {
-    flex: 1,
-  },
-  screenTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  screenSubtitle: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 1,
   },
   loadingBox: {
     paddingVertical: 40,

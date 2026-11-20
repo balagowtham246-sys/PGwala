@@ -32,6 +32,7 @@ import {
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { useToast } from '@/context/toast-context';
 import { supabase } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader } from '@/components/ui/owner';
@@ -49,6 +50,7 @@ const getWmNamesStorageKey = (propertyId: string) =>
 export default function OwnerSettingsScreen() {
   const { user, profile, signOut } = useAuth();
   const { selectedProperty, properties } = useProperty();
+  const { showToast } = useToast();
   const colors = OwnerTheme.colors;
   const [ownerInfoVisible, setOwnerInfoVisible] = useState(false);
 
@@ -209,11 +211,8 @@ export default function OwnerSettingsScreen() {
         })
       );
 
-      Alert.alert(
-        'Capacity Updated',
-        data?.message || `Configured ${wmCount} washing machines.`
-      );
       setWmModalVisible(false);
+      showToast(data?.message || `Configured ${wmCount} washing machines.`);
       await loadWmData();
     } catch (err: unknown) {
       Alert.alert(

@@ -1,20 +1,24 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { MessageCircle, Settings } from 'lucide-react-native';
+import { Bell, MessageCircle, Settings } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 
 interface ResidentStatusHeaderProps {
   showChat: boolean;
   hasUnreadChat: boolean;
+  unreadNoticesCount?: number;
   onPressChat: () => void;
+  onPressNotices: () => void;
   onPressSettings: () => void;
 }
 
 export function ResidentStatusHeader({
   showChat,
   hasUnreadChat,
+  unreadNoticesCount = 0,
   onPressChat,
+  onPressNotices,
   onPressSettings,
 }: ResidentStatusHeaderProps) {
   return (
@@ -32,6 +36,22 @@ export function ResidentStatusHeader({
             {hasUnreadChat && <View style={styles.chatUnreadDot} />}
           </Pressable>
         )}
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Notices and Announcements"
+          hitSlop={4}
+          style={({ pressed }) => [styles.settingsBtn, pressed && styles.btnPressed]}
+          onPress={onPressNotices}>
+          <Bell size={18} color={OwnerTheme.colors.primary} />
+          {unreadNoticesCount > 0 && (
+            <View style={styles.noticesBadge}>
+              <Text style={styles.noticesBadgeText}>
+                {unreadNoticesCount > 9 ? '9+' : String(unreadNoticesCount)}
+              </Text>
+            </View>
+          )}
+        </Pressable>
 
         <Pressable
           accessibilityRole="button"
@@ -75,6 +95,7 @@ const styles = StyleSheet.create({
     backgroundColor: OwnerTheme.colors.primaryLight,
     justifyContent: 'center',
     alignItems: 'center',
+    position: 'relative',
   },
   chatUnreadDot: {
     position: 'absolute',
@@ -86,6 +107,27 @@ const styles = StyleSheet.create({
     backgroundColor: OwnerTheme.colors.danger,
     borderWidth: 1.5,
     borderColor: '#FFFFFF',
+  },
+  noticesBadge: {
+    position: 'absolute',
+    top: -3,
+    right: -3,
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 4,
+    borderRadius: 9,
+    backgroundColor: '#DC2626',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  noticesBadgeText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    lineHeight: 12,
+    includeFontPadding: false,
   },
   btnPressed: {
     opacity: 0.85,

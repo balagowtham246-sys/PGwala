@@ -8,11 +8,13 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { BedDouble, Check, Plus, X } from 'lucide-react-native';
+import { BedDouble, Check, Pencil, Plus, X } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import {
   formatPropertyGenderLabel,
+  formatRoomLabel,
+  normalizeRoomCode,
   PropertyGenderType,
   ResidentGender,
 } from '@/lib/ux-utils';
@@ -48,8 +50,12 @@ export function RoomBedPicker({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [expandedRoom, setExpandedRoom] = useState<string>(selectedRoomNumber);
 
-  // Create room modal
+  // Create / Edit room modal
   const [createVisible, setCreateVisible] = useState(false);
+  const [editingRoomTarget, setEditingRoomTarget] = useState<{
+    roomNumber: string;
+    occupiedBeds: number;
+  } | null>(null);
   const [newRoomNumber, setNewRoomNumber] = useState('');
   const [newTotalBeds, setNewTotalBeds] = useState(2);
   const [newRoomGender, setNewRoomGender] = useState<PropertyGenderType>(propertyGender);
@@ -92,17 +98,23 @@ export function RoomBedPicker({
     };
   }, [loadRooms, refreshSignal]);
 
-  const handleCreateRoom = async () => {
-    const clean = newRoomNumber.trim();
+  const handleSaveRoomModal = async () => {
+    const clean = editingRoomTarget
+      ? editingRoomTarget.roomNumber
+      : normalizeRoomCode(newRoomNumber);
     if (!clean) {
-      setCreateError('Please enter a room number or code.');
+      setCreateError('Please enter a room number or code (e.g. 101 or D).');
       return;
     }
+
+    const minBeds = editingRoomTarget ? Math.max(1, editingRoomTarget.occupiedBeds) : 1;
+    const clampedBeds = Math.max(minBeds, Math.min(20, newTotalBeds));
+
     setCreatingRoom(true);
     setCreateError(null);
     const res = await createRoom(propertyId, {
       roomNumber: clean,
-      totalBeds: newTotalBeds,
+      totalBeds: clampedBeds,
       genderType: newRoomGender,
     });
     setCreatingRoom(false);
@@ -112,10 +124,16 @@ export function RoomBedPicker({
       return;
     }
 
+    const wasEdit = Boolean(editingRoomTarget);
     setCreateVisible(false);
+    setEditingRoomTarget(null);
     setNewRoomNumber('');
     setExpandedRoom(res.data.room_number);
-    onSelect(res.data.room_number, 'Bed 1');
+    if (!wasEdit) {
+      onSelect(res.data.room_number, 'Bed 1');
+    } else if (normalizeRoomCode(selectedRoomNumber).toLowerCase() === res.data.room_number.toLowerCase()) {
+      onSelect(res.data.room_number, selectedBedLabel || '');
+    }
     await loadRooms();
   };
 
@@ -128,8 +146,22 @@ export function RoomBedPicker({
         : residentGender === 'male'
         ? 'boys'
         : 'coed';
+    setEditingRoomTarget(null);
+    setNewRoomNumber('');
     setNewRoomGender(defaultGender);
     setNewTotalBeds(2);
+    setCreateError(null);
+    setCreateVisible(true);
+  };
+
+  const openEditRoomModal = (room: RoomWithOccupancy) => {
+    setEditingRoomTarget({
+      roomNumber: room.roomNumber,
+      occupiedBeds: room.occupiedBeds,
+    });
+    setNewRoomNumber(room.roomNumber);
+    setNewTotalBeds(Math.max(1, room.totalBeds));
+    setNewRoomGender(room.genderType);
     setCreateError(null);
     setCreateVisible(true);
   };
@@ -164,8 +196,11 @@ export function RoomBedPicker({
       ) : (
         <View style={styles.roomList}>
           {rooms.map((room) => {
-            const isExpanded = expandedRoom === room.roomNumber;
-            const isSelectedRoom = selectedRoomNumber === room.roomNumber;
+            const normSelected = normalizeRoomCode(selectedRoomNumber).toLowerCase();
+            const isExpanded =
+              normalizeRoomCode(expandedRoom).toLowerCase() === room.roomNumber.toLowerCase();
+            const isSelectedRoom =
+              Boolean(normSelected) && normSelected === room.roomNumber.toLowerCase();
             const disabledRoom = !room.isGenderAllowed;
 
             return (
@@ -176,14 +211,14 @@ export function RoomBedPicker({
                   isSelectedRoom && styles.roomCardSelected,
                   disabledRoom && styles.roomCardDisabled,
                 ]}>
-                <Pressable
-                  accessibilityRole="button"
-                  disabled={disabledRoom}
-                  onPress={() => setExpandedRoom(isExpanded ? '' : room.roomNumber)}
-                  style={styles.roomHeader}>
-                  <View style={{ flex: 1 }}>
+                <View style={styles.roomHeader}>
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={disabledRoom}
+                    onPress={() => setExpandedRoom(isExpanded ? '' : room.roomNumber)}
+                    style={styles.roomHeaderMain}>
                     <Text style={[styles.roomTitle, disabledRoom && styles.mutedText]}>
-                      Room {room.roomNumber}
+                      {formatRoomLabel(room.roomNumber)}
                     </Text>
                     <Text
                       style={[
@@ -196,8 +231,16 @@ export function RoomBedPicker({
                         ? `Full (${room.occupiedBeds}/${room.totalBeds} occupied)`
                         : `${room.freeBeds} of ${room.totalBeds} beds free`}
                     </Text>
-                  </View>
+                  </Pressable>
                   <View style={styles.roomRightRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      hitSlop={6}
+                      onPress={() => openEditRoomModal(room)}
+                      style={styles.editBedsBtn}>
+                      <Pencil size={11} color={OwnerTheme.colors.primary} />
+                      <Text style={styles.editBedsBtnText}>Edit beds</Text>
+                    </Pressable>
                     <View style={styles.genderBadge}>
                       <Text style={styles.genderBadgeText}>
                         {formatPropertyGenderLabel(room.genderType)}
@@ -209,7 +252,7 @@ export function RoomBedPicker({
                       </View>
                     ) : null}
                   </View>
-                </Pressable>
+                </View>
 
                 {(isExpanded || isSelectedRoom) && !disabledRoom && (
                   <View style={styles.bedsGrid}>
@@ -281,7 +324,11 @@ export function RoomBedPicker({
           />
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Create Room</Text>
+              <Text style={styles.modalTitle}>
+                {editingRoomTarget
+                  ? `Edit ${formatRoomLabel(editingRoomTarget.roomNumber)}`
+                  : 'Create Room'}
+              </Text>
               <Pressable
                 hitSlop={10}
                 onPress={() => setCreateVisible(false)}
@@ -290,27 +337,46 @@ export function RoomBedPicker({
               </Pressable>
             </View>
 
-            <Text style={styles.inputLabel}>Room Number / Code *</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="e.g. 101 or Room D"
-              placeholderTextColor="#94A3B8"
-              value={newRoomNumber}
-              onChangeText={setNewRoomNumber}
-              autoCapitalize="characters"
-            />
+            {editingRoomTarget ? (
+              <View style={styles.editingRoomBanner}>
+                <Text style={styles.editingRoomTitle}>
+                  {formatRoomLabel(editingRoomTarget.roomNumber)}
+                </Text>
+                <Text style={styles.hintText}>
+                  Currently {editingRoomTarget.occupiedBeds} occupied — minimum{' '}
+                  {Math.max(1, editingRoomTarget.occupiedBeds)} beds required.
+                </Text>
+              </View>
+            ) : (
+              <>
+                <Text style={styles.inputLabel}>Room Number / Code *</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 101 or D (auto-prefixed with Room)"
+                  placeholderTextColor="#94A3B8"
+                  value={newRoomNumber}
+                  onChangeText={setNewRoomNumber}
+                  autoCapitalize="characters"
+                />
+              </>
+            )}
 
             <Text style={[styles.inputLabel, { marginTop: 12 }]}>Total Beds *</Text>
             <View style={styles.stepperRow}>
               <Pressable
                 style={styles.stepBtn}
-                onPress={() => setNewTotalBeds((b) => Math.max(1, b - 1))}>
+                onPress={() => {
+                  const minBeds = editingRoomTarget
+                    ? Math.max(1, editingRoomTarget.occupiedBeds)
+                    : 1;
+                  setNewTotalBeds((b) => Math.max(minBeds, b - 1));
+                }}>
                 <Text style={styles.stepBtnText}>−</Text>
               </Pressable>
               <Text style={styles.stepVal}>{newTotalBeds} beds</Text>
               <Pressable
                 style={styles.stepBtn}
-                onPress={() => setNewTotalBeds((b) => Math.min(12, b + 1))}>
+                onPress={() => setNewTotalBeds((b) => Math.min(20, b + 1))}>
                 <Text style={styles.stepBtnText}>+</Text>
               </Pressable>
             </View>
@@ -348,9 +414,13 @@ export function RoomBedPicker({
             <Pressable
               disabled={creatingRoom}
               style={[styles.saveRoomBtn, creatingRoom && { opacity: 0.6 }]}
-              onPress={handleCreateRoom}>
+              onPress={handleSaveRoomModal}>
               <Text style={styles.saveRoomBtnText}>
-                {creatingRoom ? 'Saving...' : 'Create & Select Bed 1'}
+                {creatingRoom
+                  ? 'Saving...'
+                  : editingRoomTarget
+                  ? 'Save Room Changes'
+                  : 'Create & Select Bed 1'}
               </Text>
             </Pressable>
           </View>
@@ -444,6 +514,9 @@ const styles = StyleSheet.create({
     padding: 12,
     gap: 8,
   },
+  roomHeaderMain: {
+    flex: 1,
+  },
   roomTitle: {
     fontSize: 14,
     fontWeight: '700',
@@ -465,6 +538,37 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+  },
+  editBedsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  editBedsBtnText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  editingRoomBanner: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.md,
+    padding: 12,
+    gap: 2,
+  },
+  editingRoomTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
   },
   genderBadge: {
     backgroundColor: '#F1F5F9',

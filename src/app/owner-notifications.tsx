@@ -23,6 +23,7 @@ import {
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
+import { useToast } from '@/context/toast-context';
 import {
   HIGH_CONTRAST_SWITCH_COLORS,
   OwnerHeader,
@@ -76,6 +77,7 @@ function isValidQuietWindow(val: unknown): val is QuietHoursWindow {
 }
 
 export default function OwnerNotificationsScreen() {
+  const { showToast } = useToast();
   const [prefs, setPrefs] = useState<OwnerNotifPrefs>(DEFAULT_PREFS);
   const [savedNotice, setSavedNotice] = useState(false);
   const [testingNotif, setTestingNotif] = useState(false);
@@ -186,26 +188,8 @@ export default function OwnerNotificationsScreen() {
         const msg =
           'Local push notifications are unavailable on web browsers. On Android and iOS devices, PGwala triggers a live alert banner here.';
         setTestNotice(msg);
-        Alert.alert('Test Notification (Web)', msg);
+        showToast('Local push notifications are unavailable on web browsers.');
         return;
-      }
-
-      Notifications.setNotificationHandler({
-        handleNotification: async () => ({
-          shouldShowBanner: true,
-          shouldShowList: true,
-          shouldPlaySound: true,
-          shouldSetBadge: false,
-        }),
-      });
-
-      if (Platform.OS === 'android') {
-        await Notifications.setNotificationChannelAsync('owner-alerts', {
-          name: 'Owner Alerts',
-          importance: 6, // Notifications.AndroidImportance.HIGH
-          vibrationPattern: [0, 250, 250, 250],
-          lightColor: '#0284C7',
-        });
       }
 
       const existing = await Notifications.getPermissionsAsync();
@@ -221,6 +205,26 @@ export default function OwnerNotificationsScreen() {
         setTestNotice(deniedMsg);
         Alert.alert('Permission Required', deniedMsg);
         return;
+      }
+
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowBanner: true,
+          shouldShowList: true,
+          shouldPlaySound: true,
+          shouldSetBadge: false,
+        }),
+      });
+
+      if (Platform.OS === 'android') {
+        try {
+          await Notifications.setNotificationChannelAsync('owner-alerts', {
+            name: 'Owner Alerts',
+            importance: 6, // AndroidImportance.HIGH === 6
+          });
+        } catch (channelErr) {
+          console.warn('[OwnerNotifications] Channel setup skipped:', channelErr);
+        }
       }
 
       await Notifications.scheduleNotificationAsync({

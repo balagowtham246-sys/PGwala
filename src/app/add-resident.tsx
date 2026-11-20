@@ -13,6 +13,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Href, router, useFocusEffect } from 'expo-router';
 import {
+  AlertCircle,
   AlertTriangle,
   Building2,
   Calendar,
@@ -20,6 +21,7 @@ import {
   Eye,
   EyeOff,
   RefreshCw,
+  X,
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
@@ -233,6 +235,17 @@ export default function AddResidentScreen() {
   // Status & Feedback
   const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isLoadError, setIsLoadError] = useState(false);
+
+  const clearError = useCallback(() => {
+    setIsLoadError(false);
+    setErrorMessage(null);
+  }, []);
+
+  const showFormError = useCallback((msg: string) => {
+    setIsLoadError(false);
+    setErrorMessage(msg);
+  }, []);
 
   // Load properties fallback if PropertyContext hasn't populated any
   const loadFallbackProperties = useCallback(async () => {
@@ -261,6 +274,7 @@ export default function AddResidentScreen() {
         if (basicRes.error) {
           throw new Error(`Failed to load property: ${basicRes.error.message}`);
         }
+        setIsLoadError(false);
         setFallbackProperties((basicRes.data as PropertyOption[]) ?? []);
         return;
       }
@@ -270,6 +284,7 @@ export default function AddResidentScreen() {
       }
 
       const rows = (richRes.data as PropertyOption[]) ?? [];
+      setIsLoadError(false);
       if (rows.length === 0) {
         setErrorMessage(
           'No active PG property found for your account. Please set up a property first.'
@@ -279,6 +294,7 @@ export default function AddResidentScreen() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[AddResident] Error loading properties:', err);
+      setIsLoadError(true);
       setErrorMessage(msg);
     }
   }, [ownerId, properties.length]);
@@ -463,7 +479,7 @@ export default function AddResidentScreen() {
   // Validate Step 1 before moving to Step 2
   const handleProceedToStep2 = () => {
     if (!activeProperty?.id) {
-      setErrorMessage(
+      showFormError(
         'Please select a compatible PG property before continuing.'
       );
       return;
@@ -478,34 +494,34 @@ export default function AddResidentScreen() {
     const depositParsed = parseRupeesToPaise(depositAmount);
 
     if (!trimmedName) {
-      setErrorMessage("Please enter the resident's full name.");
+      showFormError("Please enter the resident's full name.");
       return;
     }
     if (!trimmedRoom || !trimmedBed) {
-      setErrorMessage('Please select a room and free bed.');
+      showFormError('Please select a room and free bed.');
       return;
     }
     if (!phoneValidation.valid) {
-      setErrorMessage(
+      showFormError(
         phoneValidation.error ||
-          'Please enter a valid 10-digit Indian mobile number.'
+          'Please enter a valid 10-digit mobile number.'
       );
       return;
     }
     if (!isValidIsoDate(trimmedJoiningDate)) {
-      setErrorMessage('Please select a valid joining date.');
+      showFormError('Please select a valid joining date.');
       return;
     }
     if (!rentParsed.valid) {
-      setErrorMessage('Please enter a valid monthly rent amount in ₹.');
+      showFormError('Please enter a valid monthly rent amount in ₹.');
       return;
     }
     if (!depositParsed.valid) {
-      setErrorMessage('Please enter a valid security deposit amount in ₹.');
+      showFormError('Please enter a valid security deposit amount in ₹.');
       return;
     }
 
-    setErrorMessage(null);
+    clearError();
     setCurrentStep(2);
   };
 
@@ -539,36 +555,36 @@ export default function AddResidentScreen() {
     const trimmedPassword = temporaryPassword.trim();
 
     if (!phoneValidation.valid) {
-      setErrorMessage(
+      showFormError(
         phoneValidation.error ||
-          'Please enter a valid 10-digit Indian mobile number.'
+          'Please enter a valid 10-digit mobile number.'
       );
       return;
     }
 
     if (!trimmedEmail) {
-      setErrorMessage("Please enter the resident's login email.");
+      showFormError("Please enter the resident's login email.");
       return;
     }
 
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(trimmedEmail)) {
-      setErrorMessage('Please enter a valid email address.');
+      showFormError('Please enter a valid email address.');
       return;
     }
 
     if (!trimmedPassword) {
-      setErrorMessage('Please provide a temporary password or tap generate.');
+      showFormError('Please provide a temporary password or tap generate.');
       return;
     }
 
     if (trimmedPassword.length < 6) {
-      setErrorMessage('Temporary password must be at least 6 characters.');
+      showFormError('Temporary password must be at least 6 characters.');
       return;
     }
 
     setSaving(true);
-    setErrorMessage(null);
+    clearError();
     const traceLabel = 'add-resident:create';
     startTrace(traceLabel);
 
@@ -706,7 +722,7 @@ export default function AddResidentScreen() {
             'Network error. Please check your connection and try again.'
           : normalized.message;
       }
-      setErrorMessage(msg);
+      showFormError(msg);
     } finally {
       endTrace(traceLabel);
       setSaving(false);
@@ -740,10 +756,35 @@ export default function AddResidentScreen() {
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled">
           {errorMessage && (
-            <ErrorState
-              message={errorMessage}
-              onRetry={() => setErrorMessage(null)}
-            />
+            isLoadError && allProperties.length === 0 ? (
+              <ErrorState
+                message={errorMessage}
+                onRetry={() => {
+                  clearError();
+                  void loadFallbackProperties();
+                }}
+              />
+            ) : (
+              <View style={styles.validationErrorBanner}>
+                <AlertCircle
+                  size={18}
+                  color={OwnerTheme.colors.danger}
+                  style={{ marginRight: 8, marginTop: 1 }}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.validationErrorText}>{errorMessage}</Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Dismiss error"
+                  hitSlop={8}
+                  onPress={clearError}
+                  style={styles.dismissErrorBtn}>
+                  <X size={14} color={OwnerTheme.colors.danger} />
+                  <Text style={styles.dismissErrorText}>Dismiss</Text>
+                </Pressable>
+              </View>
+            )
           )}
 
           {/* Step 3: Success Screen */}
@@ -1011,7 +1052,7 @@ export default function AddResidentScreen() {
                       </View>
                       <TextInput
                         style={styles.prefixedTextInput}
-                        placeholder="9876543210"
+                        placeholder="Enter 10-digit mobile number"
                         placeholderTextColor={OwnerTheme.colors.textMuted}
                         value={phoneNumber}
                         onChangeText={(val) => {
@@ -1019,9 +1060,12 @@ export default function AddResidentScreen() {
                           if (errorMessage) setErrorMessage(null);
                         }}
                         keyboardType="phone-pad"
-                        maxLength={14}
+                        maxLength={16}
                       />
                     </View>
+                    <Text style={styles.helperText}>
+                      Enter any 10-digit mobile number (with or without +91).
+                    </Text>
 
                     {duplicatePhoneResident && (
                       <View style={[styles.warningBox, { marginTop: 8 }]}>
@@ -1254,6 +1298,36 @@ const styles = StyleSheet.create({
     width: '100%',
     alignSelf: 'center',
   },
+  validationErrorBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: OwnerTheme.colors.dangerLight,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 12,
+    marginVertical: 8,
+  },
+  validationErrorText: {
+    fontSize: 13,
+    color: OwnerTheme.colors.danger,
+    fontWeight: '500',
+  },
+  dismissErrorBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginLeft: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: OwnerTheme.radius.sm,
+    backgroundColor: '#FFFFFF',
+  },
+  dismissErrorText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.danger,
+  },
   progressRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1411,6 +1485,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     fontSize: 15,
     color: OwnerTheme.colors.textPrimary,
+  },
+  helperText: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 6,
   },
   chipRow: {
     flexDirection: 'row',

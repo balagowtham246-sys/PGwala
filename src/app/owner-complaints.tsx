@@ -34,6 +34,7 @@ import {
 
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { useToast } from '@/context/toast-context';
 import { supabase, getSignedComplaintPhotoUrl } from '@/lib/supabase';
 import { sortComplaintsByUrgencyThenDate } from '@/lib/complaint-utils';
 import { sortRoomCodes, toSentenceCaseStatus } from '@/lib/ux-utils';
@@ -116,6 +117,7 @@ const STATUS_CONFIG: Record<
 export default function OwnerComplaintsScreen() {
   const { user } = useAuth();
   const { selectedProperty, selectedPropertyId } = useProperty();
+  const { showToast } = useToast();
   const params = useLocalSearchParams<{ residentId?: string | string[] }>();
   const rawParamResidentId = Array.isArray(params.residentId)
     ? params.residentId[0]
@@ -353,7 +355,7 @@ export default function OwnerComplaintsScreen() {
     setCreateModalVisible(false);
     setCreateTitle('');
     setCreateDescription('');
-    Alert.alert('Complaint Logged', 'Maintenance ticket has been created.');
+    showToast('Complaint logged · Maintenance ticket created.');
     await loadData();
   };
 
@@ -384,7 +386,7 @@ export default function OwnerComplaintsScreen() {
 
       if (error) throw error;
 
-      Alert.alert('Updated', `Complaint marked as ${STATUS_CONFIG[newStatus].label}.`);
+      showToast(`Complaint marked as ${STATUS_CONFIG[newStatus].label}.`);
       setSelectedComplaint(null);
       void loadData();
     } catch (err: unknown) {

@@ -6,6 +6,7 @@ import { fail, ok, ServiceResult } from '@/lib/service-result';
 import { supabase } from '@/lib/supabase';
 import {
   isPropertyCompatibleWithGender,
+  normalizeRoomCode,
   PropertyGenderType,
   ResidentGender,
   sortRoomCodes,
@@ -157,10 +158,12 @@ function isMissingSchemaError(err: { code?: string; message?: string } | null): 
   return (
     err.code === '42P01' ||
     err.code === '42703' ||
+    err.code === '42501' ||
     err.code === 'PGRST204' ||
     err.code === 'PGRST205' ||
     msg.includes('does not exist') ||
     msg.includes('column') ||
+    msg.includes('permission denied') ||
     msg.includes('schema cache') ||
     msg.includes('could not find the table')
   );
@@ -301,12 +304,20 @@ async function fetchRoomsTableRaw(
 
   const dbRooms = (data as RoomDefinition[]) ?? [];
   const merged = new Map<string, RoomDefinition>();
-  for (const r of localRooms) {
-    merged.set(r.room_number.trim().toLowerCase(), r);
-  }
-  for (const r of dbRooms) {
-    merged.set(r.room_number.trim().toLowerCase(), r);
-  }
+  const absorbRoom = (r: RoomDefinition) => {
+    const cleanCode = normalizeRoomCode(r.room_number) || r.room_number.trim();
+    const key = cleanCode.toLowerCase();
+    const prev = merged.get(key);
+    merged.set(key, {
+      ...r,
+      room_number: cleanCode,
+      total_beds: prev
+        ? Math.max(prev.total_beds || 1, r.total_beds || 1)
+        : r.total_beds,
+    });
+  };
+  for (const r of localRooms) absorbRoom(r);
+  for (const r of dbRooms) absorbRoom(r);
   return Array.from(merged.values());
 }
 
@@ -338,30 +349,42 @@ export async function fetchRoomsWithOccupancy(
     );
 
     const roomsMap = new Map<string, RoomDefinition>();
+    const canonicalCodeMap = new Map<string, string>();
     for (const room of dbRooms) {
-      roomsMap.set(room.room_number, room);
+      const norm = normalizeRoomCode(room.room_number) || room.room_number.trim();
+      const key = norm.toLowerCase();
+      canonicalCodeMap.set(key, norm);
+      roomsMap.set(key, { ...room, room_number: norm });
     }
 
     const occupantsByRoom = new Map<string, typeof residents>();
     for (const res of residents) {
-      const list = occupantsByRoom.get(res.room_number) ?? [];
+      const norm = normalizeRoomCode(res.room_number) || res.room_number.trim();
+      const key = norm.toLowerCase();
+      if (!canonicalCodeMap.has(key)) {
+        canonicalCodeMap.set(key, norm);
+      }
+      const list = occupantsByRoom.get(key) ?? [];
       list.push(res);
-      occupantsByRoom.set(res.room_number, list);
+      occupantsByRoom.set(key, list);
 
-      if (!roomsMap.has(res.room_number)) {
-        roomsMap.set(res.room_number, {
+      if (!roomsMap.has(key)) {
+        roomsMap.set(key, {
           property_id: propertyId,
-          room_number: res.room_number,
+          room_number: canonicalCodeMap.get(key)!,
           total_beds: Math.max(2, list.length),
           gender_type: options?.propertyGender ?? 'coed',
         });
       }
     }
 
-    const sortedRoomNumbers = Array.from(roomsMap.keys()).sort(sortRoomCodes);
-    const result: RoomWithOccupancy[] = sortedRoomNumbers.map((roomNumber) => {
-      const def = roomsMap.get(roomNumber)!;
-      const roomOccupants = occupantsByRoom.get(roomNumber) ?? [];
+    const sortedKeys = Array.from(roomsMap.keys()).sort((aKey, bKey) =>
+      sortRoomCodes(canonicalCodeMap.get(aKey)!, canonicalCodeMap.get(bKey)!)
+    );
+    const result: RoomWithOccupancy[] = sortedKeys.map((key) => {
+      const roomNumber = canonicalCodeMap.get(key)!;
+      const def = roomsMap.get(key)!;
+      const roomOccupants = occupantsByRoom.get(key) ?? [];
       const otherOccupants = roomOccupants.filter(
         (r) => r.id !== options?.excludeResidentId
       );
@@ -438,7 +461,7 @@ export async function createRoom(
     genderType: PropertyGenderType;
   }
 ): Promise<ServiceResult<RoomDefinition>> {
-  const cleanRoom = input.roomNumber.trim();
+  const cleanRoom = normalizeRoomCode(input.roomNumber);
   if (!cleanRoom) {
     return fail(new Error('Room number is required.'));
   }
@@ -468,12 +491,12 @@ export async function createRoom(
     const saved = (data as RoomDefinition) ?? payload;
     const existingLocal = await readLocalRooms(propertyId);
     const nextLocal = existingLocal.filter(
-      (r) => r.room_number.trim().toLowerCase() !== cleanRoom.toLowerCase()
+      (r) => normalizeRoomCode(r.room_number).toLowerCase() !== cleanRoom.toLowerCase()
     );
-    nextLocal.push(saved);
+    nextLocal.push({ ...saved, room_number: cleanRoom, total_beds: cleanBeds });
     await writeLocalRooms(propertyId, nextLocal);
 
-    return ok(saved);
+    return ok({ ...saved, room_number: cleanRoom, total_beds: cleanBeds });
   } catch (err) {
     return fail(err, 'Could not create room.');
   } finally {

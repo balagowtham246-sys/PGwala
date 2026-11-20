@@ -1,6 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
+import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import { StudentBillCardItem } from '@/services/billing.service';
 
 export interface StudentChargeListProps {
@@ -125,19 +126,23 @@ export function StudentChargeList({
             <View style={{ alignItems: 'flex-end', gap: 6 }}>
               {allCurrentPaid ? (
                 <View style={[styles.statusBadge, styles.badgePaid]}>
-                  <Text style={styles.badgePaidText}>PAID</Text>
+                  <Text style={styles.badgePaidText}>{toSentenceCaseStatus('paid')}</Text>
                 </View>
               ) : anyPendingReview ? (
                 <View style={[styles.statusBadge, styles.badgeReview]}>
-                  <Text style={styles.badgeReviewText}>UNDER REVIEW</Text>
+                  <Text style={styles.badgeReviewText}>
+                    {toSentenceCaseStatus('under_review')}
+                  </Text>
                 </View>
               ) : anyRejected ? (
                 <View style={[styles.statusBadge, styles.badgeRejected]}>
-                  <Text style={styles.badgeRejectedText}>REJECTED</Text>
+                  <Text style={styles.badgeRejectedText}>
+                    {toSentenceCaseStatus('rejected')}
+                  </Text>
                 </View>
               ) : (
                 <View style={[styles.statusBadge, styles.badgeUnpaid]}>
-                  <Text style={styles.badgeUnpaidText}>UNPAID</Text>
+                  <Text style={styles.badgeUnpaidText}>{toSentenceCaseStatus('unpaid')}</Text>
                 </View>
               )}
               <Text style={styles.expandToggleText}>
