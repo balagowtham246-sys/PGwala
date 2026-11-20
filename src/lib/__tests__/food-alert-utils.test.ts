@@ -6,6 +6,8 @@ import {
   createIdempotencyKey,
   describeSendResult,
   formatAlertTime,
+  formatFoodAlertBody,
+  isFoodAlertExpired,
   istDateIso,
   latestAlertPerMeal,
   uniqueRooms,
@@ -137,10 +139,33 @@ describe('food-alert-utils', () => {
       expect(istDateIso(new Date('2026-11-15T20:00:00Z'))).toBe('2026-11-16');
       expect(istDateIso(new Date('2026-11-15T10:00:00Z'))).toBe('2026-11-15');
     });
-    it('formats same-day times with Today prefix', () => {
+    it('formats same-day times with Today prefix and lowercase meridiem', () => {
       const now = new Date('2026-11-15T12:00:00');
       expect(formatAlertTime('2026-11-15T09:30:00', now)).toMatch(/^Today, /);
+      expect(formatAlertTime('2026-11-15T20:05:00', now)).toContain('pm');
       expect(formatAlertTime('2026-11-10T09:30:00', now)).not.toMatch(/^Today/);
+    });
+    it('expires prior-day and past-meal food alerts automatically', () => {
+      const staleNov15 = new Date(2026, 10, 15, 20, 0, 0).toISOString();
+      const nov16Noon = new Date(2026, 10, 16, 12, 0, 0);
+      expect(isFoodAlertExpired('dinner', staleNov15, nov16Noon)).toBe(true);
+
+      const sameDayMorning = new Date(2026, 10, 16, 8, 0, 0).toISOString();
+      expect(
+        isFoodAlertExpired('breakfast', sameDayMorning, new Date(2026, 10, 16, 10, 0, 0))
+      ).toBe(false);
+      expect(
+        isFoodAlertExpired('breakfast', sameDayMorning, new Date(2026, 10, 16, 12, 0, 0))
+      ).toBe(true);
+    });
+    it('formats specific food alert body using meal time or returns empty string without placeholder copy', () => {
+      expect(formatFoodAlertBody('dinner', 'ready', null, '20:00')).toBe(
+        'Dinner is served at 8:00 pm.'
+      );
+      expect(formatFoodAlertBody('lunch', 'delayed', 'Delayed by 15 mins', '13:00')).toBe(
+        'Delayed by 15 mins'
+      );
+      expect(formatFoodAlertBody('dinner', 'ready', null, null)).toBe('');
     });
   });
 });

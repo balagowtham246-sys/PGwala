@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   RefreshControl,
@@ -8,7 +8,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, useFocusEffect } from 'expo-router';
+import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   Building2,
   CheckCheck,
@@ -55,17 +55,37 @@ function getFoodBadgeVariant(status?: FoodAlertStatus): StatusBadgeVariant {
   return 'info';
 }
 
+function resolveTabParam(
+  raw?: string | string[]
+): ResidentNoticesFilter | null {
+  const val = Array.isArray(raw) ? raw[0] : raw;
+  if (val === 'food' || val === 'notices' || val === 'all') {
+    return val;
+  }
+  return null;
+}
+
 export default function StudentAnnouncementsScreen() {
   const { user } = useAuth();
   const { showToast } = useToast();
   const userId = user?.id ?? null;
+  const params = useLocalSearchParams<{ tab?: string }>();
+  const tabParam = resolveTabParam(params.tab);
 
   const [propertyInfo, setPropertyInfo] = useState<LinkedPropertyInfo | null>(null);
   const [items, setItems] = useState<ResidentNoticeItem[]>([]);
-  const [filter, setFilter] = useState<ResidentNoticesFilter>('all');
+  const [filter, setFilter] = useState<ResidentNoticesFilter>(tabParam ?? 'all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!tabParam) return;
+    const timer = setTimeout(() => {
+      setFilter((prev) => (prev === tabParam ? prev : tabParam));
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [tabParam]);
 
   const requestSeqRef = useRef(0);
 
@@ -294,7 +314,7 @@ export default function StudentAnnouncementsScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
         title="Notices"
-        subtitle={headerSubtitle}
+        subtitle={unreadCount > 0 ? undefined : headerSubtitle}
         showBack
         onBack={() =>
           router.canGoBack() ? router.back() : router.replace('/student-dashboard')
@@ -416,7 +436,9 @@ export default function StudentAnnouncementsScreen() {
                               ) : null}
                             </View>
 
-                            <Text style={styles.itemMessage}>{item.message}</Text>
+                            {item.message ? (
+                              <Text style={styles.itemMessage}>{item.message}</Text>
+                            ) : null}
 
                             <View style={styles.badgeRow}>
                               <StatusBadge

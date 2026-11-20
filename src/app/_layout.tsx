@@ -94,7 +94,6 @@ function RootNavigationLayout() {
       <Stack.Screen name="owner-wardens" />
       <Stack.Screen name="warden-dashboard" />
       <Stack.Screen name="warden-settings" />
-      <Stack.Screen name="student-food-updates" />
       <Stack.Screen name="student-announcements" />
       <Stack.Screen name="student-notifications" />
     </Stack>

@@ -17,17 +17,26 @@ import {
   BedDouble,
   Building2,
   CheckCircle2,
+  Clock,
+  CreditCard,
   MapPin,
   Pencil,
   Users,
+  Wifi,
   X,
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { extractErrorMessage } from '@/lib/error-utils';
-import { PropertyItem, useProperty } from '@/context/property-context';
-import { useToast } from '@/context/toast-context';
 import {
+  PropertyItem,
+  PropertyMetaInput,
+  useProperty,
+} from '@/context/property-context';
+import { useToast } from '@/context/toast-context';
+import { isValidUpiId } from '@/lib/upi';
+import {
+  formatHhMmTo12h,
   formatPropertyGenderLabel,
   inferPropertyGender,
   PropertyGenderType,
@@ -44,6 +53,24 @@ const GENDER_OPTIONS: { value: PropertyGenderType; label: string }[] = [
   { value: 'girls', label: 'Girls' },
   { value: 'boys', label: 'Boys' },
 ];
+
+const CURFEW_PRESETS: { label: string; value: string | null }[] = [
+  { label: 'No curfew', value: null },
+  { label: '9:30 pm', value: '21:30' },
+  { label: '10:00 pm', value: '22:00' },
+  { label: '10:30 pm', value: '22:30' },
+  { label: '11:00 pm', value: '23:00' },
+];
+
+const HH_MM_24H_REGEX = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+
+function normalizeHhMm24(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const match = HH_MM_24H_REGEX.exec(trimmed);
+  if (!match) return null;
+  return `${match[1].padStart(2, '0')}:${match[2]}`;
+}
 
 function parseTotalBeds(raw: string): number {
   const digits = raw.replace(/[^0-9]/g, '');
@@ -95,7 +122,7 @@ interface PropertyEditFormProps {
     id: string,
     name: string,
     address: string | undefined,
-    meta: { gender_type: PropertyGenderType; total_beds: number }
+    meta: PropertyMetaInput
   ) => Promise<void>;
   onValidationError: (msg: string) => void;
 }
@@ -115,7 +142,66 @@ function PropertyEditForm({
       ? String(property.total_beds)
       : ''
   );
+  const [upiId, setUpiId] = useState(property.upi_id || '');
+  const [upiError, setUpiError] = useState<string | null>(null);
+  const [upiPayeeName, setUpiPayeeName] = useState(
+    property.upi_payee_name || ''
+  );
+  const [wifiSsid, setWifiSsid] = useState(property.wifi_ssid || '');
+  const [wifiPassword, setWifiPassword] = useState(
+    property.wifi_password || ''
+  );
+  const [curfewTime, setCurfewTime] = useState(property.curfew_time || '');
+  const [curfewError, setCurfewError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+
+  const validateUpiField = (raw: string): boolean => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      setUpiError(null);
+      return true;
+    }
+    if (!isValidUpiId(trimmed)) {
+      setUpiError('Enter a UPI ID like name@bank');
+      return false;
+    }
+    setUpiError(null);
+    return true;
+  };
+
+  const validateCurfewField = (raw: string): boolean => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      setCurfewError(null);
+      return true;
+    }
+    if (!normalizeHhMm24(trimmed)) {
+      setCurfewError('Enter 24-hour time as HH:mm (e.g. 22:00)');
+      return false;
+    }
+    setCurfewError(null);
+    return true;
+  };
+
+  const handleChangeUpiId = (next: string) => {
+    setUpiId(next);
+    if (upiError) {
+      const trimmed = next.trim();
+      if (!trimmed || isValidUpiId(trimmed)) {
+        setUpiError(null);
+      }
+    }
+  };
+
+  const handleChangeCurfewTime = (next: string) => {
+    setCurfewTime(next);
+    if (curfewError) {
+      const trimmed = next.trim();
+      if (!trimmed || normalizeHhMm24(trimmed)) {
+        setCurfewError(null);
+      }
+    }
+  };
 
   const handleSave = async () => {
     const trimmed = propName.trim();
@@ -124,16 +210,36 @@ function PropertyEditForm({
       return;
     }
 
+    const upiOk = validateUpiField(upiId);
+    const curfewOk = validateCurfewField(curfewTime);
+    if (!upiOk || !curfewOk) {
+      return;
+    }
+
+    const normalizedCurfew = normalizeHhMm24(curfewTime);
     try {
       setSaving(true);
       await onSave(property.id, trimmed, propAddress.trim() || undefined, {
         gender_type: genderType,
         total_beds: parseTotalBeds(totalBeds),
+        upi_id: upiId.trim() || null,
+        upi_payee_name: upiPayeeName.trim() || null,
+        wifi_ssid: wifiSsid.trim() || null,
+        wifi_password: wifiPassword.trim() || null,
+        curfew_time: normalizedCurfew,
       });
+      if (normalizedCurfew !== curfewTime.trim()) {
+        setCurfewTime(normalizedCurfew ?? '');
+      }
     } finally {
       setSaving(false);
     }
   };
+
+  const normalizedCurfew = normalizeHhMm24(curfewTime);
+  const curfewPreview = curfewTime.trim()
+    ? formatHhMmTo12h(curfewTime.trim())
+    : '';
 
   return (
     <View style={styles.card}>
@@ -191,6 +297,164 @@ function PropertyEditForm({
         />
       </View>
 
+      {/* Payment details */}
+      <View style={styles.sectionDivider} />
+      <View style={styles.subSectionHeader}>
+        <CreditCard size={15} color={OwnerTheme.colors.primary} />
+        <Text style={styles.subSectionTitle}>Payment details</Text>
+      </View>
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.label}>UPI ID</Text>
+        <TextInput
+          style={[styles.textInput, upiError ? styles.textInputError : null]}
+          value={upiId}
+          onChangeText={handleChangeUpiId}
+          onBlur={() => validateUpiField(upiId)}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="email-address"
+          placeholder="e.g. shalompg@okaxis"
+          placeholderTextColor={OwnerTheme.colors.textMuted}
+          editable={!saving}
+        />
+        {upiError ? (
+          <Text style={styles.inlineErrorText}>{upiError}</Text>
+        ) : (
+          <Text style={styles.fieldHelperText}>
+            Residents can tap to pay directly to this UPI ID.
+          </Text>
+        )}
+      </View>
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.label}>UPI Payee Name</Text>
+        <TextInput
+          style={styles.textInput}
+          value={upiPayeeName}
+          onChangeText={setUpiPayeeName}
+          placeholder="Optional (defaults to PG name)"
+          placeholderTextColor={OwnerTheme.colors.textMuted}
+          editable={!saving}
+        />
+      </View>
+
+      {/* PG info */}
+      <View style={styles.sectionDivider} />
+      <View style={styles.subSectionHeader}>
+        <Wifi size={15} color={OwnerTheme.colors.primary} />
+        <Text style={styles.subSectionTitle}>PG info</Text>
+      </View>
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.label}>Wi-Fi Name</Text>
+        <TextInput
+          style={styles.textInput}
+          value={wifiSsid}
+          onChangeText={setWifiSsid}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="e.g. Shalom_PG_WiFi"
+          placeholderTextColor={OwnerTheme.colors.textMuted}
+          editable={!saving}
+        />
+      </View>
+
+      <View style={styles.fieldGroup}>
+        <Text style={styles.label}>Wi-Fi Password</Text>
+        <TextInput
+          style={styles.textInput}
+          value={wifiPassword}
+          onChangeText={setWifiPassword}
+          autoCapitalize="none"
+          autoCorrect={false}
+          placeholder="Optional"
+          placeholderTextColor={OwnerTheme.colors.textMuted}
+          editable={!saving}
+        />
+      </View>
+
+      <View style={styles.fieldGroup}>
+        <View style={styles.labelWithIconRow}>
+          <Clock size={13} color={OwnerTheme.colors.textSecondary} />
+          <Text style={[styles.label, { marginBottom: 0 }]}>
+            Gate Curfew Time
+          </Text>
+        </View>
+
+        <View style={styles.presetChipRow}>
+          {CURFEW_PRESETS.map((preset) => {
+            const isActive =
+              preset.value === null
+                ? curfewTime.trim() === ''
+                : normalizedCurfew === preset.value;
+            return (
+              <Pressable
+                key={preset.label}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isActive, disabled: saving }}
+                disabled={saving}
+                onPress={() => {
+                  setCurfewTime(preset.value ?? '');
+                  setCurfewError(null);
+                }}
+                style={[
+                  styles.presetChip,
+                  isActive && styles.presetChipActive,
+                  saving && { opacity: 0.6 },
+                ]}>
+                <Text
+                  style={[
+                    styles.presetChipText,
+                    isActive && styles.presetChipTextActive,
+                  ]}>
+                  {preset.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        <View style={styles.curfewInputRow}>
+          <TextInput
+            style={[
+              styles.textInput,
+              styles.curfewInput,
+              curfewError ? styles.textInputError : null,
+            ]}
+            value={curfewTime}
+            onChangeText={handleChangeCurfewTime}
+            onBlur={() => validateCurfewField(curfewTime)}
+            placeholder="Or 24-hr HH:mm (e.g. 22:00)"
+            placeholderTextColor={OwnerTheme.colors.textMuted}
+            keyboardType={
+              Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'
+            }
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={5}
+            editable={!saving}
+          />
+          {curfewPreview ? (
+            <View style={styles.timePreviewBadge}>
+              <Text style={styles.timePreviewText}>{curfewPreview}</Text>
+            </View>
+          ) : null}
+        </View>
+
+        {curfewError ? (
+          <Text style={styles.inlineErrorText}>{curfewError}</Text>
+        ) : curfewPreview ? (
+          <Text style={styles.fieldHelperText}>
+            Formatted curfew: {curfewPreview}
+          </Text>
+        ) : (
+          <Text style={styles.fieldHelperText}>
+            Optional · Use 24-hour HH:mm or pick a preset above.
+          </Text>
+        )}
+      </View>
+
       <PrimaryButton
         label="Save Property Details"
         onPress={handleSave}
@@ -237,7 +501,7 @@ export default function OwnerPropertiesScreen() {
     id: string,
     name: string,
     address: string | undefined,
-    meta: { gender_type: PropertyGenderType; total_beds: number }
+    meta: PropertyMetaInput
   ) => {
     try {
       setErrorMessage(null);
@@ -722,6 +986,94 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: OwnerTheme.colors.textPrimary,
     backgroundColor: '#FAFAFA',
+  },
+  textInputError: {
+    borderColor: OwnerTheme.colors.danger,
+    backgroundColor: '#FEF2F2',
+  },
+  inlineErrorText: {
+    marginTop: 5,
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.danger,
+  },
+  fieldHelperText: {
+    marginTop: 5,
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: OwnerTheme.colors.borderLight,
+    marginTop: 18,
+    marginBottom: 14,
+  },
+  subSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginBottom: 2,
+  },
+  subSectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  labelWithIconRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 8,
+  },
+  presetChipRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  presetChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: OwnerTheme.radius.full,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#FAFAFA',
+  },
+  presetChipActive: {
+    borderColor: OwnerTheme.colors.primary,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+  },
+  presetChipText: {
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  presetChipTextActive: {
+    color: OwnerTheme.colors.primary,
+    fontWeight: '700',
+  },
+  curfewInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  curfewInput: {
+    flex: 1,
+  },
+  timePreviewBadge: {
+    paddingHorizontal: 12,
+    height: 50,
+    borderRadius: OwnerTheme.radius.md,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  timePreviewText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
   },
   textArea: {
     height: undefined,

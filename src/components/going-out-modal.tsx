@@ -12,17 +12,18 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Clock, Utensils, X } from 'lucide-react-native';
+import { AlertTriangle, Clock, Utensils, X } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { triggerSelectionHaptic } from '@/lib/haptics';
+import { formatHhMmTo12h, isReturnAfterCurfew } from '@/lib/ux-utils';
 
-const PURPOSE_OPTIONS = ['College', 'Work', 'Home Visit', 'Outing', 'Other'];
+const PURPOSE_OPTIONS = ['College', 'Outing', 'Home', 'Work', 'Other'];
 const RETURN_TIME_OPTIONS = [
-  'Evening (~8:00 PM)',
-  'Night (~10:00 PM)',
-  'Late Night (~11:30 PM)',
-  'Tomorrow Morning',
+  'Evening (~8:00 pm)',
+  'Night (~10:00 pm)',
+  'Late Night (~11:30 pm)',
+  'Tomorrow morning',
   'Custom',
 ];
 
@@ -35,6 +36,7 @@ export interface GoingOutSubmitPayload {
 interface GoingOutModalProps {
   visible: boolean;
   saving?: boolean;
+  curfewTime?: string | null;
   onClose: () => void;
   onConfirm: (payload: GoingOutSubmitPayload) => Promise<void> | void;
 }
@@ -45,14 +47,22 @@ interface GoingOutModalProps {
 export function GoingOutModal({
   visible,
   saving = false,
+  curfewTime = null,
   onClose,
   onConfirm,
 }: GoingOutModalProps) {
   const [purpose, setPurpose] = useState('College');
   const [customPurpose, setCustomPurpose] = useState('');
-  const [returnTime, setReturnTime] = useState('Evening (~8:00 PM)');
+  const [returnTime, setReturnTime] = useState('Evening (~8:00 pm)');
   const [customReturnTime, setCustomReturnTime] = useState('');
   const [foodRequired, setFoodRequired] = useState(true);
+
+  const effectiveReturn =
+    returnTime === 'Custom' ? customReturnTime.trim() : returnTime;
+  const formattedCurfew = curfewTime ? formatHhMmTo12h(curfewTime) : '';
+  const showCurfewWarning =
+    Boolean(curfewTime && formattedCurfew) &&
+    isReturnAfterCurfew(effectiveReturn, curfewTime);
 
   const handleConfirmPress = () => {
     const finalPurpose =
@@ -155,12 +165,21 @@ export function GoingOutModal({
             {returnTime === 'Custom' && (
               <TextInput
                 style={styles.input}
-                placeholder="e.g., Around 9:15 PM"
+                placeholder="e.g., Around 9:15 pm"
                 placeholderTextColor={OwnerTheme.colors.textMuted}
                 value={customReturnTime}
                 onChangeText={setCustomReturnTime}
                 maxLength={40}
               />
+            )}
+
+            {showCurfewWarning && (
+              <View style={styles.curfewBanner}>
+                <AlertTriangle size={16} color="#B45309" />
+                <Text style={styles.curfewBannerText}>
+                  Expected return is past PG curfew ({formattedCurfew}).
+                </Text>
+              </View>
             )}
 
             <View style={styles.dinnerCard}>
@@ -196,7 +215,7 @@ export function GoingOutModal({
               {saving ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
-                <Text style={styles.confirmText}>Mark Going Out</Text>
+                <Text style={styles.confirmText}>Going Out</Text>
               )}
             </Pressable>
           </View>
@@ -306,6 +325,24 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: OwnerTheme.colors.textPrimary,
     backgroundColor: '#F8FAFC',
+  },
+  curfewBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  curfewBannerText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#92400E',
+    lineHeight: 17,
   },
   dinnerCard: {
     flexDirection: 'row',

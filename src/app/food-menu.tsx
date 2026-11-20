@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect } from 'expo-router';
-import { AlertTriangle, Check, X } from 'lucide-react-native';
+import { AlertTriangle, Check, Clock, X } from 'lucide-react-native';
 
 import {
   MealEditorSavePayload,
@@ -22,7 +22,11 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { triggerSuccessHaptic } from '@/lib/haptics';
-import { parseDishList, serializeDishList } from '@/lib/ux-utils';
+import {
+  formatHhMmTo12h,
+  parseDishList,
+  serializeDishList,
+} from '@/lib/ux-utils';
 import {
   createEmptyMealMenuMap,
   deleteFoodMenu,
@@ -316,6 +320,7 @@ export default function FoodMenuScreen() {
         items: normalizedItems,
         notes: payload.notes,
         isPublished: payload.isPublished,
+        meal_time: payload.mealTime,
         existingId: existing?.id,
       });
 
@@ -391,6 +396,8 @@ export default function FoodMenuScreen() {
               const result = await deleteFoodMenu({
                 id: menu.id,
                 propertyId: property.id,
+                menuDate: menu.menu_date,
+                mealType: menu.meal_type,
               });
 
               if (!result.ok) {
@@ -444,6 +451,7 @@ export default function FoodMenuScreen() {
           serializeDishList(parseDishList(menus[m]!.items)) || menus[m]!.items,
         notes: menus[m]!.notes,
         is_published: menus[m]!.is_published,
+        meal_time: menus[m]!.meal_time ?? null,
       }));
       const result = await saveWeeklyMenuTemplate(property.id, weekday, entries);
       if (!result.ok) {
@@ -498,8 +506,40 @@ export default function FoodMenuScreen() {
   tomorrow.setDate(today.getDate() + 1);
   const isTomorrow = isSameDay(selectedDate, tomorrow);
 
+  const configuredMealTimes = MEAL_ORDER.flatMap((meal) => {
+    const formatted = formatHhMmTo12h(menus[meal]?.meal_time);
+    if (!formatted) return [];
+    return [{ meal, title: MEAL_CONFIG[meal].title, timeLabel: formatted }];
+  });
+
   const topNotice = (
     <>
+      {configuredMealTimes.length > 0 && (
+        <View style={styles.mealTimesStrip}>
+          <View style={styles.mealTimesHeaderRow}>
+            <Clock size={13} color="#0284C7" />
+            <Text style={styles.mealTimesHeaderText}>Serving times</Text>
+          </View>
+          <View style={styles.mealTimesChipsRow}>
+            {configuredMealTimes.map((item) => (
+              <Pressable
+                key={item.meal}
+                accessibilityRole="button"
+                accessibilityLabel={`Edit ${item.title} serving time ${item.timeLabel}`}
+                style={({ pressed }) => [
+                  styles.mealTimeChip,
+                  pressed && styles.mealTimeChipPressed,
+                ]}
+                onPress={() => openEditForm(item.meal)}>
+                <Text style={styles.mealTimeChipText}>
+                  {item.title} · {item.timeLabel}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
+      )}
+
       {tableMissingNotice && (
         <View style={styles.migrationNoticeBox}>
           <View style={styles.migrationTitleRow}>
@@ -615,6 +655,47 @@ const styles = StyleSheet.create({
   contentArea: {
     flex: 1,
     position: 'relative',
+  },
+  mealTimesStrip: {
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    marginBottom: 10,
+    gap: 7,
+  },
+  mealTimesHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  mealTimesHeaderText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+  },
+  mealTimesChipsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  mealTimeChip: {
+    backgroundColor: '#F0F9FF',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  mealTimeChipPressed: {
+    backgroundColor: '#E0F2FE',
+  },
+  mealTimeChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0369A1',
   },
   migrationNoticeBox: {
     backgroundColor: '#FEF3C7',

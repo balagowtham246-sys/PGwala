@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  Linking,
   Platform,
   Pressable,
   RefreshControl,
@@ -11,19 +12,25 @@ import {
   Text,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import { Href, router, useFocusEffect } from 'expo-router';
-import { AlertCircle, ChevronRight, ClipboardList, Megaphone } from 'lucide-react-native';
+import { AlertCircle, ChevronRight, ClipboardList, Clock, Megaphone } from 'lucide-react-native';
 
 import { BottomTabInset, OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useToast } from '@/context/toast-context';
+import { buildWhatsAppReminderUrl } from '@/lib/billing-utils';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { flushOfflineQueue, getPendingCount } from '@/lib/offline-queue';
 import { invalidatePrefix } from '@/lib/query-cache';
-import { getFirstName, getNextUpcomingMeal } from '@/lib/resident-home-utils';
-import { formatRoomLabel } from '@/lib/ux-utils';
+import { getFirstName, getSmartDefaultMeal } from '@/lib/resident-home-utils';
+import {
+  formatRoomLabel,
+  normalizeTimeMeridiemLowercase,
+  resolveExpectedReturnDate,
+} from '@/lib/ux-utils';
 import { defaultOfflineExecutors } from '@/services/offline-executors';
 import {
   createEmptyResidentMenus,
@@ -51,6 +58,55 @@ import { TodaysMenuPreview } from '@/components/student-dashboard/TodaysMenuPrev
 
 export type { MealType, ResidentFoodMenu, ResidentMovementRecord };
 
+const RETURN_REMINDER_STORAGE_KEY = '@pgwala_return_reminder_id';
+const ACCIDENTAL_TAP_WINDOW_MS = 5 * 60 * 1000;
+
+async function cancelReturnReminderNotification(): Promise<void> {
+  try {
+    const existingId = await AsyncStorage.getItem(RETURN_REMINDER_STORAGE_KEY);
+    if (existingId) {
+      if (Platform.OS !== 'web') {
+        await Notifications.cancelScheduledNotificationAsync(existingId).catch(() => {});
+      }
+      await AsyncStorage.removeItem(RETURN_REMINDER_STORAGE_KEY);
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
+async function scheduleReturnReminderNotification(
+  expectedReturnTime: string | null | undefined,
+  departedAtIso: string
+): Promise<void> {
+  await cancelReturnReminderNotification();
+  if (Platform.OS === 'web') return;
+  const targetDate = resolveExpectedReturnDate(expectedReturnTime, departedAtIso);
+  if (!targetDate || targetDate.getTime() <= Date.now()) return;
+  try {
+    const existing = await Notifications.getPermissionsAsync();
+    let granted = existing.granted || existing.status === 'granted';
+    if (!granted && existing.canAskAgain !== false) {
+      const req = await Notifications.requestPermissionsAsync();
+      granted = req.granted || req.status === 'granted';
+    }
+    if (!granted) return;
+    const notifId = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Return time reminder',
+        body: 'Your expected return time has passed. Mark Inside or tell your PG owner if you are running late.',
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: targetDate,
+      },
+    });
+    await AsyncStorage.setItem(RETURN_REMINDER_STORAGE_KEY, notifId);
+  } catch {
+    // Non-fatal: local notifications may be unavailable or denied
+  }
+}
+
 export default function ResidentDashboardScreen() {
   const { user, profile, refreshProfile } = useAuth();
   const { showToast } = useToast();
@@ -61,8 +117,11 @@ export default function ResidentDashboardScreen() {
   const [foodRefreshKey, setFoodRefreshKey] = useState(0);
   const [resident, setResident] = useState<ResidentAccommodationInfo | null>(null);
 
-  // Active Meal Tab for in-place detail view (defaults to next upcoming meal)
-  const [activeMealTab, setActiveMealTab] = useState<MealType>(() => getNextUpcomingMeal());
+  // Active Meal Tab for in-place detail view (defaults to smart upcoming meal)
+  const [activeMealTab, setActiveMealTab] = useState<MealType>(() =>
+    getSmartDefaultMeal(createEmptyResidentMenus())
+  );
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const [hasUnreadChat, setHasUnreadChat] = useState(false);
   const [unreadSummary, setUnreadSummary] = useState<{
     unreadCount: number;
@@ -117,7 +176,8 @@ export default function ResidentDashboardScreen() {
         setPendingDuesPaise(result.data.pendingDuesPaise);
         setLatestMovement(result.data.latestMovement);
         setHasUnreadChat(result.data.hasUnreadChat);
-        setActiveMealTab(getNextUpcomingMeal());
+        setActiveMealTab(getSmartDefaultMeal(result.data.menus));
+        setNowMs(Date.now());
       } else {
         console.error('[ResidentDashboard] Error loading resident data:', result.error);
         setErrorMessage(`Failed to load resident data: ${result.error.message}`);
@@ -137,6 +197,7 @@ export default function ResidentDashboardScreen() {
   const flushOfflineAndSync = useCallback(async () => {
     const summary = await flushOfflineQueue(defaultOfflineExecutors);
     setPendingOfflineCount(summary.remainingCount);
+    setNowMs(Date.now());
     if (summary.succeeded > 0) {
       if (userId) {
         await invalidatePrefix(studentDashboardCacheKey(userId));
@@ -165,10 +226,13 @@ export default function ResidentDashboardScreen() {
     void getCachedStudentDashboard(userId).then((cached) => {
       if (cancelled || !cached) return;
       if (cached.resident) setResident(cached.resident);
-      setMenus(cached.menus);
+      const cachedMenus = cached.menus ?? createEmptyResidentMenus();
+      setMenus(cachedMenus);
+      setActiveMealTab(getSmartDefaultMeal(cachedMenus));
       setPendingDuesPaise(cached.pendingDuesPaise);
       setLatestMovement(cached.latestMovement);
       setHasUnreadChat(cached.hasUnreadChat);
+      setNowMs(Date.now());
       setLoading(false);
     });
     return () => {
@@ -215,6 +279,26 @@ export default function ResidentDashboardScreen() {
     };
   }, [flushOfflineAndSync]);
 
+  const isCurrentlyOut = latestMovement?.direction === 'OUT';
+  const expectedReturnDate =
+    isCurrentlyOut && latestMovement
+      ? resolveExpectedReturnDate(
+          latestMovement.expected_return_time,
+          latestMovement.event_time
+        )
+      : null;
+  const isRunningLate = Boolean(
+    expectedReturnDate && nowMs >= expectedReturnDate.getTime()
+  );
+
+  useEffect(() => {
+    if (!isCurrentlyOut) return;
+    const id = setInterval(() => {
+      setNowMs(Date.now());
+    }, 30000);
+    return () => clearInterval(id);
+  }, [isCurrentlyOut]);
+
   // Refresh profile, notices & flush offline queue when returning to dashboard
   useFocusEffect(
     useCallback(() => {
@@ -225,7 +309,8 @@ export default function ResidentDashboardScreen() {
         return;
       }
       void refreshProfile();
-    }, [flushOfflineAndSync, loadUnreadNotices, refreshProfile])
+      void loadResidentData();
+    }, [flushOfflineAndSync, loadResidentData, loadUnreadNotices, refreshProfile])
   );
 
   const handleRefresh = () => {
@@ -259,6 +344,9 @@ export default function ResidentDashboardScreen() {
           );
           return;
         }
+        if (targetDir === 'IN') {
+          void cancelReturnReminderNotification();
+        }
         if (result.data.queued) {
           setLatestMovement({
             id: 'offline-queued',
@@ -283,7 +371,7 @@ export default function ResidentDashboardScreen() {
   );
 
   // 1-tap Check-In when back at PG
-  const handleMarkBackIn = async () => {
+  const proceedMarkBackIn = useCallback(async () => {
     if (savingMovementRef.current) return;
     savingMovementRef.current = true;
     setSavingMovement(true);
@@ -300,6 +388,8 @@ export default function ResidentDashboardScreen() {
       }
 
       triggerSuccessHaptic();
+      void cancelReturnReminderNotification();
+
       if (result.data.queued) {
         setLatestMovement({
           id: 'offline-queued',
@@ -326,6 +416,29 @@ export default function ResidentDashboardScreen() {
       savingMovementRef.current = false;
       setSavingMovement(false);
     }
+  }, [userId, loadResidentData, performUndoDirection, showToast]);
+
+  const handleMarkBackIn = () => {
+    if (savingMovementRef.current) return;
+    const eventMs = latestMovement?.event_time
+      ? new Date(latestMovement.event_time).getTime()
+      : NaN;
+    if (
+      latestMovement?.direction === 'OUT' &&
+      !Number.isNaN(eventMs) &&
+      Date.now() - eventMs < ACCIDENTAL_TAP_WINDOW_MS
+    ) {
+      Alert.alert(
+        'Confirm Check-In',
+        'You marked Going Out less than 5 minutes ago. Record check-in anyway?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Mark Inside', onPress: () => void proceedMarkBackIn() },
+        ]
+      );
+      return;
+    }
+    void proceedMarkBackIn();
   };
 
   // Confirm Going Out with Purpose, Return Time & Food Requirement
@@ -350,12 +463,14 @@ export default function ResidentDashboardScreen() {
 
       setGoingOutModalVisible(false);
       triggerSuccessHaptic();
+      const nowIso = new Date().toISOString();
+      void scheduleReturnReminderNotification(payload.expectedReturnTime, nowIso);
 
       if (result.data.queued) {
         setLatestMovement({
           id: 'offline-queued',
           direction: 'OUT',
-          event_time: new Date().toISOString(),
+          event_time: nowIso,
           purpose: payload.purpose,
           expected_return_time: payload.expectedReturnTime || null,
           food_required: payload.foodRequired,
@@ -373,6 +488,76 @@ export default function ResidentDashboardScreen() {
           void performUndoDirection('IN');
         },
       });
+    } finally {
+      savingMovementRef.current = false;
+      setSavingMovement(false);
+    }
+  };
+
+  const handleTellOwnerRunningLate = async () => {
+    if (
+      savingMovementRef.current ||
+      !latestMovement ||
+      latestMovement.direction !== 'OUT'
+    ) {
+      return;
+    }
+    savingMovementRef.current = true;
+    setSavingMovement(true);
+    try {
+      const result = await recordStudentMovement({
+        direction: 'OUT',
+        purpose: latestMovement.purpose || 'Running late',
+        expectedReturnTime: 'Running late',
+        note: 'Resident running late (expected return passed)',
+        userId,
+      });
+
+      if (!result.ok) {
+        Alert.alert('Update Failed', result.error.message || 'Could not notify PG owner.');
+        return;
+      }
+
+      triggerSuccessHaptic();
+      void cancelReturnReminderNotification();
+
+      if (result.data.queued) {
+        setLatestMovement({
+          id: 'offline-queued',
+          direction: 'OUT',
+          event_time: new Date().toISOString(),
+          purpose: latestMovement.purpose || 'Running late',
+          expected_return_time: 'Running late',
+          food_required: latestMovement.food_required ?? true,
+          note: 'Resident running late (expected return passed)',
+        });
+        setPendingOfflineCount(await getPendingCount());
+        showToast('Saved offline — will sync automatically');
+        return;
+      }
+
+      await loadResidentData();
+      const ownerPhone = resident?.owner_phone ?? null;
+      const whatsappUrl = buildWhatsAppReminderUrl(
+        ownerPhone,
+        'Hi, I am currently outside the PG and running late. I will update once I return.'
+      );
+      showToast(
+        'Owner notified that you are running late',
+        whatsappUrl
+          ? {
+              actionLabel: 'WhatsApp',
+              onAction: () => {
+                void Linking.openURL(whatsappUrl).catch(() => {
+                  Alert.alert(
+                    'WhatsApp Unavailable',
+                    'Could not open WhatsApp on this device.'
+                  );
+                });
+              },
+            }
+          : undefined
+      );
     } finally {
       savingMovementRef.current = false;
       setSavingMovement(false);
@@ -528,6 +713,38 @@ export default function ResidentDashboardScreen() {
               onMarkBackIn={handleMarkBackIn}
             />
 
+            {/* Running Late Banner when expected return time has passed */}
+            {isRunningLate && latestMovement && (
+              <View style={styles.runningLateBanner}>
+                <View style={styles.runningLateHeader}>
+                  <Clock size={16} color="#B45309" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.runningLateTitle}>Running late</Text>
+                    <Text style={styles.runningLateSub}>
+                      Expected return (
+                      {normalizeTimeMeridiemLowercase(
+                        latestMovement.expected_return_time || ''
+                      )}
+                      ) has passed.
+                    </Text>
+                  </View>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  style={({ pressed }) => [
+                    styles.runningLateBtn,
+                    pressed && styles.btnPressed,
+                    savingMovement && { opacity: 0.6 },
+                  ]}
+                  disabled={savingMovement}
+                  onPress={() => void handleTellOwnerRunningLate()}>
+                  <Text style={styles.runningLateBtnText}>
+                    Tell the owner I&apos;m running late
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+
             {/* Section 3: Today's Food Menu (Interactive In-Place Card) */}
             <TodaysMenuPreview
               menus={menus}
@@ -561,6 +778,7 @@ export default function ResidentDashboardScreen() {
       <GoingOutModal
         visible={goingOutModalVisible}
         saving={savingMovement}
+        curfewTime={resident?.curfew_time ?? null}
         onClose={() => setGoingOutModalVisible(false)}
         onConfirm={handleConfirmGoingOut}
       />
@@ -639,6 +857,42 @@ const styles = StyleSheet.create({
   btnPressed: {
     opacity: 0.85,
     transform: [{ scale: 0.99 }],
+  },
+  runningLateBanner: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+    borderRadius: OwnerTheme.radius.card,
+    padding: 12,
+    gap: 10,
+  },
+  runningLateHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  runningLateTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#92400E',
+  },
+  runningLateSub: {
+    fontSize: 12,
+    color: '#B45309',
+    marginTop: 1,
+  },
+  runningLateBtn: {
+    backgroundColor: OwnerTheme.colors.warning,
+    borderRadius: OwnerTheme.radius.sm,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  runningLateBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   scrollContent: {
     paddingHorizontal: 16,

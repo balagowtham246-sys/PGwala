@@ -2,6 +2,8 @@
  * Food Alerts: shared types and pure helpers (no React / Supabase imports so they are unit-testable).
  */
 
+import { formatHhMmTo12h, normalizeTimeMeridiemLowercase } from './ux-utils';
+
 export type FoodMealType = 'breakfast' | 'lunch' | 'dinner';
 export type FoodAlertStatus = 'ready' | 'delayed' | 'cancelled';
 export type FoodAudienceType = 'all' | 'rooms' | 'residents';
@@ -162,13 +164,72 @@ export function describeSendResult(s: AlertSendSummary): { title: string; detail
   return { title, detail };
 }
 
-/** Relative-friendly timestamp like "Today, 8:05 PM" / "12 Nov, 8:05 PM". */
+/** Relative-friendly timestamp like "Today, 8:05 pm" / "12 Nov, 8:05 pm". */
 export function formatAlertTime(iso: string, now: Date = new Date()): string {
   const d = new Date(iso);
-  const time = d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true });
+  const time = normalizeTimeMeridiemLowercase(
+    d.toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })
+  );
   const sameDay =
     d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
   if (sameDay) return `Today, ${time}`;
   const date = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short' });
   return `${date}, ${time}`;
+}
+
+const MEAL_EXPIRY_CUTOFF_MINUTES: Record<FoodMealType, number> = {
+  breakfast: 11 * 60 + 30, // 11:30 am
+  lunch: 15 * 60 + 30, // 3:30 pm
+  dinner: 23 * 60 + 30, // 11:30 pm
+};
+
+/**
+ * Returns true once the meal window for a food alert has ended or when the alert
+ * is from an earlier calendar day. Expired alerts should not count toward unread badges.
+ */
+export function isFoodAlertExpired(
+  mealType: FoodMealType,
+  createdAtIso: string,
+  now: Date = new Date()
+): boolean {
+  const created = new Date(createdAtIso);
+  if (Number.isNaN(created.getTime())) return true;
+
+  const createdDay = new Date(
+    created.getFullYear(),
+    created.getMonth(),
+    created.getDate()
+  ).getTime();
+  const currentDay = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate()
+  ).getTime();
+
+  if (createdDay < currentDay) return true;
+  if (createdDay > currentDay) return false;
+
+  const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  return nowMinutes >= MEAL_EXPIRY_CUTOFF_MINUTES[mealType];
+}
+
+/**
+ * Formats specific body text for a food alert: custom message if present, else
+ * "<Meal> is served/delayed/cancelled at <time>." when a meal_time exists, or
+ * empty string so no generic placeholder text is shown.
+ */
+export function formatFoodAlertBody(
+  mealType: FoodMealType,
+  status: FoodAlertStatus,
+  customMessage: string | null | undefined,
+  mealTimeHhMm: string | null | undefined
+): string {
+  const cleanCustom = (customMessage || '').trim();
+  if (cleanCustom) return cleanCustom;
+
+  const timeLabel = formatHhMmTo12h(mealTimeHhMm);
+  if (!timeLabel) return '';
+
+  const verb = status === 'ready' ? 'is served' : `is ${status}`;
+  return `${mealLabel(mealType)} ${verb} at ${timeLabel}.`;
 }

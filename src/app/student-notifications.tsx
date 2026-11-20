@@ -43,9 +43,9 @@ import { registerForPushNotifications } from '@/lib/push-notifications';
 import { supabase } from '@/lib/supabase';
 
 const QUIET_HOURS_PRESETS = [
-  '10:00 PM – 7:00 AM',
-  '11:00 PM – 6:00 AM',
-  '9:00 PM – 7:00 AM',
+  '10:00 pm – 7:00 am',
+  '11:00 pm – 6:00 am',
+  '9:00 pm – 7:00 am',
 ] as const;
 
 type QuietHoursWindow = (typeof QUIET_HOURS_PRESETS)[number];
@@ -65,14 +65,16 @@ const DEFAULT_PREFS: ResidentNotifPrefs = {
   washingMachineAlerts: true,
   ownerAnnouncements: true,
   quietHoursEnabled: false,
-  quietHoursWindow: '10:00 PM – 7:00 AM',
+  quietHoursWindow: '10:00 pm – 7:00 am',
 };
 
-function isValidQuietWindow(val: unknown): val is QuietHoursWindow {
-  return (
-    typeof val === 'string' &&
-    (QUIET_HOURS_PRESETS as readonly string[]).includes(val)
+function normalizeQuietWindow(val: unknown): QuietHoursWindow {
+  if (typeof val !== 'string') return DEFAULT_PREFS.quietHoursWindow;
+  const normalized = val.trim().toLowerCase();
+  const match = QUIET_HOURS_PRESETS.find(
+    (preset) => preset.toLowerCase() === normalized
   );
+  return match ?? DEFAULT_PREFS.quietHoursWindow;
 }
 
 function prefsStorageKey(userId?: string): string {
@@ -157,9 +159,7 @@ export default function StudentNotificationsScreen() {
             typeof parsed.quietHoursEnabled === 'boolean'
               ? parsed.quietHoursEnabled
               : DEFAULT_PREFS.quietHoursEnabled,
-          quietHoursWindow: isValidQuietWindow(parsed.quietHoursWindow)
-            ? parsed.quietHoursWindow
-            : DEFAULT_PREFS.quietHoursWindow,
+          quietHoursWindow: normalizeQuietWindow(parsed.quietHoursWindow),
         };
       }
 
@@ -493,7 +493,7 @@ export default function StudentNotificationsScreen() {
                 <Text style={styles.settingLabel}>Food & Meal Updates</Text>
               </View>
               <Text style={styles.settingHint}>
-                Breakfast, lunch, and dinner ready, delayed, or cancelled alerts
+                Get meal alerts when food is ready, delayed, or cancelled
               </Text>
             </View>
             <Switch

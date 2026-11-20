@@ -73,9 +73,9 @@ export function ResidentQuickTiles({
             <CheckCircle2 size={20} color={OwnerTheme.colors.success} />
           </View>
           <View style={styles.heroFocusLeft}>
-            <Text style={styles.settledTitle}>All dues settled</Text>
+            <Text style={styles.settledTitle}>Rent settled</Text>
             <Text style={styles.settledSub} numberOfLines={1}>
-              All rent & dues settled for this month
+              Tap to view receipts &amp; monthly summary
             </Text>
           </View>
           <Text style={styles.settledLink}>View bills ›</Text>
@@ -118,8 +118,8 @@ export function ResidentQuickTiles({
           <Text style={styles.gateTitle}>Gate Attendance</Text>
           <Text style={styles.gateSubtitle} numberOfLines={1}>
             {formattedMovementTime
-              ? `${isInside ? 'In since' : 'Out at'} ${formattedMovementTime}`
-              : 'Present on campus'}
+              ? `${isInside ? 'Checked in' : 'Checked out'}: ${formattedMovementTime}`
+              : 'Checked in'}
           </Text>
           {!isInside && outNudge.isOver && (
             <Text style={styles.gateOverHoursNudge}>

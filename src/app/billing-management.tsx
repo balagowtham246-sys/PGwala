@@ -4,6 +4,7 @@ import {
   Check,
   Copy,
   Edit3,
+  Info,
   MessageCircle,
   X,
   Zap,
@@ -40,6 +41,7 @@ import {
   formatDueStatus,
   formatPaiseToRupees,
 } from '@/lib/billing-utils';
+import { isValidUpiId } from '@/lib/upi';
 import { findDuplicatePhones } from '@/lib/ux-utils';
 import {
   allocateEbBill,
@@ -151,6 +153,8 @@ export default function SimplifiedBillingManagementScreen() {
   // Transient post-generation banner & Bulk Reminder Modal
   const [showBillsGeneratedBanner, setShowBillsGeneratedBanner] =
     useState(false);
+  const [dismissedUpiBannerPropertyId, setDismissedUpiBannerPropertyId] =
+    useState<string | null>(null);
   const [bulkReminderModalVisible, setBulkReminderModalVisible] =
     useState(false);
   const [sentReminderIds, setSentReminderIds] = useState<string[]>([]);
@@ -921,6 +925,11 @@ export default function SimplifiedBillingManagementScreen() {
         ? ebTotalCount
         : combinedBills.length;
 
+  const showMissingUpiBanner =
+    Boolean(selectedProperty) &&
+    !isValidUpiId(selectedProperty?.upi_id) &&
+    dismissedUpiBannerPropertyId !== selectedProperty?.id;
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       {/* Standardized Header */}
@@ -971,6 +980,35 @@ export default function SimplifiedBillingManagementScreen() {
             colors={[OwnerTheme.colors.primary]}
           />
         }>
+        {showMissingUpiBanner && selectedProperty && (
+          <View style={styles.upiPromptBanner}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Add your UPI ID so residents can pay in one tap"
+              style={({ pressed }) => [
+                styles.upiPromptMain,
+                pressed && styles.cardPressed,
+              ]}
+              onPress={() => router.push('/owner-properties')}>
+              <View style={styles.upiPromptIconCircle}>
+                <Info size={15} color={OwnerTheme.colors.primary} />
+              </View>
+              <Text style={styles.upiPromptText}>
+                Add your UPI ID so residents can pay in one tap.{' '}
+                <Text style={styles.upiPromptAction}>Set up ›</Text>
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss UPI setup banner"
+              hitSlop={8}
+              style={styles.upiPromptDismissBtn}
+              onPress={() => setDismissedUpiBannerPropertyId(selectedProperty.id)}>
+              <X size={15} color={OwnerTheme.colors.textSecondary} />
+            </Pressable>
+          </View>
+        )}
+
         <BillingSummaryHeader
           billingMode={billingMode}
           onSelectBillingMode={setBillingMode}
@@ -1436,6 +1474,49 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: OwnerTheme.colors.primary,
+  },
+  upiPromptBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    borderRadius: OwnerTheme.radius.sm,
+    paddingLeft: 10,
+    paddingRight: 6,
+    paddingVertical: 7,
+    marginBottom: 8,
+    gap: 6,
+  },
+  upiPromptMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  upiPromptIconCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  upiPromptText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '500',
+    color: OwnerTheme.colors.textPrimary,
+    lineHeight: 16,
+  },
+  upiPromptAction: {
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  upiPromptDismissBtn: {
+    padding: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   residentFilterBanner: {
     flexDirection: 'row',

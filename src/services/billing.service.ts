@@ -1,3 +1,5 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
 import {
   getCached,
@@ -149,6 +151,8 @@ export interface StudentBillingSnapshot {
   residentName: string;
   roomNumber: string;
   propertyName: string;
+  ownerUpiId?: string | null;
+  ownerUpiPayeeName?: string | null;
   currentRentBill: StudentBillCardItem | null;
   currentEbBill: StudentBillCardItem | null;
   pastBills: StudentBillCardItem[];
@@ -887,6 +891,63 @@ export async function resolvePaymentProofUrl(
   }
 }
 
+const STORAGE_PROPERTY_META_PREFIX = '@pgwala_property_meta:';
+
+async function fetchPropertyUpiMeta(
+  propId: string | null
+): Promise<{ ownerUpiId: string | null; ownerUpiPayeeName: string | null }> {
+  let ownerUpiId: string | null = null;
+  let ownerUpiPayeeName: string | null = null;
+  if (!propId) {
+    return { ownerUpiId, ownerUpiPayeeName };
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('properties')
+      .select('upi_id, upi_payee_name')
+      .eq('id', propId)
+      .maybeSingle();
+    if (!error && data) {
+      const row = data as {
+        upi_id?: string | null;
+        upi_payee_name?: string | null;
+      };
+      ownerUpiId = row.upi_id?.trim() || null;
+      ownerUpiPayeeName = row.upi_payee_name?.trim() || null;
+    }
+  } catch {
+    // Ignore errors when DB columns are not yet migrated or test mocks don't handle `properties`
+  }
+
+  if (!ownerUpiId || !ownerUpiPayeeName) {
+    try {
+      const rawMeta = await AsyncStorage.getItem(
+        `${STORAGE_PROPERTY_META_PREFIX}${propId}`
+      );
+      if (rawMeta) {
+        const parsed = JSON.parse(rawMeta) as {
+          upi_id?: string | null;
+          upi_payee_name?: string | null;
+          upiId?: string | null;
+          upiPayeeName?: string | null;
+        };
+        if (!ownerUpiId) {
+          ownerUpiId = (parsed.upi_id ?? parsed.upiId)?.trim() || null;
+        }
+        if (!ownerUpiPayeeName) {
+          ownerUpiPayeeName =
+            (parsed.upi_payee_name ?? parsed.upiPayeeName)?.trim() || null;
+        }
+      }
+    } catch {
+      // Non-fatal fallback read
+    }
+  }
+
+  return { ownerUpiId, ownerUpiPayeeName };
+}
+
 /**
  * Fetches student billing snapshot (current & past charges, payment reports, receipts)
  * using SWR caching and parallelized Supabase queries.
@@ -912,9 +973,11 @@ export async function getStudentBilling(
       .select(
         `
           id,
+          property_id,
           full_name,
           room_number,
           property:properties (
+            id,
             name
           )
         `
@@ -931,6 +994,8 @@ export async function getStudentBilling(
         residentName: 'Resident',
         roomNumber: '',
         propertyName: 'My PG',
+        ownerUpiId: null,
+        ownerUpiPayeeName: null,
         currentRentBill: null,
         currentEbBill: null,
         pastBills: [],
@@ -941,9 +1006,13 @@ export async function getStudentBilling(
       ? resData.property[0]
       : resData.property;
     const propertyName = propObj?.name || 'My PG';
+    const propId: string | null =
+      (resData as { property_id?: string | null }).property_id ||
+      (propObj as { id?: string | null } | null)?.id ||
+      null;
 
-    // Parallelize charges and payment reports fetches after resolving resident
-    const [chargesRes, reportsRes] = await Promise.all([
+    // Parallelize charges, payment reports, and owner UPI metadata after resolving resident
+    const [chargesRes, reportsRes, upiMeta] = await Promise.all([
       supabase
         .from('charges')
         .select(
@@ -960,6 +1029,7 @@ export async function getStudentBilling(
         .eq('resident_id', resData.id)
         .in('status', ['pending', 'rejected'])
         .order('created_at', { ascending: false }),
+      fetchPropertyUpiMeta(propId),
     ]);
     recordRoundTrip(traceLabel, 1);
 
@@ -1041,6 +1111,8 @@ export async function getStudentBilling(
       residentName: resData.full_name,
       roomNumber: resData.room_number,
       propertyName,
+      ownerUpiId: upiMeta.ownerUpiId,
+      ownerUpiPayeeName: upiMeta.ownerUpiPayeeName,
       currentRentBill,
       currentEbBill,
       pastBills,

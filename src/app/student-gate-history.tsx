@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   Platform,
   Pressable,
   RefreshControl,
@@ -10,19 +11,33 @@ import {
   Text,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { DoorOpen, HelpCircle, Home, LogOut } from 'lucide-react-native';
+import { Clock, DoorOpen, HelpCircle, Home, LogOut } from 'lucide-react-native';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { OwnerHeader } from '@/components/ui/owner';
 import { GoingOutModal, GoingOutSubmitPayload } from '@/components/going-out-modal';
 import { BottomTabInset } from '@/constants/theme';
+import { buildWhatsAppReminderUrl } from '@/lib/billing-utils';
 import {
   countDaysOutThisMonth,
   groupLogsByLocalDay,
   isOutOverHours,
 } from '@/lib/movement-utils';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
-import { formatRoomLabel, toSentenceCaseStatus } from '@/lib/ux-utils';
+import { invalidatePrefix } from '@/lib/query-cache';
+import {
+  formatRoomLabel,
+  normalizeTimeMeridiemLowercase,
+  resolveExpectedReturnDate,
+  toSentenceCaseStatus,
+} from '@/lib/ux-utils';
+import {
+  fetchPropertyCurfewAndOwner,
+  recordStudentMovement,
+  studentDashboardCacheKey,
+} from '@/services/dashboard.service';
 import { router } from 'expo-router';
 
 import { useAuth } from '@/context/auth-context';
@@ -34,6 +49,9 @@ interface StudentResident {
   property_id: string;
   full_name: string;
   room_number: string;
+  curfew_time?: string | null;
+  owner_phone?: string | null;
+  owner_name?: string | null;
   property?: {
     name: string;
   };
@@ -53,16 +71,67 @@ interface MovementLog {
 
 type DateFilter = 'all' | 'today' | 'week' | 'month';
 
+const RETURN_REMINDER_STORAGE_KEY = '@pgwala_return_reminder_id';
+const ACCIDENTAL_TAP_WINDOW_MS = 5 * 60 * 1000;
+
+async function cancelReturnReminderNotification(): Promise<void> {
+  try {
+    const existingId = await AsyncStorage.getItem(RETURN_REMINDER_STORAGE_KEY);
+    if (existingId) {
+      if (Platform.OS !== 'web') {
+        await Notifications.cancelScheduledNotificationAsync(existingId).catch(() => {});
+      }
+      await AsyncStorage.removeItem(RETURN_REMINDER_STORAGE_KEY);
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
+async function scheduleReturnReminderNotification(
+  expectedReturnTime: string | null | undefined,
+  departedAtIso: string
+): Promise<void> {
+  await cancelReturnReminderNotification();
+  if (Platform.OS === 'web') return;
+  const targetDate = resolveExpectedReturnDate(expectedReturnTime, departedAtIso);
+  if (!targetDate || targetDate.getTime() <= Date.now()) return;
+  try {
+    const existing = await Notifications.getPermissionsAsync();
+    let granted = existing.granted || existing.status === 'granted';
+    if (!granted && existing.canAskAgain !== false) {
+      const req = await Notifications.requestPermissionsAsync();
+      granted = req.granted || req.status === 'granted';
+    }
+    if (!granted) return;
+    const notifId = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Return time reminder',
+        body: 'Your expected return time has passed. Mark Inside or tell your PG owner if you are running late.',
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.DATE,
+        date: targetDate,
+      },
+    });
+    await AsyncStorage.setItem(RETURN_REMINDER_STORAGE_KEY, notifId);
+  } catch {
+    // Non-fatal: local notifications may be unavailable or denied
+  }
+}
+
 function formatEventTime(isoString: string): string {
   try {
     const d = new Date(isoString);
-    return d.toLocaleTimeString('en-IN', {
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: true,
-    });
+    return normalizeTimeMeridiemLowercase(
+      d.toLocaleTimeString('en-IN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      })
+    );
   } catch {
-    return isoString;
+    return normalizeTimeMeridiemLowercase(isoString);
   }
 }
 
@@ -102,6 +171,7 @@ export default function StudentGateHistoryScreen() {
   const [filter, setFilter] = useState<DateFilter>('all');
   const [savingMovement, setSavingMovement] = useState(false);
   const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
   const savingRef = useRef(false);
   const recordGateToggleRef = useRef<
     ((targetDirection: 'IN' | 'OUT', isUndo?: boolean) => Promise<void>) | null
@@ -135,24 +205,31 @@ export default function StudentGateHistoryScreen() {
         return;
       }
 
+      // 2. Fetch movement logs & safe property curfew/owner details in parallel
+      const [logsRes, propertyMeta] = await Promise.all([
+        supabase
+          .from('movement_logs')
+          .select('*')
+          .eq('resident_id', resData.id)
+          .order('event_time', { ascending: false }),
+        fetchPropertyCurfewAndOwner(resData.property_id),
+      ]);
+
+      if (logsRes.error) throw logsRes.error;
+
       const resObj: StudentResident = {
         id: resData.id,
         property_id: resData.property_id,
         full_name: resData.full_name,
         room_number: resData.room_number,
+        curfew_time: propertyMeta.curfew_time,
+        owner_phone: propertyMeta.owner_phone,
+        owner_name: propertyMeta.owner_name,
         property: Array.isArray(resData.property) ? resData.property[0] : resData.property,
       };
       setResident(resObj);
-
-      // 2. Fetch movement logs for this resident
-      const { data: logData, error: logError } = await supabase
-        .from('movement_logs')
-        .select('*')
-        .eq('resident_id', resObj.id)
-        .order('event_time', { ascending: false });
-
-      if (logError) throw logError;
-      setLogs(logData || []);
+      setLogs(logsRes.data || []);
+      setNowMs(Date.now());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error('[StudentGateHistory] Error loading gate logs:', err);
@@ -177,11 +254,30 @@ export default function StudentGateHistoryScreen() {
   }, [loadData]);
 
   // Current status based on most recent log (default IN if no logs yet)
-  const currentStatus = logs.length > 0 ? logs[0].direction : 'IN';
-  const lastEventTime = logs.length > 0 ? formatEventTime(logs[0].event_time) : null;
-  const lastEventDate = logs.length > 0 ? formatDateHeader(logs[0].event_time) : null;
-  const outNudge = isOutOverHours(currentStatus, logs[0]?.event_time);
+  const latestLog = logs.length > 0 ? logs[0] : null;
+  const currentStatus = latestLog ? latestLog.direction : 'IN';
+  const lastEventTime = latestLog ? formatEventTime(latestLog.event_time) : null;
+  const lastEventDate = latestLog ? formatDateHeader(latestLog.event_time) : null;
+  const outNudge = isOutOverHours(currentStatus, latestLog?.event_time);
   const daysOutThisMonth = useMemo(() => countDaysOutThisMonth(logs), [logs]);
+  const expectedReturnDate =
+    currentStatus === 'OUT' && latestLog
+      ? resolveExpectedReturnDate(
+          latestLog.expected_return_time,
+          latestLog.event_time
+        )
+      : null;
+  const isRunningLate = Boolean(
+    expectedReturnDate && nowMs >= expectedReturnDate.getTime()
+  );
+
+  useEffect(() => {
+    if (currentStatus !== 'OUT') return;
+    const id = setInterval(() => {
+      setNowMs(Date.now());
+    }, 30000);
+    return () => clearInterval(id);
+  }, [currentStatus]);
 
   const recordGateToggle = useCallback(
     async (targetDirection: 'IN' | 'OUT', isUndo: boolean = false) => {
@@ -200,6 +296,12 @@ export default function StudentGateHistoryScreen() {
         });
         if (error) throw error;
         if (!data?.success) throw new Error(data?.error || 'Could not update gate status.');
+        if (targetDirection === 'IN') {
+          void cancelReturnReminderNotification();
+        }
+        if (userId) {
+          await invalidatePrefix(studentDashboardCacheKey(userId));
+        }
         if (!isUndo) {
           showToast(
             targetDirection === 'IN' ? 'Marked Inside PG' : 'Marked Outside PG',
@@ -223,7 +325,7 @@ export default function StudentGateHistoryScreen() {
         setSavingMovement(false);
       }
     },
-    [loadData, showToast]
+    [loadData, showToast, userId]
   );
 
   useEffect(() => {
@@ -248,6 +350,13 @@ export default function StudentGateHistoryScreen() {
       if (!data?.success) throw new Error(data?.error || 'Could not update gate status.');
       setGoingOutModalVisible(false);
       triggerSuccessHaptic();
+      void scheduleReturnReminderNotification(
+        payload.expectedReturnTime,
+        new Date().toISOString()
+      );
+      if (userId) {
+        await invalidatePrefix(studentDashboardCacheKey(userId));
+      }
       showToast('Marked Outside PG', {
         actionLabel: 'Undo',
         onAction: () => {
@@ -258,6 +367,72 @@ export default function StudentGateHistoryScreen() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       Alert.alert('Update Failed', msg || 'Could not update gate status.');
+    } finally {
+      savingRef.current = false;
+      setSavingMovement(false);
+    }
+  };
+
+  const handleTellOwnerRunningLate = async () => {
+    if (savingRef.current || currentStatus !== 'OUT' || !latestLog) return;
+    savingRef.current = true;
+    setSavingMovement(true);
+    try {
+      const result = await recordStudentMovement({
+        direction: 'OUT',
+        purpose: latestLog.purpose || 'Running late',
+        expectedReturnTime: 'Running late',
+        note: 'Resident running late (expected return passed)',
+        userId,
+      });
+
+      if (!result.ok) {
+        Alert.alert('Update Failed', result.error.message || 'Could not notify PG owner.');
+        return;
+      }
+
+      triggerSuccessHaptic();
+      void cancelReturnReminderNotification();
+
+      if (result.data.queued) {
+        const optimisticLog: MovementLog = {
+          id: `offline-queued-${Date.now()}`,
+          resident_id: latestLog.resident_id,
+          direction: 'OUT',
+          event_time: new Date().toISOString(),
+          note: 'Resident running late (expected return passed)',
+          purpose: latestLog.purpose || 'Running late',
+          expected_return_time: 'Running late',
+          food_required: latestLog.food_required ?? true,
+          recorded_by: userId || latestLog.recorded_by,
+        };
+        setLogs((prev) => [optimisticLog, ...prev]);
+        showToast('Saved offline — will sync automatically');
+        return;
+      }
+
+      await loadData();
+      const ownerPhone = resident?.owner_phone ?? null;
+      const whatsappUrl = buildWhatsAppReminderUrl(
+        ownerPhone,
+        'Hi, I am currently outside the PG and running late. I will update once I return.'
+      );
+      showToast(
+        'Owner notified that you are running late',
+        whatsappUrl
+          ? {
+              actionLabel: 'WhatsApp',
+              onAction: () => {
+                void Linking.openURL(whatsappUrl).catch(() => {
+                  Alert.alert(
+                    'WhatsApp Unavailable',
+                    'Could not open WhatsApp on this device.'
+                  );
+                });
+              },
+            }
+          : undefined
+      );
     } finally {
       savingRef.current = false;
       setSavingMovement(false);
@@ -369,9 +544,9 @@ export default function StudentGateHistoryScreen() {
                       : styles.textUnknown,
                   ]}>
                   {currentStatus === 'IN'
-                    ? 'Checked in (Inside PG)'
+                    ? 'Checked in'
                     : currentStatus === 'OUT'
-                    ? 'Checked out (Outside PG)'
+                    ? 'Checked out'
                     : 'No Gate Logs Recorded'}
                 </Text>
                 {lastEventTime && (
@@ -390,25 +565,73 @@ export default function StudentGateHistoryScreen() {
                 onPress={() => {
                   if (currentStatus === 'IN') {
                     setGoingOutModalVisible(true);
-                  } else {
-                    recordGateToggle('IN');
+                    return;
                   }
+                  const eventMs = latestLog?.event_time
+                    ? new Date(latestLog.event_time).getTime()
+                    : NaN;
+                  if (
+                    !Number.isNaN(eventMs) &&
+                    Date.now() - eventMs < ACCIDENTAL_TAP_WINDOW_MS
+                  ) {
+                    Alert.alert(
+                      'Confirm Check-In',
+                      'You marked Going Out less than 5 minutes ago. Record check-in anyway?',
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { text: 'Mark Inside', onPress: () => void recordGateToggle('IN') },
+                      ]
+                    );
+                    return;
+                  }
+                  void recordGateToggle('IN');
                 }}>
                 {savingMovement ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
                   <Text style={styles.gateQuickBtnText}>
-                    {currentStatus === 'IN' ? 'Mark Out' : 'Mark In'}
+                    {currentStatus === 'IN' ? 'Going Out' : 'Mark Inside'}
                   </Text>
                 )}
               </Pressable>
             </View>
 
+            {/* Running Late Banner when expected return time has passed */}
+            {isRunningLate && latestLog && (
+              <View style={styles.runningLateBanner}>
+                <View style={styles.runningLateHeader}>
+                  <Clock size={16} color="#B45309" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.runningLateTitle}>Running late</Text>
+                    <Text style={styles.runningLateSub}>
+                      Expected return (
+                      {normalizeTimeMeridiemLowercase(
+                        latestLog.expected_return_time || ''
+                      )}
+                      ) has passed.
+                    </Text>
+                  </View>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  style={[
+                    styles.runningLateBtn,
+                    savingMovement && { opacity: 0.6 },
+                  ]}
+                  disabled={savingMovement}
+                  onPress={() => void handleTellOwnerRunningLate()}>
+                  <Text style={styles.runningLateBtnText}>
+                    Tell the owner I&apos;m running late
+                  </Text>
+                </Pressable>
+              </View>
+            )}
+
             {/* 10+ Hours Out Nudge */}
             {outNudge.isOver && (
               <View style={styles.overHoursBanner}>
                 <Text style={styles.overHoursText}>
-                  You&apos;ve been out for {outNudge.hoursOut}+ hours. Tap &quot;Mark In&quot; when you&apos;re back at the PG.
+                  You&apos;ve been out for {outNudge.hoursOut}+ hours. Tap &quot;Mark Inside&quot; when you&apos;re back at the PG.
                 </Text>
               </View>
             )}
@@ -494,7 +717,7 @@ export default function StudentGateHistoryScreen() {
                               <Text style={styles.purposeBadge}>{log.purpose}</Text>
                               {log.expected_return_time && (
                                 <Text style={styles.returnBadge}>
-                                  Return: {log.expected_return_time}
+                                  Return: {normalizeTimeMeridiemLowercase(log.expected_return_time)}
                                 </Text>
                               )}
                             </View>
@@ -521,6 +744,7 @@ export default function StudentGateHistoryScreen() {
       <GoingOutModal
         visible={goingOutModalVisible}
         saving={savingMovement}
+        curfewTime={resident?.curfew_time ?? null}
         onClose={() => setGoingOutModalVisible(false)}
         onConfirm={handleConfirmGoingOut}
       />
@@ -571,6 +795,43 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#92400E',
+  },
+  runningLateBanner: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FCD34D',
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    gap: 10,
+  },
+  runningLateHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  runningLateTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#92400E',
+  },
+  runningLateSub: {
+    fontSize: 12,
+    color: '#B45309',
+    marginTop: 1,
+  },
+  runningLateBtn: {
+    backgroundColor: '#D97706',
+    borderRadius: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  runningLateBtnText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   monthSummaryCard: {
     flexDirection: 'row',

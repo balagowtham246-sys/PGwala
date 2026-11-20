@@ -2,6 +2,7 @@ import {
   getChatLastSeenStorageKey,
   getFirstName,
   getNextUpcomingMeal,
+  getSmartDefaultMeal,
   hasUnreadChatMessage,
 } from '@/lib/resident-home-utils';
 
@@ -11,6 +12,31 @@ describe('resident-home-utils', () => {
     expect(getNextUpcomingMeal(new Date(2026, 10, 14, 12, 0))).toBe('lunch');
     expect(getNextUpcomingMeal(new Date(2026, 10, 14, 15, 0))).toBe('dinner');
     expect(getNextUpcomingMeal(new Date(2026, 10, 14, 21, 45))).toBe('dinner');
+  });
+
+  it('picks smart upcoming published meal without stepping backward', () => {
+    const lunchAfternoon = new Date(2026, 10, 14, 12, 30);
+    // Current slot is lunch, lunch is missing, dinner is published -> dinner
+    expect(
+      getSmartDefaultMeal(
+        { breakfast: { id: '1' }, lunch: null, dinner: { id: '3' } },
+        lunchAfternoon
+      )
+    ).toBe('dinner');
+    // Only breakfast published after lunch -> stay on lunch (show empty state, never jump back to breakfast)
+    expect(
+      getSmartDefaultMeal(
+        { breakfast: { id: '1' }, lunch: null, dinner: null },
+        lunchAfternoon
+      )
+    ).toBe('lunch');
+    // Dinner time, only breakfast/lunch published -> stay on dinner
+    expect(
+      getSmartDefaultMeal(
+        { breakfast: { id: '1' }, lunch: { id: '2' }, dinner: null },
+        new Date(2026, 10, 14, 17, 0)
+      )
+    ).toBe('dinner');
   });
 
   it('extracts first name safely', () => {

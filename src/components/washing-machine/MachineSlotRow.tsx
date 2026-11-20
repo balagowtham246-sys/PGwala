@@ -21,6 +21,7 @@ export interface MachineSlotRowProps {
   userRole: 'owner' | 'student';
   currentResidentId?: string | null;
   residentEnabled: boolean;
+  hasActiveSession?: boolean;
   actionLoading: boolean;
   actionUnitId: string | null;
   nowMs: number;
@@ -37,6 +38,7 @@ export function MachineSlotRow({
   userRole,
   currentResidentId,
   residentEnabled,
+  hasActiveSession = false,
   actionLoading,
   actionUnitId,
   nowMs,
@@ -97,14 +99,16 @@ export function MachineSlotRow({
               styles.actionBtn,
               styles.startBtn,
               pressed && styles.btnPressed,
-              isThisLoading && styles.btnDisabled,
+              (isThisLoading || hasActiveSession) && styles.btnDisabled,
             ]}
-            disabled={actionLoading}
+            disabled={actionLoading || hasActiveSession}
             onPress={() => onStartUsing(unit.id)}>
             {isThisLoading ? (
               <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
-              <Text style={styles.actionBtnText}>Start Wash</Text>
+              <Text style={styles.actionBtnText}>
+                {hasActiveSession ? '1 wash max' : 'Start Wash'}
+              </Text>
             )}
           </Pressable>
         ) : !isUnitFree ? (
@@ -192,11 +196,13 @@ export function MachineSlotRow({
             accessibilityLabel={`Start washing on ${unit.machine_name}`}
             style={({ pressed }) => [
               styles.modalRowBtn,
-              residentEnabled ? styles.modalStartBtn : styles.modalDisabledBtn,
+              residentEnabled && !hasActiveSession
+                ? styles.modalStartBtn
+                : styles.modalDisabledBtn,
               pressed && styles.btnPressed,
               isThisLoading && styles.btnDisabled,
             ]}
-            disabled={actionLoading || !residentEnabled}
+            disabled={actionLoading || !residentEnabled || hasActiveSession}
             onPress={() => {
               if (!residentEnabled) {
                 Alert.alert(
@@ -209,13 +215,18 @@ export function MachineSlotRow({
                 );
                 return;
               }
+              if (hasActiveSession) return;
               onStartUsing(unit.id);
             }}>
             {isThisLoading ? (
               <ActivityIndicator size="small" color="#FFFFFF" />
             ) : (
               <Text style={styles.modalRowBtnText}>
-                {residentEnabled ? 'Start Wash' : 'Disabled'}
+                {!residentEnabled
+                  ? 'Disabled'
+                  : hasActiveSession
+                  ? '1 wash max'
+                  : 'Start Wash'}
               </Text>
             )}
           </Pressable>

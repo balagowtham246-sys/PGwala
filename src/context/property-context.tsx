@@ -19,6 +19,11 @@ export interface PropertyItem {
   is_active: boolean;
   gender_type?: PropertyGenderType | null;
   total_beds?: number | null;
+  upi_id?: string | null;
+  upi_payee_name?: string | null;
+  wifi_ssid?: string | null;
+  wifi_password?: string | null;
+  curfew_time?: string | null;
   active_resident_count?: number;
 }
 
@@ -27,6 +32,11 @@ export interface PropertyMetaInput {
   total_beds?: number;
   explicit_gender?: boolean;
   prefer_local?: boolean;
+  upi_id?: string | null;
+  upi_payee_name?: string | null;
+  wifi_ssid?: string | null;
+  wifi_password?: string | null;
+  curfew_time?: string | null;
 }
 
 interface PropertyContextType {
@@ -78,6 +88,30 @@ function isMissingColumnError(err: { code?: string; message?: string } | null): 
   );
 }
 
+function normalizeOptionalText(raw: string | null | undefined): string | null {
+  const trimmed = (raw ?? '').trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function resolveHydratedMetaText(
+  dbVal: string | null | undefined,
+  localVal: string | null | undefined,
+  preferLocal: boolean
+): string | null {
+  return preferLocal
+    ? normalizeOptionalText(localVal)
+    : normalizeOptionalText(dbVal) ?? normalizeOptionalText(localVal);
+}
+
+function resolveUpdatedMetaText(
+  incoming: string | null | undefined,
+  existingVal: string | null | undefined
+): string | null {
+  return incoming !== undefined
+    ? normalizeOptionalText(incoming)
+    : normalizeOptionalText(existingVal);
+}
+
 async function readLocalPropertyMeta(
   propertyId: string
 ): Promise<PropertyMetaInput | null> {
@@ -106,12 +140,14 @@ async function writeLocalPropertyMeta(
 
 export function PropertyProvider({ children }: { children: React.ReactNode }) {
   const { user, profile } = useAuth();
+  const ownerUserId = user?.id ?? null;
+  const profileRole = profile?.role ?? null;
   const [properties, setProperties] = useState<PropertyItem[]>([]);
   const [selectedPropertyId, setSelectedPropertyId] = useState<string | null>(null);
   const [loadingProperties, setLoadingProperties] = useState(true);
 
   const fetchProperties = useCallback(async () => {
-    if (!user?.id || profile?.role !== 'owner') {
+    if (!ownerUserId || profileRole !== 'owner') {
       setProperties([]);
       setSelectedPropertyId(null);
       setLoadingProperties(false);
@@ -124,8 +160,10 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       let rawRows: PropertyItem[] = [];
       const richRes = await supabase
         .from('properties')
-        .select('id, name, address, owner_id, is_active, gender_type, total_beds')
-        .eq('owner_id', user.id)
+        .select(
+          'id, name, address, owner_id, is_active, gender_type, total_beds, upi_id, upi_payee_name, wifi_ssid, wifi_password, curfew_time'
+        )
+        .eq('owner_id', ownerUserId)
         .eq('is_active', true)
         .order('created_at', { ascending: true });
 
@@ -133,7 +171,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         const basicRes = await supabase
           .from('properties')
           .select('id, name, address, owner_id, is_active')
-          .eq('owner_id', user.id)
+          .eq('owner_id', ownerUserId)
           .eq('is_active', true)
           .order('created_at', { ascending: true });
 
@@ -190,6 +228,27 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
             ...p,
             gender_type: resolvedGender,
             total_beds: resolvedBeds,
+            upi_id: resolveHydratedMetaText(p.upi_id, localMeta?.upi_id, preferLocal),
+            upi_payee_name: resolveHydratedMetaText(
+              p.upi_payee_name,
+              localMeta?.upi_payee_name,
+              preferLocal
+            ),
+            wifi_ssid: resolveHydratedMetaText(
+              p.wifi_ssid,
+              localMeta?.wifi_ssid,
+              preferLocal
+            ),
+            wifi_password: resolveHydratedMetaText(
+              p.wifi_password,
+              localMeta?.wifi_password,
+              preferLocal
+            ),
+            curfew_time: resolveHydratedMetaText(
+              p.curfew_time,
+              localMeta?.curfew_time,
+              preferLocal
+            ),
             active_resident_count: occupancyMap.get(p.id) ?? 0,
           };
         })
@@ -214,10 +273,19 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     } finally {
       setLoadingProperties(false);
     }
-  }, [user?.id, profile?.role]);
+  }, [ownerUserId, profileRole]);
 
   useEffect(() => {
-    fetchProperties();
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      if (!cancelled) {
+        void fetchProperties();
+      }
+    }, 0);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
   }, [fetchProperties]);
 
   const selectProperty = async (id: string) => {
@@ -239,6 +307,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       typeof meta?.total_beds === 'number' && Number.isFinite(meta.total_beds)
         ? Math.max(0, Math.round(meta.total_beds))
         : 0;
+    const upiId = normalizeOptionalText(meta?.upi_id);
+    const upiPayeeName = normalizeOptionalText(meta?.upi_payee_name);
+    const wifiSsid = normalizeOptionalText(meta?.wifi_ssid);
+    const wifiPassword = normalizeOptionalText(meta?.wifi_password);
+    const curfewTime = normalizeOptionalText(meta?.curfew_time);
 
     let inserted: PropertyItem | null = null;
 
@@ -251,8 +324,15 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         is_active: true,
         gender_type: genderType,
         total_beds: totalBeds,
+        upi_id: upiId,
+        upi_payee_name: upiPayeeName,
+        wifi_ssid: wifiSsid,
+        wifi_password: wifiPassword,
+        curfew_time: curfewTime,
       })
-      .select('id, name, address, owner_id, is_active, gender_type, total_beds')
+      .select(
+        'id, name, address, owner_id, is_active, gender_type, total_beds, upi_id, upi_payee_name, wifi_ssid, wifi_password, curfew_time'
+      )
       .single();
 
     if (richInsert.error) {
@@ -283,12 +363,22 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       total_beds: totalBeds,
       explicit_gender: Boolean(meta?.gender_type),
       prefer_local: Boolean(richInsert.error),
+      upi_id: upiId,
+      upi_payee_name: upiPayeeName,
+      wifi_ssid: wifiSsid,
+      wifi_password: wifiPassword,
+      curfew_time: curfewTime,
     });
 
     const newProp: PropertyItem = {
       ...inserted,
       gender_type: genderType,
       total_beds: totalBeds,
+      upi_id: upiId,
+      upi_payee_name: upiPayeeName,
+      wifi_ssid: wifiSsid,
+      wifi_password: wifiPassword,
+      curfew_time: curfewTime,
       active_resident_count: 0,
     };
 
@@ -315,6 +405,20 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       typeof meta?.total_beds === 'number' && Number.isFinite(meta.total_beds)
         ? Math.max(0, Math.round(meta.total_beds))
         : existing?.total_beds ?? 0;
+    const upiId = resolveUpdatedMetaText(meta?.upi_id, existing?.upi_id);
+    const upiPayeeName = resolveUpdatedMetaText(
+      meta?.upi_payee_name,
+      existing?.upi_payee_name
+    );
+    const wifiSsid = resolveUpdatedMetaText(meta?.wifi_ssid, existing?.wifi_ssid);
+    const wifiPassword = resolveUpdatedMetaText(
+      meta?.wifi_password,
+      existing?.wifi_password
+    );
+    const curfewTime = resolveUpdatedMetaText(
+      meta?.curfew_time,
+      existing?.curfew_time
+    );
 
     const richUpdate = await supabase
       .from('properties')
@@ -323,6 +427,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         address: address?.trim() || null,
         gender_type: genderType,
         total_beds: totalBeds,
+        upi_id: upiId,
+        upi_payee_name: upiPayeeName,
+        wifi_ssid: wifiSsid,
+        wifi_password: wifiPassword,
+        curfew_time: curfewTime,
       })
       .eq('id', id)
       .eq('owner_id', user.id);
@@ -348,6 +457,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
       total_beds: totalBeds,
       explicit_gender: Boolean(meta?.gender_type),
       prefer_local: Boolean(richUpdate.error),
+      upi_id: upiId,
+      upi_payee_name: upiPayeeName,
+      wifi_ssid: wifiSsid,
+      wifi_password: wifiPassword,
+      curfew_time: curfewTime,
     });
 
     setProperties((prev) =>
@@ -359,6 +473,11 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
               address: address?.trim() || null,
               gender_type: genderType,
               total_beds: totalBeds,
+              upi_id: upiId,
+              upi_payee_name: upiPayeeName,
+              wifi_ssid: wifiSsid,
+              wifi_password: wifiPassword,
+              curfew_time: curfewTime,
             }
           : p
       )

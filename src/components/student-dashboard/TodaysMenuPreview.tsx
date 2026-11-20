@@ -4,6 +4,7 @@ import { Utensils } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { triggerSelectionHaptic } from '@/lib/haptics';
+import { formatHhMmTo12h } from '@/lib/ux-utils';
 import type { MealType, ResidentFoodMenu } from '@/services/dashboard.service';
 
 const MEAL_CONFIG: Record<MealType, { title: string; timeHint: string }> = {
@@ -21,8 +22,12 @@ const MEAL_CONFIG: Record<MealType, { title: string; timeHint: string }> = {
   },
 };
 
+type MenuWithOptionalTime = ResidentFoodMenu & {
+  meal_time?: string | null;
+};
+
 interface TodaysMenuPreviewProps {
-  menus: Record<MealType, ResidentFoodMenu | null>;
+  menus: Record<MealType, MenuWithOptionalTime | null>;
   activeMealTab: MealType;
   onSelectMealTab: (meal: MealType) => void;
   onPressFullMenu: () => void;
@@ -35,6 +40,9 @@ export function TodaysMenuPreview({
   onPressFullMenu,
 }: TodaysMenuPreviewProps) {
   const activeMenu = menus[activeMealTab];
+  const mealTimeLabel = activeMenu?.meal_time
+    ? formatHhMmTo12h(activeMenu.meal_time)
+    : '';
 
   return (
     <View style={styles.menuCard}>
@@ -88,7 +96,16 @@ export function TodaysMenuPreview({
       {/* In-Place Selected Meal Details */}
       <View style={styles.mealDetailBox}>
         <View style={styles.mealDetailTop}>
-          <Text style={styles.mealDetailTitle}>{MEAL_CONFIG[activeMealTab].title}</Text>
+          <View style={styles.mealDetailTitleRow}>
+            <Text style={styles.mealDetailTitle}>
+              {MEAL_CONFIG[activeMealTab].title}
+            </Text>
+            {mealTimeLabel ? (
+              <View style={styles.mealTimePill}>
+                <Text style={styles.mealTimeText}>{mealTimeLabel}</Text>
+              </View>
+            ) : null}
+          </View>
         </View>
 
         {activeMenu ? (
@@ -194,10 +211,29 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 4,
   },
+  mealDetailTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
   mealDetailTitle: {
     fontSize: 13,
     fontWeight: '700',
     color: OwnerTheme.colors.textPrimary,
+  },
+  mealTimePill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.primarySoft,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  mealTimeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
   },
   mealItemsContainer: {
     gap: 4,

@@ -14,7 +14,7 @@ import {
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { ChevronRight, X } from 'lucide-react-native';
+import { ChevronRight, Clock, X } from 'lucide-react-native';
 
 import {
   HIGH_CONTRAST_SWITCH_COLORS,
@@ -23,6 +23,7 @@ import {
 import { OwnerTheme } from '@/constants/theme';
 import { triggerSelectionHaptic } from '@/lib/haptics';
 import {
+  formatHhMmTo12h,
   normalizeDishName,
   parseDishList,
   serializeDishList,
@@ -42,6 +43,23 @@ export interface MealEditorSavePayload {
   items: string;
   notes: string | null;
   isPublished: boolean;
+  mealTime: string | null;
+}
+
+const MEAL_TIME_PRESETS: Record<MealType, string[]> = {
+  breakfast: ['07:30', '08:00', '08:30'],
+  lunch: ['12:30', '13:00', '13:30'],
+  dinner: ['19:30', '20:00', '20:30'],
+};
+
+const HH_MM_24H_REGEX = /^([01]?\d|2[0-3]):([0-5]\d)$/;
+
+function normalizeHhMm24(raw: string | null | undefined): string | null {
+  const trimmed = (raw || '').trim();
+  if (!trimmed) return null;
+  const match = HH_MM_24H_REGEX.exec(trimmed);
+  if (!match) return null;
+  return `${match[1].padStart(2, '0')}:${match[2]}`;
 }
 
 export interface MealEditorSheetProps {
@@ -98,10 +116,20 @@ function MealEditorSheetBody({
   );
   const initialNotes = existingMenu?.notes?.trim() ?? '';
   const initialPublished = existingMenu ? existingMenu.is_published : false;
+  const initialMealTime = useMemo(
+    () =>
+      normalizeHhMm24(existingMenu?.meal_time) ??
+      (existingMenu?.meal_time?.trim() || null),
+    [existingMenu]
+  );
 
   const [dishes, setDishes] = useState<string[]>(() => initialDishes);
   const [dishInputText, setDishInputText] = useState('');
   const [notes, setNotes] = useState(() => initialNotes);
+  const [mealTimeInput, setMealTimeInput] = useState<string>(
+    () => initialMealTime ?? ''
+  );
+  const [mealTimeError, setMealTimeError] = useState<string | null>(null);
   const [isPublished, setIsPublished] = useState(() => initialPublished);
 
   const [customDishes, setCustomDishes] = useState<string[]>([]);
@@ -153,9 +181,14 @@ function MealEditorSheetBody({
   const isDirty = useMemo(() => {
     const currentSerialized = serializeDishList(dishes);
     const initialSerialized = serializeDishList(initialDishes);
+    const currentTimeKey =
+      normalizeHhMm24(mealTimeInput) ?? mealTimeInput.trim();
+    const initialTimeKey =
+      normalizeHhMm24(initialMealTime) ?? (initialMealTime ?? '');
     return (
       currentSerialized !== initialSerialized ||
       notes.trim() !== initialNotes ||
+      currentTimeKey !== initialTimeKey ||
       isPublished !== initialPublished ||
       dishInputText.trim().length > 0 ||
       customDishInput.trim().length > 0
@@ -165,6 +198,8 @@ function MealEditorSheetBody({
     initialDishes,
     notes,
     initialNotes,
+    mealTimeInput,
+    initialMealTime,
     isPublished,
     initialPublished,
     dishInputText,
@@ -297,8 +332,33 @@ function MealEditorSheetBody({
     );
   };
 
+  const validateMealTime = (raw: string): boolean => {
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      setMealTimeError(null);
+      return true;
+    }
+    if (!normalizeHhMm24(trimmed)) {
+      setMealTimeError('Enter 24-hour time as HH:mm (e.g. 08:00)');
+      return false;
+    }
+    setMealTimeError(null);
+    return true;
+  };
+
+  const handleMealTimeChange = (next: string) => {
+    setMealTimeInput(next);
+    if (mealTimeError) {
+      const trimmed = next.trim();
+      if (!trimmed || normalizeHhMm24(trimmed)) {
+        setMealTimeError(null);
+      }
+    }
+  };
+
   const handleSavePress = () => {
     if (saving || dishes.length === 0) return;
+    if (!validateMealTime(mealTimeInput)) return;
 
     const pendingDishes = parseDishList(dishInputText);
     const normalizedItems = serializeDishList([...dishes, ...pendingDishes]);
@@ -308,6 +368,7 @@ function MealEditorSheetBody({
       items: normalizedItems,
       notes: notes.trim() || null,
       isPublished,
+      mealTime: normalizeHhMm24(mealTimeInput),
     };
 
     if (isPublished) {
@@ -334,6 +395,11 @@ function MealEditorSheetBody({
   const canSave = dishes.length > 0 && !saving;
   const canAddTypedDish = normalizeDishName(dishInputText).length > 0 && !saving;
   const canAddCustomDish = normalizeDishName(customDishInput).length > 0 && !saving && !savingCustom;
+  const normalizedSelectedTime = normalizeHhMm24(mealTimeInput);
+  const mealTimePreview = mealTimeInput.trim()
+    ? formatHhMmTo12h(mealTimeInput.trim())
+    : '';
+  const timePresets = MEAL_TIME_PRESETS[mealType];
 
   return (
     <Modal
@@ -579,6 +645,104 @@ function MealEditorSheetBody({
               maxLength={140}
             />
 
+            {/* Serving Time */}
+            <View style={styles.servingTimeLabelRow}>
+              <Clock size={13} color="#475569" />
+              <Text style={[styles.sectionLabel, { marginBottom: 0 }]}>
+                Serving Time{' '}
+                <Text style={styles.optionalTag}>(Optional)</Text>
+              </Text>
+            </View>
+            <View style={styles.timePresetRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  selected: mealTimeInput.trim() === '',
+                  disabled: saving,
+                }}
+                disabled={saving}
+                style={[
+                  styles.quickChip,
+                  mealTimeInput.trim() === '' && styles.quickChipSelected,
+                ]}
+                onPress={() => {
+                  triggerSelectionHaptic();
+                  setMealTimeInput('');
+                  setMealTimeError(null);
+                }}>
+                <Text
+                  style={[
+                    styles.quickChipText,
+                    mealTimeInput.trim() === '' && styles.quickChipTextSelected,
+                  ]}>
+                  No time
+                </Text>
+              </Pressable>
+
+              {timePresets.map((preset24) => {
+                const isSelected = normalizedSelectedTime === preset24;
+                const label = formatHhMmTo12h(preset24);
+                return (
+                  <Pressable
+                    key={preset24}
+                    accessibilityRole="button"
+                    accessibilityState={{
+                      selected: isSelected,
+                      disabled: saving,
+                    }}
+                    disabled={saving}
+                    style={[
+                      styles.quickChip,
+                      isSelected && styles.quickChipSelected,
+                    ]}
+                    onPress={() => {
+                      triggerSelectionHaptic();
+                      setMealTimeInput(preset24);
+                      setMealTimeError(null);
+                    }}>
+                    <Text
+                      style={[
+                        styles.quickChipText,
+                        isSelected && styles.quickChipTextSelected,
+                      ]}>
+                      {label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+
+            <View style={styles.customTimeRow}>
+              <TextInput
+                style={[
+                  styles.customTimeInput,
+                  mealTimeError ? styles.customTimeInputError : null,
+                ]}
+                placeholder={`Custom HH:mm (e.g. ${timePresets[1]})`}
+                placeholderTextColor="#94A3B8"
+                value={mealTimeInput}
+                onChangeText={handleMealTimeChange}
+                onBlur={() => validateMealTime(mealTimeInput)}
+                keyboardType={
+                  Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'
+                }
+                autoCapitalize="none"
+                autoCorrect={false}
+                maxLength={5}
+                editable={!saving}
+              />
+              {mealTimePreview ? (
+                <View style={styles.timePreviewBadge}>
+                  <Text style={styles.timePreviewBadgeText}>
+                    {mealTimePreview}
+                  </Text>
+                </View>
+              ) : null}
+            </View>
+            {mealTimeError ? (
+              <Text style={styles.timeErrorText}>{mealTimeError}</Text>
+            ) : null}
+
             {/* Publish Toggle */}
             <View style={styles.publishCard}>
               <View style={styles.publishCopy}>
@@ -656,7 +820,7 @@ export function MealEditorSheet({
     return null;
   }
 
-  const sheetKey = `${mealType}:${dateLabel}:${existingMenu?.id ?? 'new'}:${existingMenu?.items ?? ''}:${existingMenu?.notes ?? ''}:${String(existingMenu?.is_published ?? false)}`;
+  const sheetKey = `${mealType}:${dateLabel}:${existingMenu?.id ?? 'new'}:${existingMenu?.items ?? ''}:${existingMenu?.notes ?? ''}:${existingMenu?.meal_time ?? ''}:${String(existingMenu?.is_published ?? false)}`;
 
   return (
     <MealEditorSheetBody
@@ -946,6 +1110,61 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     fontSize: 14,
     color: '#0F172A',
+    marginBottom: 14,
+  },
+  servingTimeLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    marginBottom: 8,
+  },
+  timePresetRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 10,
+  },
+  customTimeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 14,
+  },
+  customTimeInput: {
+    flex: 1,
+    height: 42,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: '#0F172A',
+  },
+  customTimeInputError: {
+    borderColor: '#DC2626',
+    backgroundColor: '#FEF2F2',
+  },
+  timePreviewBadge: {
+    height: 42,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#E0F2FE',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  timePreviewBadgeText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0369A1',
+  },
+  timeErrorText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#DC2626',
+    marginTop: -8,
     marginBottom: 14,
   },
   publishCard: {

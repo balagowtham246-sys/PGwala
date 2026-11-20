@@ -269,3 +269,92 @@ $$;
 
 REVOKE EXECUTE ON FUNCTION public.set_my_emergency_contact(TEXT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION public.set_my_emergency_contact(TEXT) TO authenticated;
+
+-- 9. Owner-managed UPI payment details, PG Wi-Fi/curfew info, optional meal times & warden contact read RLS
+ALTER TABLE public.properties
+  ADD COLUMN IF NOT EXISTS upi_id TEXT
+    CHECK (upi_id IS NULL OR upi_id ~ '^[a-zA-Z0-9._-]+@[a-zA-Z]+$');
+
+ALTER TABLE public.properties
+  ADD COLUMN IF NOT EXISTS upi_payee_name TEXT;
+
+ALTER TABLE public.properties
+  ADD COLUMN IF NOT EXISTS wifi_ssid TEXT;
+
+ALTER TABLE public.properties
+  ADD COLUMN IF NOT EXISTS wifi_password TEXT;
+
+ALTER TABLE public.properties
+  ADD COLUMN IF NOT EXISTS curfew_time TEXT
+    CHECK (curfew_time IS NULL OR curfew_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$');
+
+ALTER TABLE public.food_menus
+  ADD COLUMN IF NOT EXISTS meal_time TEXT
+    CHECK (meal_time IS NULL OR meal_time ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$');
+
+GRANT UPDATE (
+  name,
+  address,
+  is_active,
+  gender_type,
+  total_beds,
+  upi_id,
+  upi_payee_name,
+  wifi_ssid,
+  wifi_password,
+  curfew_time
+) ON TABLE public.properties TO authenticated;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'property_wardens'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'property_wardens' AND policyname = 'Residents view active warden for their property'
+  ) THEN
+    CREATE POLICY "Residents view active warden for their property"
+      ON public.property_wardens
+      FOR SELECT
+      TO authenticated
+      USING (
+        is_active = true
+        AND EXISTS (
+          SELECT 1 FROM public.residents r
+          WHERE r.property_id = property_wardens.property_id
+            AND r.profile_id = auth.uid()
+            AND r.is_active = true
+        )
+      );
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM information_schema.tables
+    WHERE table_schema = 'public' AND table_name = 'property_wardens'
+  ) AND NOT EXISTS (
+    SELECT 1 FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'profiles' AND policyname = 'profiles_select_property_owner_and_warden'
+  ) THEN
+    CREATE POLICY "profiles_select_property_owner_and_warden"
+      ON public.profiles
+      FOR SELECT
+      TO authenticated
+      USING (
+        id IN (
+          SELECT p.owner_id
+          FROM public.properties p
+          JOIN public.residents r ON r.property_id = p.id
+          WHERE r.profile_id = auth.uid() AND r.is_active = true
+        )
+        OR id IN (
+          SELECT pw.warden_profile_id
+          FROM public.property_wardens pw
+          JOIN public.residents r ON r.property_id = pw.property_id
+          WHERE r.profile_id = auth.uid()
+            AND r.is_active = true
+            AND pw.is_active = true
+        )
+      );
+  END IF;
+END $$;

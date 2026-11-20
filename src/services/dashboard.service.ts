@@ -158,10 +158,15 @@ export interface ResidentAccommodationInfo {
   room_number: string;
   phone_number: string | null;
   is_active: boolean;
+  curfew_time?: string | null;
+  owner_phone?: string | null;
+  owner_name?: string | null;
   property?: {
     id: string;
     name: string;
     address: string | null;
+    owner_id?: string | null;
+    curfew_time?: string | null;
   } | null;
 }
 
@@ -171,6 +176,7 @@ export interface ResidentFoodMenu {
   items: string;
   notes: string | null;
   is_published: boolean;
+  meal_time?: string | null;
 }
 
 export interface ResidentMovementRecord {
@@ -790,6 +796,189 @@ export async function fetchMovementAlertResident(
   return res;
 }
 
+function isMissingColumnError(err: { code?: string; message?: string } | null): boolean {
+  if (!err) return false;
+  const msg = (err.message || '').toLowerCase();
+  return (
+    err.code === '42703' ||
+    err.code === 'PGRST204' ||
+    err.code === '42501' ||
+    msg.includes('does not exist') ||
+    msg.includes('column') ||
+    msg.includes('permission denied')
+  );
+}
+
+/**
+ * Safely resolves PG curfew time (with `@pgwala_property_meta:<propertyId>` fallback)
+ * and owner contact details without breaking if schema columns or RLS restrict reads.
+ */
+export async function fetchPropertyCurfewAndOwner(
+  propertyId: string,
+  initialOwnerId?: string | null,
+  initialCurfew?: string | null
+): Promise<{
+  curfew_time: string | null;
+  owner_phone: string | null;
+  owner_name: string | null;
+}> {
+  let dbCurfew: string | null =
+    typeof initialCurfew === 'string' && initialCurfew.trim() ? initialCurfew.trim() : null;
+  let ownerId: string | null = initialOwnerId ?? null;
+  let ownerName: string | null = null;
+  let ownerPhone: string | null = null;
+  let localMeta: { curfew_time?: string | null; prefer_local?: boolean } | null = null;
+
+  try {
+    const rawMeta = await AsyncStorage.getItem(`@pgwala_property_meta:${propertyId}`);
+    if (rawMeta) {
+      const parsed = JSON.parse(rawMeta);
+      if (parsed && typeof parsed === 'object') {
+        localMeta = parsed as { curfew_time?: string | null; prefer_local?: boolean };
+      }
+    }
+  } catch {
+    // Non-fatal local meta fallback
+  }
+
+  try {
+    const propRes = await supabase
+      .from('properties')
+      .select('owner_id, curfew_time')
+      .eq('id', propertyId)
+      .maybeSingle();
+
+    if (propRes && !propRes.error && propRes.data) {
+      const row = propRes.data as { owner_id?: string | null; curfew_time?: string | null };
+      if (row.owner_id) ownerId = row.owner_id;
+      if (typeof row.curfew_time === 'string' && row.curfew_time.trim()) {
+        dbCurfew = row.curfew_time.trim();
+      }
+    } else if (propRes?.error && !ownerId) {
+      const basicPropRes = await supabase
+        .from('properties')
+        .select('owner_id')
+        .eq('id', propertyId)
+        .maybeSingle();
+      if (basicPropRes && !basicPropRes.error && basicPropRes.data) {
+        const row = basicPropRes.data as { owner_id?: string | null };
+        if (row.owner_id) ownerId = row.owner_id;
+      }
+    }
+  } catch {
+    // Non-fatal: e.g. when properties table is mocked or restricted
+  }
+
+  if (ownerId) {
+    try {
+      const ownerRes = await supabase
+        .from('profiles')
+        .select('full_name, phone_number')
+        .eq('id', ownerId)
+        .maybeSingle();
+      if (ownerRes && !ownerRes.error && ownerRes.data) {
+        const ownerRow = ownerRes.data as {
+          full_name?: string | null;
+          phone_number?: string | null;
+        };
+        ownerName = ownerRow.full_name ?? null;
+        ownerPhone = ownerRow.phone_number ?? null;
+      }
+    } catch {
+      // Non-fatal: e.g. when profiles table is mocked or restricted
+    }
+  }
+
+  const localCurfew =
+    typeof localMeta?.curfew_time === 'string' && localMeta.curfew_time.trim()
+      ? localMeta.curfew_time.trim()
+      : null;
+
+  const resolvedCurfew = localMeta?.prefer_local
+    ? localCurfew
+    : (dbCurfew ?? localCurfew);
+
+  return {
+    curfew_time: resolvedCurfew,
+    owner_phone: ownerPhone,
+    owner_name: ownerName,
+  };
+}
+
+const MEAL_TIME_STORAGE_PREFIX = '@pgwala_meal_time:';
+const MEAL_SLOTS: MealType[] = ['breakfast', 'lunch', 'dinner'];
+
+async function readLocalMealTimeSafe(
+  propertyId: string,
+  dateIso: string,
+  mealType: MealType
+): Promise<string | null> {
+  try {
+    const raw = await AsyncStorage.getItem(
+      `${MEAL_TIME_STORAGE_PREFIX}${propertyId}:${dateIso}:${mealType}`
+    );
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('{') || trimmed.startsWith('"')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (typeof parsed === 'string') return parsed.trim() || null;
+        if (parsed && typeof parsed === 'object') {
+          const obj = parsed as { meal_time?: unknown; mealTime?: unknown; value?: unknown };
+          const val = obj.meal_time ?? obj.mealTime ?? obj.value;
+          return typeof val === 'string' && val.trim() ? val.trim() : null;
+        }
+      } catch {
+        // Fallback to plain trimmed string
+      }
+    }
+    return trimmed;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTodayMealTimesSafe(
+  propertyId: string,
+  dateIso: string
+): Promise<Partial<Record<MealType, string>>> {
+  const merged: Partial<Record<MealType, string>> = {};
+  try {
+    const res = await supabase
+      .from('food_menus')
+      .select('meal_type, meal_time')
+      .eq('property_id', propertyId)
+      .eq('menu_date', dateIso)
+      .eq('is_published', true);
+    if (res && !res.error && Array.isArray(res.data)) {
+      for (const row of res.data as { meal_type?: string | null; meal_time?: string | null }[]) {
+        const mt = row.meal_type;
+        const time = typeof row.meal_time === 'string' ? row.meal_time.trim() : '';
+        if ((mt === 'breakfast' || mt === 'lunch' || mt === 'dinner') && time) {
+          merged[mt] = time;
+        }
+      }
+    }
+  } catch {
+    // Non-fatal: e.g. when food_menus is mocked or meal_time column not yet migrated
+  }
+
+  const localResults = await Promise.all(
+    MEAL_SLOTS.map(async (slot) => {
+      if (merged[slot]) return [slot, merged[slot]] as const;
+      const local = await readLocalMealTimeSafe(propertyId, dateIso, slot);
+      return [slot, local] as const;
+    })
+  );
+  for (const [slot, val] of localResults) {
+    if (val && !merged[slot]) {
+      merged[slot] = val;
+    }
+  }
+  return merged;
+}
+
 // --- Student Dashboard Service Functions ---
 export async function fetchStudentDashboard(
   userId: string,
@@ -834,9 +1023,10 @@ export async function fetchStudentDashboard(
       });
     }
 
-    const propertyObj = Array.isArray(resData.property)
+    const rawProperty = Array.isArray(resData.property)
       ? resData.property[0]
       : resData.property;
+    const propertyObj = (rawProperty ?? null) as ResidentAccommodationInfo['property'];
 
     const residentInfo: ResidentAccommodationInfo = {
       id: resData.id,
@@ -846,35 +1036,46 @@ export async function fetchStudentDashboard(
       room_number: resData.room_number,
       phone_number: resData.phone_number,
       is_active: resData.is_active,
-      property: propertyObj || null,
+      property: propertyObj,
     };
 
     const resolvedMenus = createEmptyResidentMenus();
 
-    // 2. Fast Path: Composite summary RPC + outstanding dues + unread chat check in parallel
-    const [summaryRes, chargesRes, latestChatRes, lastSeenIso] = await Promise.all([
-      supabase.rpc('get_student_dashboard_summary', {
-        p_property_id: residentInfo.property_id,
-        p_resident_id: residentInfo.id,
-        p_date: todayIso,
-      }),
-      supabase
-        .from('charges')
-        .select('amount_paise')
-        .eq('resident_id', residentInfo.id)
-        .eq('status', 'outstanding'),
-      supabase
-        .from('property_chat_messages')
-        .select('created_at, resident_id')
-        .eq('property_id', residentInfo.property_id)
-        .neq('resident_id', residentInfo.id)
-        .eq('is_deleted', false)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle(),
-      AsyncStorage.getItem(getChatLastSeenStorageKey(residentInfo.property_id)),
-    ]);
+    // 2. Fast Path: Composite summary RPC + outstanding dues + unread chat check + safe property/owner/meal metadata in parallel
+    const [summaryRes, chargesRes, latestChatRes, lastSeenIso, propertyMeta, todayMealTimes] =
+      await Promise.all([
+        supabase.rpc('get_student_dashboard_summary', {
+          p_property_id: residentInfo.property_id,
+          p_resident_id: residentInfo.id,
+          p_date: todayIso,
+        }),
+        supabase
+          .from('charges')
+          .select('amount_paise')
+          .eq('resident_id', residentInfo.id)
+          .eq('status', 'outstanding'),
+        supabase
+          .from('property_chat_messages')
+          .select('created_at, resident_id')
+          .eq('property_id', residentInfo.property_id)
+          .neq('resident_id', residentInfo.id)
+          .eq('is_deleted', false)
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+        AsyncStorage.getItem(getChatLastSeenStorageKey(residentInfo.property_id)),
+        fetchPropertyCurfewAndOwner(
+          residentInfo.property_id,
+          propertyObj?.owner_id ?? null,
+          propertyObj?.curfew_time ?? null
+        ),
+        fetchTodayMealTimesSafe(residentInfo.property_id, todayIso),
+      ]);
     recordRoundTrip(traceLabel, 3);
+
+    residentInfo.curfew_time = propertyMeta.curfew_time;
+    residentInfo.owner_phone = propertyMeta.owner_phone;
+    residentInfo.owner_name = propertyMeta.owner_name;
 
     let pendingDuesPaise: number | null = null;
     if (!chargesRes.error && chargesRes.data) {
@@ -913,13 +1114,26 @@ export async function fetchStudentDashboard(
       }
     } else {
       // Fallback: Parallel queries if composite RPC is unavailable or returns an error
-      const [menuRes, movementRes] = await Promise.all([
-        supabase
+      const fetchMenusFallback = async () => {
+        const richMenuRes = await supabase
           .from('food_menus')
-          .select('id, meal_type, items, notes, is_published')
+          .select('id, meal_type, items, notes, is_published, meal_time')
           .eq('property_id', residentInfo.property_id)
           .eq('menu_date', todayIso)
-          .eq('is_published', true),
+          .eq('is_published', true);
+        if (richMenuRes.error && isMissingColumnError(richMenuRes.error)) {
+          return supabase
+            .from('food_menus')
+            .select('id, meal_type, items, notes, is_published')
+            .eq('property_id', residentInfo.property_id)
+            .eq('menu_date', todayIso)
+            .eq('is_published', true);
+        }
+        return richMenuRes;
+      };
+
+      const [menuRes, movementRes] = await Promise.all([
+        fetchMenusFallback(),
         supabase
           .from('movement_logs')
           .select('id, direction, event_time, purpose, expected_return_time, food_required, note')
@@ -944,6 +1158,13 @@ export async function fetchStudentDashboard(
         console.warn('[ResidentDashboard] Error fetching movement log:', movementRes.error.message);
       } else {
         latestGateRecord = (movementRes.data as ResidentMovementRecord) || null;
+      }
+    }
+
+    for (const slot of MEAL_SLOTS) {
+      const menuItem = resolvedMenus[slot];
+      if (menuItem && !menuItem.meal_time && todayMealTimes[slot]) {
+        resolvedMenus[slot] = { ...menuItem, meal_time: todayMealTimes[slot] };
       }
     }
 

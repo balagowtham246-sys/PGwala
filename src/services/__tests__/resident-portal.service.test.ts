@@ -99,6 +99,11 @@ describe('resident-portal.service', () => {
           emergencyContact: '9876543210',
           ownerName: 'Karthik Rajan',
           ownerPhone: '9988776655',
+          wifiSsid: null,
+          wifiPassword: null,
+          curfewTime: null,
+          wardenName: null,
+          wardenPhone: null,
         });
       }
     });
@@ -199,8 +204,207 @@ describe('resident-portal.service', () => {
             emergencyContact: 'Parent 9123456789',
             ownerName: 'Meena',
             ownerPhone: null,
+            wifiSsid: null,
+            wifiPassword: null,
+            curfewTime: null,
+            wardenName: null,
+            wardenPhone: null,
           });
         }
+      }
+    });
+
+    it('hydrates Wi-Fi, curfew, and active warden contact when configured on DB', async () => {
+      mockedFrom.mockImplementation((table: string) => {
+        if (table === 'residents') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: jest.fn().mockResolvedValue({
+                    data: {
+                      id: 'res-1',
+                      property_id: 'prop-1',
+                      room_number: '101',
+                      bed_label: 'Bed A',
+                      joining_date: '2026-08-01',
+                      monthly_rent_paise: 900000,
+                      deposit_paise: 1500000,
+                      emergency_contact: null,
+                      property: {
+                        name: 'Sunrise PG',
+                        address: '12 Anna Nagar',
+                        owner_id: 'owner-1',
+                        wifi_ssid: 'Sunrise-5G',
+                        wifi_password: 'wifi@2026',
+                        curfew_time: '22:30',
+                      },
+                    },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+
+        if (table === 'property_wardens') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: jest.fn().mockResolvedValue({
+                    data: { warden_profile_id: 'warden-1' },
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+
+        if (table === 'profiles') {
+          return {
+            select: () => ({
+              eq: (_col: string, id: string) => ({
+                maybeSingle: jest.fn().mockResolvedValue({
+                  data:
+                    id === 'owner-1'
+                      ? { full_name: 'Karthik Rajan', phone_number: '9988776655' }
+                      : id === 'warden-1'
+                        ? { full_name: 'Suresh Kumar', phone_number: '9876501234' }
+                        : null,
+                  error: null,
+                }),
+              }),
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected table: ${table}`);
+      });
+
+      const res = await fetchResidentAccommodation('user-1');
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.data).toMatchObject({
+          propertyName: 'Sunrise PG',
+          ownerName: 'Karthik Rajan',
+          ownerPhone: '9988776655',
+          wifiSsid: 'Sunrise-5G',
+          wifiPassword: 'wifi@2026',
+          curfewTime: '22:30',
+          wardenName: 'Suresh Kumar',
+          wardenPhone: '9876501234',
+        });
+      }
+    });
+
+    it('merges @pgwala_property_meta on unmigrated DB and falls back to null when unset or warden RLS-blocked', async () => {
+      await AsyncStorage.setItem(
+        '@pgwala_property_meta:prop-1',
+        JSON.stringify({
+          wifi_ssid: 'LocalPG-WiFi',
+          wifi_password: 'secret123',
+          curfew_time: '22:00',
+        })
+      );
+
+      mockedFrom.mockImplementation((table: string) => {
+        if (table === 'residents') {
+          return {
+            select: (cols: string) => {
+              const isRich = cols.includes('wifi_ssid');
+              return {
+                eq: () => ({
+                  eq: () => ({
+                    maybeSingle: jest.fn().mockResolvedValue(
+                      isRich
+                        ? {
+                            data: null,
+                            error: {
+                              code: '42703',
+                              message: 'column properties.wifi_ssid does not exist',
+                            },
+                          }
+                        : {
+                            data: {
+                              id: 'res-1',
+                              property_id: 'prop-1',
+                              room_number: '101',
+                              monthly_rent_paise: 800000,
+                              property: {
+                                name: 'Sunrise PG',
+                                address: null,
+                                owner_id: 'owner-1',
+                              },
+                            },
+                            error: null,
+                          }
+                    ),
+                  }),
+                }),
+              };
+            },
+          };
+        }
+
+        if (table === 'property_wardens') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  maybeSingle: jest.fn().mockResolvedValue({
+                    data: null,
+                    error: { code: '42501', message: 'permission denied for table property_wardens' },
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+
+        if (table === 'profiles') {
+          return {
+            select: () => ({
+              eq: () => ({
+                maybeSingle: jest.fn().mockResolvedValue({
+                  data: { full_name: 'Karthik Rajan', phone_number: null },
+                  error: null,
+                }),
+              }),
+            }),
+          };
+        }
+
+        throw new Error(`Unexpected table: ${table}`);
+      });
+
+      const localFallbackRes = await fetchResidentAccommodation('user-1');
+      expect(localFallbackRes.ok).toBe(true);
+      if (localFallbackRes.ok) {
+        expect(localFallbackRes.data).toMatchObject({
+          ownerName: 'Karthik Rajan',
+          ownerPhone: null,
+          wifiSsid: 'LocalPG-WiFi',
+          wifiPassword: 'secret123',
+          curfewTime: '22:00',
+          wardenName: null,
+          wardenPhone: null,
+        });
+      }
+
+      // Now clear local property meta and test null missing-state values
+      await AsyncStorage.removeItem('@pgwala_property_meta:prop-1');
+      const unsetRes = await fetchResidentAccommodation('user-1');
+      expect(unsetRes.ok).toBe(true);
+      if (unsetRes.ok) {
+        expect(unsetRes.data?.wifiSsid).toBeNull();
+        expect(unsetRes.data?.wifiPassword).toBeNull();
+        expect(unsetRes.data?.curfewTime).toBeNull();
+        expect(unsetRes.data?.wardenName).toBeNull();
+        expect(unsetRes.data?.wardenPhone).toBeNull();
       }
     });
   });
@@ -394,6 +598,96 @@ describe('resident-portal.service', () => {
         expect(res.data).toEqual({ byDate: {}, publishedDates: [] });
       }
       expect(mockedFrom).not.toHaveBeenCalled();
+    });
+
+    it('hydrates meal_time from DB and falls back to basic select + @pgwala_meal_time when unmigrated', async () => {
+      await AsyncStorage.setItem(
+        '@pgwala_meal_time:prop-1:2026-11-20:breakfast',
+        '08:00'
+      );
+
+      mockedFrom.mockImplementation((table: string) => {
+        if (table === 'food_menus') {
+          return {
+            select: (cols: string) => {
+              const hasMealTimeCol = cols.includes('meal_time');
+              return {
+                eq: () => ({
+                  eq: () => ({
+                    in: jest.fn().mockResolvedValue(
+                      hasMealTimeCol
+                        ? {
+                            data: null,
+                            error: {
+                              code: '42703',
+                              message: 'column food_menus.meal_time does not exist',
+                            },
+                          }
+                        : {
+                            data: [
+                              {
+                                id: 'm-1',
+                                menu_date: '2026-11-20',
+                                meal_type: 'breakfast',
+                                items: 'Idli, Sambar',
+                                notes: null,
+                              },
+                            ],
+                            error: null,
+                          }
+                    ),
+                  }),
+                }),
+              };
+            },
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      });
+
+      const fallbackRes = await fetchResidentMultiDayMenus('prop-1', ['2026-11-20']);
+      expect(fallbackRes.ok).toBe(true);
+      if (fallbackRes.ok) {
+        expect(fallbackRes.data.byDate['2026-11-20'].breakfast?.meal_time).toBe(
+          '08:00'
+        );
+      }
+
+      // Now simulate migrated DB returning meal_time directly
+      mockedFrom.mockImplementation((table: string) => {
+        if (table === 'food_menus') {
+          return {
+            select: () => ({
+              eq: () => ({
+                eq: () => ({
+                  in: jest.fn().mockResolvedValue({
+                    data: [
+                      {
+                        id: 'm-2',
+                        menu_date: '2026-11-20',
+                        meal_type: 'dinner',
+                        items: 'Chapati, Dal',
+                        notes: null,
+                        meal_time: '20:00',
+                      },
+                    ],
+                    error: null,
+                  }),
+                }),
+              }),
+            }),
+          };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      });
+
+      const migratedRes = await fetchResidentMultiDayMenus('prop-1', ['2026-11-20']);
+      expect(migratedRes.ok).toBe(true);
+      if (migratedRes.ok) {
+        expect(migratedRes.data.byDate['2026-11-20'].dinner?.meal_time).toBe(
+          '20:00'
+        );
+      }
     });
   });
 });

@@ -13,7 +13,6 @@ export const STUDENT_ROUTES = [
   'student-settings',
   'student-profile-edit',
   'student-accommodation',
-  'student-food-updates',
   'student-announcements',
   'student-notifications',
 ] as const;

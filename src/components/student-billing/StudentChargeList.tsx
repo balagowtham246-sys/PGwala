@@ -1,6 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
+import { isValidUpiId } from '@/lib/upi';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import { StudentBillCardItem } from '@/services/billing.service';
 
@@ -8,8 +9,12 @@ export interface StudentChargeListProps {
   currentRentBill: StudentBillCardItem | null;
   currentEbBill: StudentBillCardItem | null;
   breakdownExpanded: boolean;
+  ownerUpiId?: string | null;
+  ownerUpiPayeeName?: string | null;
+  propertyName?: string;
   onToggleBreakdown: () => void;
   onOpenPaymentModal: (bill: StudentBillCardItem) => void;
+  onPayNow?: (bill: StudentBillCardItem) => void;
   onOpenReceipt: (paymentId: string) => void;
 }
 
@@ -31,10 +36,16 @@ export function StudentChargeList({
   currentRentBill,
   currentEbBill,
   breakdownExpanded,
+  ownerUpiId,
+  ownerUpiPayeeName,
+  propertyName,
   onToggleBreakdown,
   onOpenPaymentModal,
+  onPayNow,
   onOpenReceipt,
 }: StudentChargeListProps) {
+  const canDirectPay = isValidUpiId(ownerUpiId);
+  const resolvedPayee = ownerUpiPayeeName?.trim() || propertyName?.trim() || '';
   const unpaidBills = [currentRentBill, currentEbBill].filter(
     (b): b is StudentBillCardItem => Boolean(b && b.status !== 'paid')
   );
@@ -57,6 +68,47 @@ export function StudentChargeList({
   const currentMonthLabel =
     currentRentBill?.month_label || currentEbBill?.month_label || 'This Month';
 
+  const renderUnpaidItemRow = (
+    bill: StudentBillCardItem,
+    labelPrefix: 'Rent' | 'EB'
+  ) => (
+    <View style={styles.itemActionInline}>
+      <Text style={styles.itemStatusMini}>
+        {bill.pending_report?.status === 'pending'
+          ? `${labelPrefix} proof under review`
+          : bill.pending_report?.status === 'rejected'
+          ? `${labelPrefix} proof rejected`
+          : `${labelPrefix} unpaid`}
+      </Text>
+      <View style={styles.itemActionLinks}>
+        {canDirectPay && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Pay ${labelPrefix} now via UPI`}
+            onPress={() => onPayNow?.(bill)}>
+            <Text style={styles.itemPayMiniLink}>Pay now</Text>
+          </Pressable>
+        )}
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => onOpenPaymentModal(bill)}>
+          <Text
+            style={
+              canDirectPay
+                ? styles.itemUploadMiniLink
+                : styles.itemPayMiniLink
+            }>
+            {bill.pending_report?.status === 'rejected'
+              ? 'Resubmit ›'
+              : canDirectPay
+              ? 'Upload proof ›'
+              : 'Upload Payment Proof ›'}
+          </Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+
   return (
     <>
       {/* HERO STATUS FIRST */}
@@ -73,7 +125,7 @@ export function StudentChargeList({
               : styles.heroStatusAmountDue,
           ]}>
           {totalDuePaise === 0
-            ? 'All clear'
+            ? 'All dues settled'
             : `${formatPaiseToRupees(totalDuePaise)} due`}
         </Text>
         <Text style={styles.heroStatusSub}>
@@ -85,18 +137,53 @@ export function StudentChargeList({
             ? `Pay before ${formatDate(earliestDueDate)}`
             : 'Pending payment for this month'}
         </Text>
-        {unpaidBills.length > 0 && (
-          <Pressable
-            style={({ pressed }) => [
-              styles.heroPayBtn,
-              pressed && styles.pressed,
-            ]}
-            onPress={() => onOpenPaymentModal(unpaidBills[0])}>
-            <Text style={styles.heroPayBtnText}>
-              Pay via UPI & Upload Proof
-            </Text>
-          </Pressable>
-        )}
+        {unpaidBills.length > 0 &&
+          (canDirectPay ? (
+            <View style={styles.heroPayActions}>
+              <Text style={styles.upiPayeeHint} numberOfLines={1}>
+                UPI: {ownerUpiId?.trim()}
+                {resolvedPayee ? ` • ${resolvedPayee}` : ''}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Pay now via UPI"
+                style={({ pressed }) => [
+                  styles.heroPayBtn,
+                  pressed && styles.pressed,
+                ]}
+                onPress={() => onPayNow?.(unpaidBills[0])}>
+                <Text style={styles.heroPayBtnText}>Pay now</Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                hitSlop={6}
+                style={({ pressed }) => [
+                  styles.heroSecondaryLinkWrap,
+                  pressed && styles.pressed,
+                ]}
+                onPress={() => onOpenPaymentModal(unpaidBills[0])}>
+                <Text style={styles.heroSecondaryLinkText}>
+                  Already paid? Upload proof
+                </Text>
+              </Pressable>
+            </View>
+          ) : (
+            <View style={styles.heroPayActions}>
+              <Text style={styles.upiMissingNote}>
+                Pay by QR or ask the owner
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Upload Payment Proof"
+                style={({ pressed }) => [
+                  styles.heroPayBtn,
+                  pressed && styles.pressed,
+                ]}
+                onPress={() => onOpenPaymentModal(unpaidBills[0])}>
+                <Text style={styles.heroPayBtnText}>Upload Payment Proof</Text>
+              </Pressable>
+            </View>
+          ))}
       </View>
 
       {/* MERGED MONTHLY TOTAL CARD */}
@@ -171,26 +258,8 @@ export function StudentChargeList({
                       </Text>
                     </View>
                   )}
-                  {currentRentBill.status !== 'paid' && (
-                    <View style={styles.itemActionInline}>
-                      <Text style={styles.itemStatusMini}>
-                        {currentRentBill.pending_report?.status === 'pending'
-                          ? 'Rent proof under review'
-                          : currentRentBill.pending_report?.status ===
-                            'rejected'
-                          ? 'Rent proof rejected'
-                          : 'Rent unpaid'}
-                      </Text>
-                      <Pressable
-                        onPress={() => onOpenPaymentModal(currentRentBill)}>
-                        <Text style={styles.itemPayMiniLink}>
-                          {currentRentBill.pending_report?.status === 'rejected'
-                            ? 'Resubmit ›'
-                            : 'Pay Rent ›'}
-                        </Text>
-                      </Pressable>
-                    </View>
-                  )}
+                  {currentRentBill.status !== 'paid' &&
+                    renderUnpaidItemRow(currentRentBill, 'Rent')}
                 </>
               )}
 
@@ -204,25 +273,8 @@ export function StudentChargeList({
                       {formatPaiseToRupees(currentEbBill.total_paise)}
                     </Text>
                   </View>
-                  {currentEbBill.status !== 'paid' && (
-                    <View style={styles.itemActionInline}>
-                      <Text style={styles.itemStatusMini}>
-                        {currentEbBill.pending_report?.status === 'pending'
-                          ? 'EB proof under review'
-                          : currentEbBill.pending_report?.status === 'rejected'
-                          ? 'EB proof rejected'
-                          : 'EB unpaid'}
-                      </Text>
-                      <Pressable
-                        onPress={() => onOpenPaymentModal(currentEbBill)}>
-                        <Text style={styles.itemPayMiniLink}>
-                          {currentEbBill.pending_report?.status === 'rejected'
-                            ? 'Resubmit ›'
-                            : 'Pay EB ›'}
-                        </Text>
-                      </Pressable>
-                    </View>
-                  )}
+                  {currentEbBill.status !== 'paid' &&
+                    renderUnpaidItemRow(currentEbBill, 'EB')}
                 </>
               )}
 
@@ -261,10 +313,11 @@ export function StudentChargeList({
 
 const styles = StyleSheet.create({
   heroStatusCard: {
-    borderRadius: 16,
-    padding: 20,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
     borderWidth: 1,
-    marginBottom: 14,
+    marginBottom: 12,
   },
   heroStatusClear: {
     backgroundColor: '#F0FDF4',
@@ -275,7 +328,7 @@ const styles = StyleSheet.create({
     borderColor: '#FDE68A',
   },
   heroStatusAmount: {
-    fontSize: 28,
+    fontSize: 20,
     fontWeight: '800',
   },
   heroStatusAmountClear: {
@@ -285,21 +338,43 @@ const styles = StyleSheet.create({
     color: '#B45309',
   },
   heroStatusSub: {
-    fontSize: 13,
+    fontSize: 12,
     color: '#475569',
-    marginTop: 4,
+    marginTop: 2,
+  },
+  heroPayActions: {
+    marginTop: 10,
+    gap: 6,
+  },
+  upiPayeeHint: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  },
+  upiMissingNote: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
   },
   heroPayBtn: {
-    marginTop: 14,
     backgroundColor: '#0284C7',
-    borderRadius: 12,
-    paddingVertical: 13,
+    borderRadius: 10,
+    paddingVertical: 10,
     alignItems: 'center',
   },
   heroPayBtnText: {
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
+  },
+  heroSecondaryLinkWrap: {
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  heroSecondaryLinkText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
   },
   billCard: {
     backgroundColor: '#FFFFFF',
@@ -415,10 +490,20 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: '#64748B',
   },
+  itemActionLinks: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
   itemPayMiniLink: {
     fontSize: 12,
     fontWeight: '700',
     color: '#0284C7',
+  },
+  itemUploadMiniLink: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
   },
   totalRow: {
     paddingTop: 8,

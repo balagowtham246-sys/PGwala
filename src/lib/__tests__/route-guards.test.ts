@@ -160,12 +160,13 @@ describe('navigation-guards', () => {
       ).toBe('/resident-tabs');
     });
 
-    it('lets owners reach warden management and residents reach food updates', () => {
+    it('lets owners reach warden management and retires student-food-updates in favor of student-announcements and student-menu', () => {
       expect(
         evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'owner-wardens' })
       ).toBeNull();
+      expect((STUDENT_ROUTES as readonly string[]).includes('student-food-updates')).toBe(false);
       expect(
-        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'student-food-updates' })
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'student-menu' })
       ).toBeNull();
       expect(
         evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'residents-directory' })

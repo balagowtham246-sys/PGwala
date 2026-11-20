@@ -2,11 +2,13 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RealtimeChannel } from '@supabase/supabase-js';
 import * as Notifications from 'expo-notifications';
 import { ChevronRight, Disc3 } from 'lucide-react-native';
@@ -17,6 +19,7 @@ import { useToast } from '@/context/toast-context';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import {
   fetchWashingMachineStatus,
+  formatCountdown,
   getRemainingWashSeconds,
   releaseWashingMachineUnit,
   requestWashingMachineAccess,
@@ -50,6 +53,18 @@ interface WashingMachineCardProps {
 
 let wmChannelSequence = 0;
 
+interface QueueStoragePayload {
+  joined: boolean;
+  notifId: string | null;
+}
+
+interface QueueState extends QueueStoragePayload {
+  propertyId: string | null;
+}
+
+const getQueueStorageKey = (propertyId: string) =>
+  `@pgwala_wm_queue:${propertyId}`;
+
 export function WashingMachineCard({
   propertyId,
   userRole,
@@ -72,11 +87,140 @@ export function WashingMachineCard({
   const [isSubscribed, setIsSubscribed] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [notifyMap, setNotifyMap] = useState<Record<string, string>>({});
+  const [queueState, setQueueState] = useState<QueueState>({
+    propertyId: null,
+    joined: false,
+    notifId: null,
+  });
+  const [queueHydratedPropertyId, setQueueHydratedPropertyId] = useState<
+    string | null
+  >(null);
+  const [queueActionLoading, setQueueActionLoading] = useState(false);
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const isMountedRef = useRef(true);
+  const queueActionLockRef = useRef(false);
 
+  const activeMachines = machines.filter((m) => m.is_active);
+  const freeMachines = activeMachines.filter((m) => m.status === 'free');
+  const inUseMachines = activeMachines.filter((m) => m.status === 'in_use');
+  const myOccupiedMachine = machines.find(
+    (m) => currentResidentId && m.current_resident_id === currentResidentId
+  );
+  const isUserWashing = Boolean(myOccupiedMachine);
+  const hasFree = freeMachines.length > 0;
+  const freeCount = freeMachines.length;
+  const firstFreeMachineName =
+    freeMachines[0]?.machine_name || 'A washing machine';
+  const inQueue = Boolean(
+    propertyId && queueState.propertyId === propertyId && queueState.joined
+  );
+  const queueEligible =
+    userRole === 'student' &&
+    !isUserWashing &&
+    residentEnabled &&
+    activeMachines.length > 0 &&
+    freeCount === 0;
   const anyInUse = machines.some((m) => m.status === 'in_use');
+
+  useEffect(() => {
+    if (!propertyId) return;
+    let cancelled = false;
+
+    void (async () => {
+      let parsed: QueueStoragePayload | null = null;
+      try {
+        const raw = await AsyncStorage.getItem(getQueueStorageKey(propertyId));
+        if (raw) {
+          parsed = JSON.parse(raw) as QueueStoragePayload;
+        }
+      } catch {
+        // Ignore AsyncStorage read errors
+      }
+      if (cancelled || !isMountedRef.current) return;
+      setQueueState((prev) =>
+        prev.propertyId === propertyId && prev.joined
+          ? prev
+          : {
+              propertyId,
+              joined: Boolean(parsed?.joined),
+              notifId: parsed?.notifId ?? null,
+            }
+      );
+      setQueueHydratedPropertyId(propertyId);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [propertyId]);
+
+  useEffect(() => {
+    if (!propertyId || loading || queueHydratedPropertyId !== propertyId) {
+      return;
+    }
+    if (!inQueue || activeMachines.length === 0) return;
+
+    const hasFreeMachine = freeCount > 0;
+    if (!hasFreeMachine && !isUserWashing && residentEnabled) return;
+
+    const notifIdToCancel = queueState.notifId;
+    const shouldNotifyFree = hasFreeMachine && !isUserWashing && residentEnabled;
+
+    const timer = setTimeout(() => {
+      setQueueState({ propertyId, joined: false, notifId: null });
+      void AsyncStorage.removeItem(getQueueStorageKey(propertyId)).catch(
+        () => {}
+      );
+
+      if (
+        notifIdToCancel &&
+        notifIdToCancel !== 'in_app_only' &&
+        Platform.OS !== 'web'
+      ) {
+        void Notifications.cancelScheduledNotificationAsync(
+          notifIdToCancel
+        ).catch(() => {});
+      }
+
+      if (shouldNotifyFree) {
+        showToast('A washing machine is now free!');
+        if (Platform.OS !== 'web') {
+          void (async () => {
+            try {
+              const { status } = await Notifications.getPermissionsAsync();
+              if (status === 'granted') {
+                await Notifications.scheduleNotificationAsync({
+                  content: {
+                    title: 'A washing machine is now free!',
+                    body: `${firstFreeMachineName} is free to start your wash.`,
+                    sound: true,
+                  },
+                  trigger: null,
+                });
+              }
+            } catch {
+              // Non-fatal local notification failure
+            }
+          })();
+        }
+      }
+    }, 0);
+
+    return () => clearTimeout(timer);
+  }, [
+    propertyId,
+    loading,
+    queueHydratedPropertyId,
+    inQueue,
+    activeMachines.length,
+    freeCount,
+    firstFreeMachineName,
+    isUserWashing,
+    residentEnabled,
+    queueState.notifId,
+    showToast,
+  ]);
 
   useEffect(() => {
     if (!anyInUse) return;
@@ -326,6 +470,19 @@ export function WashingMachineCard({
   const handleStartUsing = async (targetMachineId?: string) => {
     if (!propertyId || actionLoading) return;
 
+    if (userRole === 'student' && currentResidentId) {
+      const activeUnit = machines.find(
+        (m) => m.current_resident_id === currentResidentId && m.status === 'in_use'
+      );
+      if (activeUnit) {
+        Alert.alert(
+          'Wash Already Running',
+          `You are already using ${activeUnit.machine_name}. Mark it free before starting another machine.`
+        );
+        return;
+      }
+    }
+
     if (userRole === 'student' && !residentEnabled) {
       Alert.alert(
         'Access Required',
@@ -424,17 +581,116 @@ export function WashingMachineCard({
     );
   };
 
+  const handleJoinQueue = async () => {
+    if (!propertyId || !queueEligible || inQueue || queueActionLockRef.current) {
+      return;
+    }
+    queueActionLockRef.current = true;
+    setQueueActionLoading(true);
+    try {
+      const busyList =
+        inUseMachines.length > 0 ? inUseMachines : activeMachines;
+      const earliest = busyList.reduce((best, curr) =>
+        getRemainingWashSeconds(curr.started_at) <
+        getRemainingWashSeconds(best.started_at)
+          ? curr
+          : best
+      );
+      const earliestRemainingSec = getRemainingWashSeconds(earliest.started_at);
+      const triggerSeconds = Math.max(10, earliestRemainingSec);
+
+      let notifId: string | null = null;
+      if (Platform.OS !== 'web') {
+        try {
+          const { status } = await Notifications.getPermissionsAsync();
+          let finalStatus = status;
+          if (status !== 'granted') {
+            const req = await Notifications.requestPermissionsAsync();
+            finalStatus = req.status;
+          }
+          if (finalStatus === 'granted') {
+            notifId = await Notifications.scheduleNotificationAsync({
+              content: {
+                title: `${earliest.machine_name} should be free soon`,
+                body: 'The current wash cycle is finishing — check PGwala now.',
+              },
+              trigger: {
+                type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+                seconds: triggerSeconds,
+                repeats: false,
+              },
+            });
+          }
+        } catch {
+          // Fall back to in-app queue state if local notifications fail
+        }
+      }
+
+      if (!isMountedRef.current) return;
+      setQueueState({ propertyId, joined: true, notifId });
+      setQueueHydratedPropertyId(propertyId);
+      await AsyncStorage.setItem(
+        getQueueStorageKey(propertyId),
+        JSON.stringify({ joined: true, notifId })
+      ).catch(() => {});
+
+      showToast("Joined queue — we'll notify you when a machine is free");
+    } finally {
+      queueActionLockRef.current = false;
+      if (isMountedRef.current) {
+        setQueueActionLoading(false);
+      }
+    }
+  };
+
+  const handleLeaveQueue = async () => {
+    if (!propertyId || !inQueue || queueActionLockRef.current) {
+      return;
+    }
+    queueActionLockRef.current = true;
+    setQueueActionLoading(true);
+    try {
+      const existingNotifId = queueState.notifId;
+      if (
+        existingNotifId &&
+        existingNotifId !== 'in_app_only' &&
+        Platform.OS !== 'web'
+      ) {
+        await Notifications.cancelScheduledNotificationAsync(
+          existingNotifId
+        ).catch(() => {});
+      }
+
+      if (!isMountedRef.current) return;
+      setQueueState({ propertyId, joined: false, notifId: null });
+      await AsyncStorage.removeItem(getQueueStorageKey(propertyId)).catch(
+        () => {}
+      );
+      showToast('Left washing machine queue');
+    } finally {
+      queueActionLockRef.current = false;
+      if (isMountedRef.current) {
+        setQueueActionLoading(false);
+      }
+    }
+  };
+
   if (!propertyId) {
     return null;
   }
 
-  // Active units calculation
-  const activeMachines = machines.filter((m) => m.is_active);
-  const freeMachines = activeMachines.filter((m) => m.status === 'free');
-  const inUseMachines = activeMachines.filter((m) => m.status === 'in_use');
-  const myOccupiedMachine = machines.find(
-    (m) => currentResidentId && m.current_resident_id === currentResidentId
-  );
+  const earliestBusyMachine =
+    inUseMachines.length > 0
+      ? inUseMachines.reduce((best, curr) =>
+          formatCountdown(curr.started_at, nowMs).remainingSeconds <
+          formatCountdown(best.started_at, nowMs).remainingSeconds
+            ? curr
+            : best
+        )
+      : null;
+  const earliestWaitLabel = earliestBusyMachine
+    ? formatCountdown(earliestBusyMachine.started_at, nowMs).label
+    : null;
 
   const modalElement = (
     <MachineBookingModal
@@ -446,17 +702,23 @@ export function WashingMachineCard({
       userRole={userRole}
       currentResidentId={currentResidentId}
       residentEnabled={residentEnabled}
+      hasActiveSession={Boolean(myOccupiedMachine)}
       requestStatus={requestStatus}
       requestingAccess={requestingAccess}
       actionLoading={actionLoading}
       actionUnitId={actionUnitId}
       nowMs={nowMs}
       notifyMap={notifyMap}
+      inQueue={inQueue}
+      queueActionLoading={queueActionLoading}
+      earliestWaitLabel={earliestWaitLabel}
       onClose={() => setPopupVisible(false)}
       onRequestAccess={handleRequestAccess}
       onStartUsing={handleStartUsing}
       onMarkFree={handleMarkFree}
       onToggleNotify={handleToggleNotify}
+      onJoinQueue={() => void handleJoinQueue()}
+      onLeaveQueue={() => void handleLeaveQueue()}
     />
   );
 
@@ -464,9 +726,6 @@ export function WashingMachineCard({
   // COMPACT MODE (e.g. Embedded Side-by-Side in Student Dashboard)
   // ---------------------------------------------------------------------------
   if (compact) {
-    const hasFree = freeMachines.length > 0;
-    const isUserWashing = Boolean(myOccupiedMachine);
-
     return (
       <Pressable
         accessibilityRole="button"
@@ -543,21 +802,55 @@ export function WashingMachineCard({
                 : 'Owner enablement required'
               : hasFree
               ? `${freeMachines.length} of ${activeMachines.length} available`
+              : inQueue
+              ? 'In queue • Notify when free'
               : 'All machines are currently busy'}
           </Text>
         </View>
 
         {/* Action Button Row */}
-        <View style={styles.compactTouchPill}>
-          <Text style={styles.compactTouchPillText}>
-            {isUserWashing
-              ? 'Manage Wash'
-              : !residentEnabled
-              ? 'Request Access'
-              : 'Choose Machine'}
-          </Text>
-          <ChevronRight size={13} color="#0284C7" />
-        </View>
+        {queueEligible && !inQueue ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Join washing machine queue"
+            disabled={queueActionLoading}
+            style={({ pressed }) => [
+              styles.compactTouchPill,
+              pressed && styles.btnPressed,
+              queueActionLoading && styles.btnDisabled,
+            ]}
+            onPress={(e) => {
+              e?.stopPropagation?.();
+              void handleJoinQueue();
+            }}>
+            <Text style={styles.compactTouchPillText}>Join queue</Text>
+            <ChevronRight size={13} color="#0284C7" />
+          </Pressable>
+        ) : (
+          <View
+            style={[
+              styles.compactTouchPill,
+              queueEligible && inQueue && styles.compactTouchPillQueued,
+            ]}>
+            <Text
+              style={[
+                styles.compactTouchPillText,
+                queueEligible && inQueue && styles.compactTouchPillTextQueued,
+              ]}>
+              {isUserWashing
+                ? 'Manage Wash'
+                : !residentEnabled
+                ? 'Request Access'
+                : queueEligible && inQueue
+                ? 'In queue'
+                : 'Choose Machine'}
+            </Text>
+            <ChevronRight
+              size={13}
+              color={queueEligible && inQueue ? '#15803D' : '#0284C7'}
+            />
+          </View>
+        )}
 
         {/* Attach the interactive popup modal */}
         {modalElement}
@@ -666,6 +959,7 @@ export function WashingMachineCard({
               userRole={userRole}
               currentResidentId={currentResidentId}
               residentEnabled={residentEnabled}
+              hasActiveSession={Boolean(myOccupiedMachine)}
               actionLoading={actionLoading}
               actionUnitId={actionUnitId}
               nowMs={nowMs}
@@ -768,6 +1062,13 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
     color: '#0284C7',
+  },
+  compactTouchPillQueued: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+  },
+  compactTouchPillTextQueued: {
+    color: '#15803D',
   },
   headerRow: {
     flexDirection: 'row',

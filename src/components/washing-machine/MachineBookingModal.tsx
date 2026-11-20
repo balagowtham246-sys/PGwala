@@ -25,17 +25,23 @@ export interface MachineBookingModalProps {
   userRole: 'owner' | 'student';
   currentResidentId?: string | null;
   residentEnabled: boolean;
+  hasActiveSession?: boolean;
   requestStatus: WashingMachineRequestStatus;
   requestingAccess: boolean;
   actionLoading: boolean;
   actionUnitId: string | null;
   nowMs: number;
   notifyMap: Record<string, string>;
+  inQueue?: boolean;
+  queueActionLoading?: boolean;
+  earliestWaitLabel?: string | null;
   onClose: () => void;
   onRequestAccess: () => void;
   onStartUsing: (machineId: string) => void;
   onMarkFree: (machineId: string) => void;
   onToggleNotify: (unit: WashingMachineUnitData) => void;
+  onJoinQueue?: () => void;
+  onLeaveQueue?: () => void;
 }
 
 export function MachineBookingModal({
@@ -47,18 +53,36 @@ export function MachineBookingModal({
   userRole,
   currentResidentId,
   residentEnabled,
+  hasActiveSession = false,
   requestStatus,
   requestingAccess,
   actionLoading,
   actionUnitId,
   nowMs,
   notifyMap,
+  inQueue = false,
+  queueActionLoading = false,
+  earliestWaitLabel = null,
   onClose,
   onRequestAccess,
   onStartUsing,
   onMarkFree,
   onToggleNotify,
+  onJoinQueue,
+  onLeaveQueue,
 }: MachineBookingModalProps) {
+  const isUserWashing = Boolean(
+    currentResidentId &&
+      activeMachines.some((m) => m.current_resident_id === currentResidentId)
+  );
+  const showQueueBanner =
+    !loading &&
+    userRole === 'student' &&
+    residentEnabled &&
+    activeMachines.length > 0 &&
+    freeCount === 0 &&
+    !isUserWashing;
+
   return (
     <Modal
       visible={visible}
@@ -124,6 +148,68 @@ export function MachineBookingModal({
             </View>
           )}
 
+          {/* All-busy Queue Banner */}
+          {showQueueBanner && (
+            <View
+              style={[
+                styles.modalQueueBanner,
+                inQueue && styles.modalQueueBannerActive,
+              ]}>
+              <View style={styles.modalQueueTextWrap}>
+                <Text
+                  style={[
+                    styles.modalQueueTitle,
+                    inQueue && styles.modalQueueTitleActive,
+                  ]}>
+                  {inQueue ? 'In washing queue' : 'All machines are busy'}
+                </Text>
+                <Text
+                  style={[
+                    styles.modalQueueSub,
+                    inQueue && styles.modalQueueSubActive,
+                  ]}>
+                  {inQueue
+                    ? earliestWaitLabel === 'Finishing soon'
+                      ? 'Earliest machine is finishing soon. We will notify you when a machine is free.'
+                      : earliestWaitLabel
+                      ? `We will notify you when a machine is free (earliest ${earliestWaitLabel}).`
+                      : 'We will notify you as soon as a machine is free.'
+                    : earliestWaitLabel === 'Finishing soon'
+                    ? 'Earliest machine is finishing soon. Join the queue to get notified when free.'
+                    : earliestWaitLabel
+                    ? `Earliest machine has ${earliestWaitLabel}. Join the queue to get notified when free.`
+                    : 'Join the queue to get notified when a machine is free.'}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={inQueue ? 'Leave queue' : 'Join queue'}
+                disabled={queueActionLoading}
+                style={({ pressed }) => [
+                  styles.modalQueueBtn,
+                  inQueue ? styles.modalLeaveQueueBtn : styles.modalJoinQueueBtn,
+                  pressed && styles.btnPressed,
+                  queueActionLoading && styles.btnDisabled,
+                ]}
+                onPress={inQueue ? onLeaveQueue : onJoinQueue}>
+                {queueActionLoading ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={inQueue ? '#B45309' : '#FFFFFF'}
+                  />
+                ) : (
+                  <Text
+                    style={[
+                      styles.modalQueueBtnText,
+                      inQueue && styles.modalLeaveQueueBtnText,
+                    ]}>
+                    {inQueue ? 'Leave queue' : 'Join queue'}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
+          )}
+
           {/* Unit List */}
           <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
             {activeMachines.length === 0 ? (
@@ -143,6 +229,7 @@ export function MachineBookingModal({
                   userRole={userRole}
                   currentResidentId={currentResidentId}
                   residentEnabled={residentEnabled}
+                  hasActiveSession={hasActiveSession}
                   actionLoading={actionLoading}
                   actionUnitId={actionUnitId}
                   nowMs={nowMs}
@@ -256,6 +343,66 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  modalQueueBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    backgroundColor: '#F0F9FF',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    marginBottom: 12,
+  },
+  modalQueueBannerActive: {
+    backgroundColor: '#F0FDF4',
+    borderColor: '#BBF7D0',
+  },
+  modalQueueTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  modalQueueTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#0369A1',
+  },
+  modalQueueTitleActive: {
+    color: '#15803D',
+  },
+  modalQueueSub: {
+    fontSize: 11,
+    color: '#0C4A6E',
+    lineHeight: 15,
+  },
+  modalQueueSubActive: {
+    color: '#166534',
+  },
+  modalQueueBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 88,
+  },
+  modalJoinQueueBtn: {
+    backgroundColor: '#0284C7',
+  },
+  modalLeaveQueueBtn: {
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  modalQueueBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  modalLeaveQueueBtnText: {
+    color: '#B45309',
   },
   btnPressed: {
     opacity: 0.8,

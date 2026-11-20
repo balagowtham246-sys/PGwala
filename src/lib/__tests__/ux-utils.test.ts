@@ -2,15 +2,20 @@ import {
   calculateProRataFinalBillPaise,
   findDuplicatePhones,
   formatGateEventTimestamp,
+  formatHhMmTo12h,
   formatIsoDateDisplay,
   formatPropertyGenderLabel,
   formatRoomLabel,
   inferPropertyGender,
   isPropertyCompatibleWithGender,
+  isReturnAfterCurfew,
   maskIndianPhone,
   normalizeDishName,
   normalizeRoomCode,
+  normalizeTimeMeridiemLowercase,
   parseDishList,
+  parseTimeToMinutes,
+  resolveExpectedReturnDate,
   serializeDishList,
   sortRoomCodes,
   toSentenceCaseStatus,
@@ -115,5 +120,28 @@ describe('ux-utils', () => {
     expect(normalizeRoomCode('ROOM B')).toBe('B');
     expect(formatRoomLabel('Room Room A')).toBe('Room A');
     expect(formatRoomLabel('101')).toBe('Room 101');
+  });
+
+  it('normalizes meridiem to lowercase and validates return times against curfew', () => {
+    expect(normalizeTimeMeridiemLowercase('Evening (~8:00 PM)')).toBe('Evening (~8:00 pm)');
+    expect(normalizeTimeMeridiemLowercase('10:24 AM')).toBe('10:24 am');
+    expect(formatHhMmTo12h('20:00')).toBe('8:00 pm');
+    expect(formatHhMmTo12h('07:30')).toBe('7:30 am');
+    expect(formatHhMmTo12h('')).toBe('');
+    expect(parseTimeToMinutes('Evening (~8:00 pm)')).toBe(20 * 60);
+    expect(parseTimeToMinutes('22:30')).toBe(22 * 60 + 30);
+
+    const departed = new Date(2026, 10, 20, 14, 0, 0).toISOString();
+    const resolved = resolveExpectedReturnDate('Night (~10:00 pm)', departed);
+    expect(resolved?.getHours()).toBe(22);
+    expect(resolved?.getDate()).toBe(20);
+
+    const tomorrowResolved = resolveExpectedReturnDate('Tomorrow morning', departed);
+    expect(tomorrowResolved?.getDate()).toBe(21);
+
+    expect(isReturnAfterCurfew('Night (~10:00 pm)', null)).toBe(false);
+    expect(isReturnAfterCurfew('Evening (~8:00 pm)', '22:00')).toBe(false);
+    expect(isReturnAfterCurfew('Late Night (~11:30 pm)', '22:00')).toBe(true);
+    expect(isReturnAfterCurfew('Tomorrow morning', '22:00')).toBe(true);
   });
 });

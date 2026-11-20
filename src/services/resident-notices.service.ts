@@ -4,6 +4,8 @@ import {
   alertHeadline,
   FoodAlertStatus,
   FoodMealType,
+  formatFoodAlertBody,
+  isFoodAlertExpired,
 } from '@/lib/food-alert-utils';
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
 import { getCachedEntry, invalidatePrefix, setCached } from '@/lib/query-cache';
@@ -33,6 +35,92 @@ export interface ResidentUnreadNoticesSummary {
 export const RESIDENT_NOTICES_CACHE_PREFIX = 'resident-notices:';
 const READ_IDS_PREFIX = '@pgwala_resident_notices_read:';
 const LOCAL_ANNOUNCEMENTS_PREFIX = '@pgwala_announcements:';
+const LOCAL_MEAL_TIME_PREFIX = '@pgwala_meal_time:';
+const MEAL_TYPES: readonly FoodMealType[] = ['breakfast', 'lunch', 'dinner'];
+
+function toLocalIsoDate(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+async function readLocalMealTime(
+  propertyId: string,
+  dateIso: string,
+  mealType: FoodMealType
+): Promise<string | null> {
+  try {
+    const raw = await AsyncStorage.getItem(
+      `${LOCAL_MEAL_TIME_PREFIX}${propertyId}:${dateIso}:${mealType}`
+    );
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('{') || trimmed.startsWith('"')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (typeof parsed === 'string') return parsed.trim() || null;
+        if (parsed && typeof parsed === 'object') {
+          const obj = parsed as {
+            meal_time?: unknown;
+            mealTime?: unknown;
+            value?: unknown;
+          };
+          const val = obj.meal_time ?? obj.mealTime ?? obj.value;
+          return typeof val === 'string' && val.trim() ? val.trim() : null;
+        }
+      } catch {
+        // Fall back to plain string value
+      }
+    }
+    return trimmed;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchTodayMealTimes(
+  propertyId: string,
+  todayIso: string
+): Promise<Partial<Record<FoodMealType, string>>> {
+  const merged: Partial<Record<FoodMealType, string>> = {};
+  try {
+    const res = await supabase
+      .from('food_menus')
+      .select('meal_type, meal_time')
+      .eq('property_id', propertyId)
+      .eq('menu_date', todayIso);
+    if (!res.error && Array.isArray(res.data)) {
+      for (const row of res.data as {
+        meal_type?: string | null;
+        meal_time?: string | null;
+      }[]) {
+        const mt = row.meal_type;
+        const time = typeof row.meal_time === 'string' ? row.meal_time.trim() : '';
+        if ((mt === 'breakfast' || mt === 'lunch' || mt === 'dinner') && time) {
+          merged[mt] = time;
+        }
+      }
+    }
+  } catch {
+    // Ignore missing columns / unmigrated DBs / mock rejections gracefully
+  }
+
+  const localFallbacks = await Promise.all(
+    MEAL_TYPES.map(async (mealType) => {
+      if (merged[mealType]) return [mealType, merged[mealType]] as const;
+      const local = await readLocalMealTime(propertyId, todayIso, mealType);
+      return [mealType, local] as const;
+    })
+  );
+  for (const [mealType, val] of localFallbacks) {
+    if (val && !merged[mealType]) {
+      merged[mealType] = val;
+    }
+  }
+  return merged;
+}
 
 function readIdsKey(userId: string, propertyId: string): string {
   return `${READ_IDS_PREFIX}${userId}:${propertyId}`;
@@ -132,22 +220,25 @@ export async function fetchResidentNotices(
   const traceLabel = `resident-notices:fetch:${propertyId}`;
   startTrace(traceLabel);
   try {
-    const [announcementsRes, localAnnouncements, foodRes, readSet] = await Promise.all([
-      supabase
-        .from('announcements')
-        .select('id, property_id, title, message, audience, room_number, created_at')
-        .eq('property_id', propertyId)
-        .order('created_at', { ascending: false })
-        .limit(30),
-      readLocalAnnouncements(propertyId),
-      supabase
-        .from('food_alerts')
-        .select('id, meal_type, status, message, created_at')
-        .order('created_at', { ascending: false })
-        .limit(30),
-      getReadSet(userId, propertyId),
-    ]);
-    recordRoundTrip(traceLabel, 2);
+    const todayIso = toLocalIsoDate();
+    const [announcementsRes, localAnnouncements, foodRes, mealTimes, readSet] =
+      await Promise.all([
+        supabase
+          .from('announcements')
+          .select('id, property_id, title, message, audience, room_number, created_at')
+          .eq('property_id', propertyId)
+          .order('created_at', { ascending: false })
+          .limit(30),
+        readLocalAnnouncements(propertyId),
+        supabase
+          .from('food_alerts')
+          .select('id, meal_type, status, message, created_at')
+          .order('created_at', { ascending: false })
+          .limit(30),
+        fetchTodayMealTimes(propertyId, todayIso),
+        getReadSet(userId, propertyId),
+      ]);
+    recordRoundTrip(traceLabel, 3);
 
     const annFailed = announcementsRes.error && !isMissingNoticeSchema(announcementsRes.error);
     const foodFailed = foodRes.error && !isMissingNoticeSchema(foodRes.error);
@@ -212,13 +303,20 @@ export async function fetchResidentNotices(
         created_at: string;
       }[]) {
         const noticeId = `food:${row.id}`;
+        const mealTime = mealTimes[row.meal_type] ?? null;
+        const expired = isFoodAlertExpired(row.meal_type, row.created_at);
         items.push({
           id: noticeId,
           type: 'food_alert',
           title: alertHeadline(row.meal_type, row.status),
-          message: row.message?.trim() || 'Meal schedule update from PG management.',
+          message: formatFoodAlertBody(
+            row.meal_type,
+            row.status,
+            row.message,
+            mealTime
+          ),
           timestamp: row.created_at,
-          isRead: readSet.has(noticeId),
+          isRead: expired || readSet.has(noticeId),
           mealStatus: row.status,
         });
       }

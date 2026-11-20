@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -19,21 +20,29 @@ import {
   CheckCircle2,
   Clock,
   Edit3,
+  Lock,
   Mail,
   MapPin,
+  MessageCircle,
   Phone,
   Shield,
   User,
+  Wifi,
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useToast } from '@/context/toast-context';
-import { formatPaiseToRupees } from '@/lib/billing-utils';
+import {
+  buildWhatsAppReminderUrl,
+  formatPaiseToRupees,
+} from '@/lib/billing-utils';
 import { triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import {
+  formatHhMmTo12h,
   formatIsoDateDisplay,
   formatRoomLabel,
+  normalizeTimeMeridiemLowercase,
   toSentenceCaseStatus,
 } from '@/lib/ux-utils';
 import {
@@ -127,6 +136,49 @@ export default function ResidentAccommodationScreen() {
       setSavingEmergency(false);
     }
   };
+
+  const handleCallContact = (phone: string) => {
+    const clean = phone.replace(/[^\d+]/g, '');
+    if (!clean) return;
+    triggerSelectionHaptic();
+    Linking.openURL(`tel:${clean}`).catch(() => {
+      Alert.alert(
+        'Unable to Call',
+        'Could not open the phone dialer on this device.'
+      );
+    });
+  };
+
+  const handleWhatsAppContact = (url: string) => {
+    triggerSelectionHaptic();
+    Linking.openURL(url).catch(() => {
+      Alert.alert(
+        'WhatsApp Unavailable',
+        'Could not open WhatsApp on this device.'
+      );
+    });
+  };
+
+  const curfewDisplay = accommodation?.curfewTime
+    ? formatHhMmTo12h(accommodation.curfewTime) ||
+      normalizeTimeMeridiemLowercase(accommodation.curfewTime)
+    : null;
+
+  const ownerWhatsappUrl =
+    accommodation?.ownerPhone && accommodation
+      ? buildWhatsAppReminderUrl(
+          accommodation.ownerPhone,
+          `Hi ${accommodation.ownerName || 'there'}, reaching out from ${accommodation.propertyName} (${formatRoomLabel(accommodation.roomNumber)}).`
+        )
+      : null;
+
+  const wardenWhatsappUrl =
+    accommodation?.wardenPhone && accommodation
+      ? buildWhatsAppReminderUrl(
+          accommodation.wardenPhone,
+          `Hi ${accommodation.wardenName || 'Warden'}, reaching out from ${accommodation.propertyName} (${formatRoomLabel(accommodation.roomNumber)}).`
+        )
+      : null;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -340,26 +392,173 @@ export default function ResidentAccommodationScreen() {
                 </View>
               </View>
 
-              {/* Management Contact Card */}
-              {accommodation.ownerName ? (
-                <View style={styles.card}>
-                  <View style={styles.cardHeader}>
-                    <Shield size={18} color={OwnerTheme.colors.primary} />
-                    <Text style={styles.cardTitle}>PG Management & Warden</Text>
-                  </View>
-
-                  <View style={styles.contactRow}>
-                    <Text style={styles.contactLabel}>Administrator:</Text>
-                    <Text style={styles.contactValue}>{accommodation.ownerName}</Text>
-                  </View>
-                  {accommodation.ownerPhone ? (
-                    <View style={[styles.contactRow, styles.lastContactRow]}>
-                      <Text style={styles.contactLabel}>Phone:</Text>
-                      <Text style={styles.contactValue}>{accommodation.ownerPhone}</Text>
-                    </View>
-                  ) : null}
+              {/* PG Info & Contacts Card */}
+              <View style={styles.card}>
+                <View style={styles.cardHeader}>
+                  <Shield size={18} color={OwnerTheme.colors.primary} />
+                  <Text style={styles.cardTitle}>PG Info & Contacts</Text>
                 </View>
-              ) : null}
+
+                <View style={styles.stayRow}>
+                  <View style={styles.infoLabelWithIcon}>
+                    <Wifi size={14} color={OwnerTheme.colors.textSecondary} />
+                    <Text style={styles.contactLabel}>Wi-Fi Network</Text>
+                  </View>
+                  <Text
+                    style={[
+                      styles.contactValue,
+                      !accommodation.wifiSsid && styles.contactValueMuted,
+                    ]}
+                    numberOfLines={1}>
+                    {accommodation.wifiSsid || 'Not set by owner'}
+                  </Text>
+                </View>
+
+                <View style={styles.stayRow}>
+                  <View style={styles.infoLabelWithIcon}>
+                    <Lock size={14} color={OwnerTheme.colors.textSecondary} />
+                    <Text style={styles.contactLabel}>Wi-Fi Password</Text>
+                  </View>
+                  <Text
+                    selectable={Boolean(accommodation.wifiPassword)}
+                    style={[
+                      styles.contactValue,
+                      !accommodation.wifiPassword && styles.contactValueMuted,
+                    ]}
+                    numberOfLines={1}>
+                    {accommodation.wifiPassword || 'Not set by owner'}
+                  </Text>
+                </View>
+
+                <View
+                  style={[
+                    styles.stayRow,
+                    !accommodation.ownerName &&
+                      !accommodation.ownerPhone &&
+                      !accommodation.wardenPhone &&
+                      styles.lastContactRow,
+                  ]}>
+                  <View style={styles.infoLabelWithIcon}>
+                    <Clock size={14} color={OwnerTheme.colors.textSecondary} />
+                    <Text style={styles.contactLabel}>Gate Curfew</Text>
+                  </View>
+                  <Text
+                    style={[
+                      styles.contactValue,
+                      !curfewDisplay && styles.contactValueMuted,
+                    ]}>
+                    {curfewDisplay || 'Not set by owner'}
+                  </Text>
+                </View>
+
+                {accommodation.ownerName || accommodation.ownerPhone ? (
+                  <View
+                    style={[
+                      styles.personContactRow,
+                      !accommodation.wardenPhone && styles.lastContactRow,
+                    ]}>
+                    <View style={styles.personContactMeta}>
+                      <Text style={styles.contactLabel}>PG Owner</Text>
+                      <Text style={styles.personContactName}>
+                        {accommodation.ownerName || 'PG Owner'}
+                      </Text>
+                      {accommodation.ownerPhone ? (
+                        <Text style={styles.personContactPhone}>
+                          {accommodation.ownerPhone}
+                        </Text>
+                      ) : null}
+                    </View>
+                    {accommodation.ownerPhone ? (
+                      <View style={styles.personActionsRow}>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="Call PG Owner"
+                          onPress={() =>
+                            handleCallContact(accommodation.ownerPhone!)
+                          }
+                          style={({ pressed }) => [
+                            styles.contactActionBtn,
+                            pressed && styles.contactActionBtnPressed,
+                          ]}>
+                          <Phone size={13} color={OwnerTheme.colors.primary} />
+                          <Text style={styles.contactActionCallText}>Call</Text>
+                        </Pressable>
+                        {ownerWhatsappUrl ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="WhatsApp PG Owner"
+                            onPress={() =>
+                              handleWhatsAppContact(ownerWhatsappUrl)
+                            }
+                            style={({ pressed }) => [
+                              styles.contactActionBtn,
+                              styles.contactWhatsappBtn,
+                              pressed && styles.contactActionBtnPressed,
+                            ]}>
+                            <MessageCircle
+                              size={13}
+                              color={OwnerTheme.colors.success}
+                            />
+                            <Text style={styles.contactActionWaText}>
+                              WhatsApp
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    ) : null}
+                  </View>
+                ) : null}
+
+                {accommodation.wardenPhone ? (
+                  <View style={[styles.personContactRow, styles.lastContactRow]}>
+                    <View style={styles.personContactMeta}>
+                      <Text style={styles.contactLabel}>Assigned Warden</Text>
+                      <Text style={styles.personContactName}>
+                        {accommodation.wardenName || 'Warden'}
+                      </Text>
+                      <Text style={styles.personContactPhone}>
+                        {accommodation.wardenPhone}
+                      </Text>
+                    </View>
+                    <View style={styles.personActionsRow}>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel="Call Assigned Warden"
+                        onPress={() =>
+                          handleCallContact(accommodation.wardenPhone!)
+                        }
+                        style={({ pressed }) => [
+                          styles.contactActionBtn,
+                          pressed && styles.contactActionBtnPressed,
+                        ]}>
+                        <Phone size={13} color={OwnerTheme.colors.primary} />
+                        <Text style={styles.contactActionCallText}>Call</Text>
+                      </Pressable>
+                      {wardenWhatsappUrl ? (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel="WhatsApp Assigned Warden"
+                          onPress={() =>
+                            handleWhatsAppContact(wardenWhatsappUrl)
+                          }
+                          style={({ pressed }) => [
+                            styles.contactActionBtn,
+                            styles.contactWhatsappBtn,
+                            pressed && styles.contactActionBtnPressed,
+                          ]}>
+                          <MessageCircle
+                            size={13}
+                            color={OwnerTheme.colors.success}
+                          />
+                          <Text style={styles.contactActionWaText}>
+                            WhatsApp
+                          </Text>
+                        </Pressable>
+                      ) : null}
+                    </View>
+                  </View>
+                ) : null}
+              </View>
 
               {/* Resident Guidelines Card */}
               <View style={styles.card}>
@@ -560,13 +759,6 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 44,
   },
-  contactRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-    borderBottomWidth: 1,
-    borderBottomColor: OwnerTheme.colors.borderLight,
-  },
   lastContactRow: {
     borderBottomWidth: 0,
     paddingBottom: 2,
@@ -579,6 +771,74 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
     color: OwnerTheme.colors.textPrimary,
+    flexShrink: 1,
+    textAlign: 'right',
+  },
+  contactValueMuted: {
+    color: OwnerTheme.colors.textMuted,
+    fontWeight: '500',
+  },
+  infoLabelWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  personContactRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: OwnerTheme.colors.borderLight,
+    gap: 10,
+  },
+  personContactMeta: {
+    flex: 1,
+    minWidth: 0,
+    gap: 2,
+  },
+  personContactName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  personContactPhone: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+  },
+  personActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexShrink: 0,
+  },
+  contactActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  contactWhatsappBtn: {
+    backgroundColor: OwnerTheme.colors.successLight,
+    borderColor: '#A7F3D0',
+  },
+  contactActionBtnPressed: {
+    opacity: 0.78,
+  },
+  contactActionCallText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+  },
+  contactActionWaText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.success,
   },
   ruleItem: {
     flexDirection: 'row',

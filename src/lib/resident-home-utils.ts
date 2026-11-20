@@ -13,6 +13,31 @@ export function getNextUpcomingMeal(now: Date = new Date()): MealType {
   return 'dinner';
 }
 
+const FORWARD_MEAL_ORDER: Record<MealType, MealType[]> = {
+  breakfast: ['breakfast', 'lunch', 'dinner'],
+  lunch: ['lunch', 'dinner'],
+  dinner: ['dinner'],
+};
+
+/**
+ * Picks the next upcoming meal that actually has a published menu today.
+ * Never steps backward (e.g. won't default to Breakfast after Lunch), and if no
+ * upcoming meal has a menu, stays on the current time slot so the empty state displays.
+ */
+export function getSmartDefaultMeal<T>(
+  menus: Record<MealType, T | null | undefined>,
+  now: Date = new Date()
+): MealType {
+  const currentSlot = getNextUpcomingMeal(now);
+  const candidates = FORWARD_MEAL_ORDER[currentSlot];
+  for (const slot of candidates) {
+    if (menus[slot]) {
+      return slot;
+    }
+  }
+  return currentSlot;
+}
+
 export function getFirstName(fullName: string | null | undefined): string {
   const trimmed = (fullName || '').trim();
   if (!trimmed) return 'Resident';

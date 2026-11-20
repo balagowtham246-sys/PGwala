@@ -30,6 +30,7 @@ import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSelectionHaptic } from '@/lib/haptics';
 import { flushOfflineQueue } from '@/lib/offline-queue';
 import { supabase } from '@/lib/supabase';
+import { formatHhMmTo12h } from '@/lib/ux-utils';
 import type { MealType } from '@/services/dashboard.service';
 import { defaultOfflineExecutors } from '@/services/offline-executors';
 import {
@@ -438,14 +439,22 @@ export default function StudentMenuScreen() {
           MEAL_ORDER.map((mealKey) => {
             const meta = MEAL_META[mealKey];
             const entry = selectedDayMenus[mealKey];
+            const mealTimeLabel = entry?.meal_time
+              ? formatHhMmTo12h(entry.meal_time)
+              : '';
             return (
               <View key={mealKey} style={styles.card}>
                 <View style={styles.cardHeader}>
                   <View style={styles.mealIconCircle}>
                     <Utensils size={16} color={OwnerTheme.colors.primary} />
                   </View>
-                  <View style={{ flex: 1 }}>
+                  <View style={styles.mealTitleRow}>
                     <Text style={styles.mealTitle}>{meta.title}</Text>
+                    {mealTimeLabel ? (
+                      <View style={styles.mealTimePill}>
+                        <Text style={styles.mealTimeText}>{mealTimeLabel}</Text>
+                      </View>
+                    ) : null}
                   </View>
                 </View>
                 <Text
@@ -617,8 +626,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  mealTitleRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
   mealTitle: {
     ...OwnerTheme.typography.cardHeading,
+  },
+  mealTimePill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.primarySoft,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  mealTimeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: OwnerTheme.colors.primary,
   },
   mealItems: {
     ...OwnerTheme.typography.bodyMedium,

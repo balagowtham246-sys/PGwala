@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { router, useFocusEffect } from 'expo-router';
+import { Href, router, useFocusEffect } from 'expo-router';
 import { AlertTriangle, CheckCircle2, ChevronRight, Megaphone, XCircle } from 'lucide-react-native';
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
@@ -77,7 +77,11 @@ export function FoodStatusBanner({ refreshKey = 0 }: { refreshKey?: number }) {
 
   if (visible.length === 0) {
     return (
-      <Pressable style={styles.slimRow} onPress={() => router.push('/student-food-updates')}>
+      <Pressable
+        style={styles.slimRow}
+        onPress={() =>
+          router.push({ pathname: '/student-announcements', params: { tab: 'food' } } as Href)
+        }>
         <Megaphone size={16} color={OwnerTheme.colors.textSecondary} />
         <Text style={styles.slimText}>Food updates</Text>
         <ChevronRight size={16} color={OwnerTheme.colors.textMuted} />
@@ -95,7 +99,9 @@ export function FoodStatusBanner({ refreshKey = 0 }: { refreshKey?: number }) {
             key={m.key}
             accessibilityRole="button"
             style={[styles.card, { backgroundColor: c.bg, borderColor: c.border }]}
-            onPress={() => router.push('/student-food-updates')}>
+            onPress={() =>
+              router.push({ pathname: '/student-announcements', params: { tab: 'food' } } as Href)
+            }>
             <StatusIcon status={a.status} />
             <View style={{ flex: 1 }}>
               <Text style={[styles.title, { color: c.fg }]}>{alertHeadline(a.meal_type, a.status)}</Text>

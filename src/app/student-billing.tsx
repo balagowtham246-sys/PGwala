@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  Linking,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -22,6 +23,7 @@ import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { OwnerHeader } from '@/components/ui/owner';
 import { useAuth } from '@/context/auth-context';
 import { useToast } from '@/context/toast-context';
+import { buildUpiPaymentUrl } from '@/lib/upi';
 import { formatRoomLabel } from '@/lib/ux-utils';
 import {
   getStudentBilling,
@@ -41,6 +43,10 @@ export default function SimplifiedStudentBillingScreen() {
   const [residentId, setResidentId] = useState<string | null>(null);
   const [roomNumber, setRoomNumber] = useState('');
   const [propertyName, setPropertyName] = useState('My PG');
+  const [ownerUpiId, setOwnerUpiId] = useState<string | null>(null);
+  const [ownerUpiPayeeName, setOwnerUpiPayeeName] = useState<string | null>(
+    null
+  );
 
   // Current Month Bills
   const [currentRentBill, setCurrentRentBill] =
@@ -77,6 +83,8 @@ export default function SimplifiedStudentBillingScreen() {
     setResidentId(snapshot.residentId);
     setRoomNumber(snapshot.roomNumber);
     setPropertyName(snapshot.propertyName);
+    setOwnerUpiId(snapshot.ownerUpiId ?? null);
+    setOwnerUpiPayeeName(snapshot.ownerUpiPayeeName ?? null);
     setCurrentRentBill(snapshot.currentRentBill);
     setCurrentEbBill(snapshot.currentEbBill);
     setPastBills(snapshot.pastBills);
@@ -176,6 +184,30 @@ export default function SimplifiedStudentBillingScreen() {
     setPaymentModalVisible(true);
   };
 
+  // Launch owner UPI deep link and prompt resident to upload proof
+  const handlePayNow = async (bill: StudentBillCardItem) => {
+    const upiUrl = buildUpiPaymentUrl({
+      upiId: ownerUpiId,
+      payeeName: ownerUpiPayeeName || propertyName,
+      amountPaise: bill.total_paise,
+      note: `${bill.title} ${bill.month_label}`,
+    });
+
+    if (!upiUrl) {
+      handleOpenPaymentModal(bill);
+      return;
+    }
+
+    try {
+      await Linking.openURL(upiUrl);
+    } catch {
+      // No UPI app installed or running on web browser
+    }
+
+    handleOpenPaymentModal(bill);
+    showToast('Upload your payment screenshot after completing UPI transfer');
+  };
+
   // Submit payment proof
   const handleSubmitPaymentProof = async () => {
     if (!selectedBillForPayment || submittingProof || !residentId) return;
@@ -241,8 +273,12 @@ export default function SimplifiedStudentBillingScreen() {
               currentRentBill={currentRentBill}
               currentEbBill={currentEbBill}
               breakdownExpanded={breakdownExpanded}
+              ownerUpiId={ownerUpiId}
+              ownerUpiPayeeName={ownerUpiPayeeName}
+              propertyName={propertyName}
               onToggleBreakdown={() => setBreakdownExpanded((prev) => !prev)}
               onOpenPaymentModal={handleOpenPaymentModal}
+              onPayNow={(bill) => void handlePayNow(bill)}
               onOpenReceipt={(paymentId) =>
                 router.push({
                   pathname: '/receipt-detail',

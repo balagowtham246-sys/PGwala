@@ -205,6 +205,13 @@ export function toSentenceCaseStatus(status: string | null | undefined): string 
 }
 
 /**
+ * Normalizes any AM / PM meridiem markers to lowercase "am" / "pm".
+ */
+export function normalizeTimeMeridiemLowercase(raw: string): string {
+  return (raw || '').replace(/\b(AM|PM)\b/gi, (m) => m.toLowerCase());
+}
+
+/**
  * Formats a gate event ISO timestamp for resident cards.
  * Same local day -> "10:24 pm"; previous days -> "14 Nov, 10:24 pm".
  */
@@ -212,11 +219,13 @@ export function formatGateEventTimestamp(iso: string, now: Date = new Date()): s
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
 
-  const timeStr = date.toLocaleTimeString('en-IN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: true,
-  });
+  const timeStr = normalizeTimeMeridiemLowercase(
+    date.toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true,
+    })
+  );
 
   const isSameDay =
     date.getFullYear() === now.getFullYear() &&
@@ -343,4 +352,105 @@ export function sortRoomCodes(a: string, b: string): number {
     numeric: true,
     sensitivity: 'base',
   });
+}
+
+/**
+ * Parses an HH:mm 24-hour string (e.g. "20:00", "22:30") into minutes from midnight,
+ * or parses any 12h time inside strings like "Evening (~8:00 pm)".
+ */
+export function parseTimeToMinutes(raw: string | null | undefined): number | null {
+  const clean = (raw || '').trim();
+  if (!clean) return null;
+
+  const hhmm24 = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(clean);
+  if (hhmm24) {
+    return Number(hhmm24[1]) * 60 + Number(hhmm24[2]);
+  }
+
+  const time12 = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i.exec(clean);
+  if (!time12) return null;
+
+  let hours = Number(time12[1]);
+  const minutes = time12[2] ? Number(time12[2]) : 0;
+  if (hours < 1 || hours > 12 || minutes < 0 || minutes > 59) return null;
+
+  const meridiem = time12[3].toLowerCase();
+  if (meridiem === 'am') {
+    if (hours === 12) hours = 0;
+  } else {
+    if (hours !== 12) hours += 12;
+  }
+  return hours * 60 + minutes;
+}
+
+/**
+ * Formats an HH:mm 24-hour string into lowercase 12-hour format (e.g. "22:00" -> "10:00 pm").
+ */
+export function formatHhMmTo12h(hhmm: string | null | undefined): string {
+  const mins = parseTimeToMinutes((hhmm || '').trim());
+  if (mins === null || !/^([01]?\d|2[0-3]):([0-5]\d)$/.test((hhmm || '').trim())) {
+    return '';
+  }
+  const h24 = Math.floor(mins / 60);
+  const m = mins % 60;
+  const meridiem = h24 >= 12 ? 'pm' : 'am';
+  const h12 = h24 % 12 === 0 ? 12 : h24 % 12;
+  return `${h12}:${String(m).padStart(2, '0')} ${meridiem}`;
+}
+
+/**
+ * Resolves a preset or custom expected return string relative to departure time into a concrete Date.
+ */
+export function resolveExpectedReturnDate(
+  expectedReturnTime: string | null | undefined,
+  departedAtIso: string | null | undefined
+): Date | null {
+  const clean = (expectedReturnTime || '').trim();
+  if (!clean || !departedAtIso) return null;
+  if (/running late/i.test(clean)) return null;
+
+  const departed = new Date(departedAtIso);
+  if (Number.isNaN(departed.getTime())) return null;
+
+  if (/tomorrow/i.test(clean)) {
+    const mins = parseTimeToMinutes(clean);
+    const target = new Date(departed);
+    target.setDate(target.getDate() + 1);
+    const targetMins = mins ?? 9 * 60;
+    target.setHours(Math.floor(targetMins / 60), targetMins % 60, 0, 0);
+    return target;
+  }
+
+  const mins = parseTimeToMinutes(clean);
+  if (mins === null) return null;
+
+  const target = new Date(departed);
+  target.setHours(Math.floor(mins / 60), mins % 60, 0, 0);
+  if (target.getTime() <= departed.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+  return target;
+}
+
+/**
+ * Checks whether an expected return string is later than an owner-configured PG curfew (HH:mm).
+ * Returns false whenever curfew is unset.
+ */
+export function isReturnAfterCurfew(
+  expectedReturnTime: string | null | undefined,
+  curfewHhMm: string | null | undefined
+): boolean {
+  const curfewMins =
+    curfewHhMm && /^([01]?\d|2[0-3]):([0-5]\d)$/.test(curfewHhMm.trim())
+      ? parseTimeToMinutes(curfewHhMm.trim())
+      : null;
+  if (curfewMins === null) return false;
+
+  const cleanReturn = (expectedReturnTime || '').trim();
+  if (!cleanReturn) return false;
+  if (/tomorrow/i.test(cleanReturn)) return true;
+
+  const returnMins = parseTimeToMinutes(cleanReturn);
+  if (returnMins === null) return false;
+  return returnMins > curfewMins;
 }

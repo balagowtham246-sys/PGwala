@@ -19,6 +19,11 @@ export interface ResidentAccommodationDetails {
   emergencyContact: string | null;
   ownerName: string | null;
   ownerPhone: string | null;
+  wifiSsid: string | null;
+  wifiPassword: string | null;
+  curfewTime: string | null;
+  wardenName: string | null;
+  wardenPhone: string | null;
 }
 
 export interface ResidentMenuSlot {
@@ -27,12 +32,20 @@ export interface ResidentMenuSlot {
   meal_type: MealType;
   items: string;
   notes: string | null;
+  meal_time?: string | null;
 }
 
 export type DayMenuMap = Record<MealType, ResidentMenuSlot | null>;
 
 const STORAGE_RESIDENT_META_PREFIX = '@pgwala_resident_meta:';
 const STORAGE_EMERGENCY_CONTACT_PREFIX = '@pgwala_resident_emergency_contact:';
+const STORAGE_PROPERTY_META_PREFIX = '@pgwala_property_meta:';
+const STORAGE_MEAL_TIME_PREFIX = '@pgwala_meal_time:';
+
+function cleanText(val: string | null | undefined): string | null {
+  const trimmed = (val || '').trim();
+  return trimmed || null;
+}
 
 function isMissingSchemaOrRpc(err: { code?: string; message?: string } | null): boolean {
   if (!err) return false;
@@ -44,7 +57,9 @@ function isMissingSchemaOrRpc(err: { code?: string; message?: string } | null): 
     err.code === '42501' ||
     err.code === 'PGRST202' ||
     err.code === 'PGRST204' ||
+    err.code === 'PGRST205' ||
     msg.includes('does not exist') ||
+    msg.includes('schema cache') ||
     msg.includes('column') ||
     msg.includes('could not find the function') ||
     msg.includes('permission denied')
@@ -81,6 +96,67 @@ async function readLocalEmergencyContact(residentId: string): Promise<{
   }
 }
 
+async function readLocalPropertyMeta(propertyId: string): Promise<{
+  wifi_ssid?: string | null;
+  wifi_password?: string | null;
+  curfew_time?: string | null;
+  prefer_local?: boolean;
+} | null> {
+  try {
+    const raw = await AsyncStorage.getItem(
+      `${STORAGE_PROPERTY_META_PREFIX}${propertyId}`
+    );
+    if (!raw) return null;
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
+async function readLocalMealTime(
+  propertyId: string,
+  menuDate: string,
+  mealType: MealType
+): Promise<string | null> {
+  try {
+    const raw = await AsyncStorage.getItem(
+      `${STORAGE_MEAL_TIME_PREFIX}${propertyId}:${menuDate}:${mealType}`
+    );
+    if (!raw) return null;
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    if (trimmed.startsWith('{') || trimmed.startsWith('"')) {
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (typeof parsed === 'string') return cleanText(parsed);
+        if (parsed && typeof parsed === 'object') {
+          const obj = parsed as {
+            meal_time?: unknown;
+            mealTime?: unknown;
+            value?: unknown;
+          };
+          const val = obj.meal_time ?? obj.mealTime ?? obj.value;
+          return typeof val === 'string' ? cleanText(val) : null;
+        }
+      } catch {
+        // Fall back to raw trimmed string
+      }
+    }
+    return trimmed;
+  } catch {
+    return null;
+  }
+}
+
+interface PropertyJoinRow {
+  name?: string | null;
+  address?: string | null;
+  owner_id?: string | null;
+  wifi_ssid?: string | null;
+  wifi_password?: string | null;
+  curfew_time?: string | null;
+}
+
 interface AccommodationRow {
   id: string;
   property_id: string;
@@ -90,10 +166,7 @@ interface AccommodationRow {
   monthly_rent_paise?: number | null;
   deposit_paise?: number | null;
   emergency_contact?: string | null;
-  property:
-    | { name?: string | null; address?: string | null; owner_id?: string | null }
-    | { name?: string | null; address?: string | null; owner_id?: string | null }[]
-    | null;
+  property: PropertyJoinRow | PropertyJoinRow[] | null;
 }
 
 export async function fetchResidentAccommodation(
@@ -109,7 +182,7 @@ export async function fetchResidentAccommodation(
     const richRes = await supabase
       .from('residents')
       .select(
-        'id, property_id, room_number, bed_label, joining_date, monthly_rent_paise, deposit_paise, emergency_contact, property:properties(name, address, owner_id)'
+        'id, property_id, room_number, bed_label, joining_date, monthly_rent_paise, deposit_paise, emergency_contact, property:properties(name, address, owner_id, wifi_ssid, wifi_password, curfew_time)'
       )
       .eq('profile_id', userId)
       .eq('is_active', true)
@@ -145,9 +218,16 @@ export async function fetchResidentAccommodation(
     const prop = Array.isArray(activeRow.property)
       ? activeRow.property[0]
       : activeRow.property;
-    const [localMeta, localEmergency, ownerRes] = await Promise.all([
+    const [
+      localMeta,
+      localEmergency,
+      localPropertyMeta,
+      ownerRes,
+      wardenAssignRes,
+    ] = await Promise.all([
       readLocalResidentMeta(activeRow.id),
       readLocalEmergencyContact(activeRow.id),
+      readLocalPropertyMeta(activeRow.property_id),
       prop?.owner_id
         ? supabase
             .from('profiles')
@@ -155,16 +235,65 @@ export async function fetchResidentAccommodation(
             .eq('id', prop.owner_id)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null }),
+      (async () => {
+        try {
+          return await supabase
+            .from('property_wardens')
+            .select('warden_profile_id')
+            .eq('property_id', activeRow.property_id)
+            .eq('is_active', true)
+            .maybeSingle();
+        } catch {
+          return { data: null, error: null };
+        }
+      })(),
     ]);
 
-    if (prop?.owner_id) {
-      recordRoundTrip(traceLabel, 1);
-    }
+    recordRoundTrip(traceLabel, prop?.owner_id ? 2 : 1);
 
     const ownerData = ownerRes.data as {
       full_name?: string | null;
       phone_number?: string | null;
     } | null;
+
+    let wardenName: string | null = null;
+    let wardenPhone: string | null = null;
+    const wardenProfileId = !wardenAssignRes.error
+      ? (wardenAssignRes.data as { warden_profile_id?: string | null } | null)
+          ?.warden_profile_id
+      : null;
+
+    if (wardenProfileId) {
+      try {
+        const wardenProfileRes = await supabase
+          .from('profiles')
+          .select('full_name, phone_number')
+          .eq('id', wardenProfileId)
+          .maybeSingle();
+        recordRoundTrip(traceLabel, 1);
+        if (!wardenProfileRes.error && wardenProfileRes.data) {
+          const wData = wardenProfileRes.data as {
+            full_name?: string | null;
+            phone_number?: string | null;
+          };
+          wardenName = cleanText(wData.full_name);
+          wardenPhone = cleanText(wData.phone_number);
+        }
+      } catch {
+        // Ignore warden profile lookup failure gracefully
+      }
+    }
+
+    const preferLocalPropMeta = Boolean(localPropertyMeta?.prefer_local);
+    const wifiSsid = preferLocalPropMeta
+      ? cleanText(localPropertyMeta?.wifi_ssid) ?? cleanText(prop?.wifi_ssid)
+      : cleanText(prop?.wifi_ssid) ?? cleanText(localPropertyMeta?.wifi_ssid);
+    const wifiPassword = preferLocalPropMeta
+      ? cleanText(localPropertyMeta?.wifi_password) ?? cleanText(prop?.wifi_password)
+      : cleanText(prop?.wifi_password) ?? cleanText(localPropertyMeta?.wifi_password);
+    const curfewTime = preferLocalPropMeta
+      ? cleanText(localPropertyMeta?.curfew_time) ?? cleanText(prop?.curfew_time)
+      : cleanText(prop?.curfew_time) ?? cleanText(localPropertyMeta?.curfew_time);
 
     const resolvedEmergencyContact =
       localEmergency?.pendingLocalFallback
@@ -184,6 +313,11 @@ export async function fetchResidentAccommodation(
       emergencyContact: resolvedEmergencyContact,
       ownerName: ownerData?.full_name ?? null,
       ownerPhone: ownerData?.phone_number ?? null,
+      wifiSsid,
+      wifiPassword,
+      curfewTime,
+      wardenName,
+      wardenPhone,
     });
   } catch (err) {
     return fail(err, 'Failed to load stay and room details.');
@@ -248,17 +382,56 @@ export async function fetchResidentMultiDayMenus(
   const traceLabel = `resident-portal:menus:${propertyId}`;
   startTrace(traceLabel);
   try {
-    const { data, error } = await supabase
+    let rows: ResidentMenuSlot[] = [];
+
+    const richRes = await supabase
       .from('food_menus')
-      .select('id, menu_date, meal_type, items, notes')
+      .select('id, menu_date, meal_type, items, notes, meal_time')
       .eq('property_id', propertyId)
       .eq('is_published', true)
       .in('menu_date', datesIso);
     recordRoundTrip(traceLabel, 1);
 
-    if (error) {
-      return fail(error, 'Could not load meal schedules.');
+    if (richRes.error) {
+      if (!isMissingSchemaOrRpc(richRes.error)) {
+        return fail(richRes.error, 'Could not load meal schedules.');
+      }
+      const basicRes = await supabase
+        .from('food_menus')
+        .select('id, menu_date, meal_type, items, notes')
+        .eq('property_id', propertyId)
+        .eq('is_published', true)
+        .in('menu_date', datesIso);
+      recordRoundTrip(traceLabel, 1);
+      if (basicRes.error) {
+        return fail(basicRes.error, 'Could not load meal schedules.');
+      }
+      rows = (basicRes.data as ResidentMenuSlot[]) ?? [];
+    } else {
+      rows = (richRes.data as ResidentMenuSlot[]) ?? [];
     }
+
+    const hydratedRows = await Promise.all(
+      rows.map(async (item) => {
+        const dbMealTime = cleanText(item.meal_time);
+        if (dbMealTime) {
+          return { ...item, meal_time: dbMealTime };
+        }
+        if (
+          item.meal_type === 'breakfast' ||
+          item.meal_type === 'lunch' ||
+          item.meal_type === 'dinner'
+        ) {
+          const localMealTime = await readLocalMealTime(
+            propertyId,
+            item.menu_date,
+            item.meal_type
+          );
+          return { ...item, meal_time: localMealTime };
+        }
+        return { ...item, meal_time: null };
+      })
+    );
 
     const byDate: Record<string, DayMenuMap> = {};
     for (const dateIso of datesIso) {
@@ -266,7 +439,7 @@ export async function fetchResidentMultiDayMenus(
     }
 
     const publishedSet = new Set<string>();
-    for (const item of (data as ResidentMenuSlot[]) ?? []) {
+    for (const item of hydratedRows) {
       if (!byDate[item.menu_date]) {
         byDate[item.menu_date] = { breakfast: null, lunch: null, dinner: null };
       }
