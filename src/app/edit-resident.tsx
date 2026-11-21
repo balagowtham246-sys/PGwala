@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Href, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle,
   CheckCircle2,
@@ -23,11 +24,18 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
+import {
+  useActiveResidentPeersQuery,
+  useCheckoutResidentMutation,
+  useResidentProfileQuery,
+  useUpdateResidentWithLockMutation,
+} from '@/hooks/use-residents';
 import { extractErrorMessage } from '@/lib/error-utils';
-import { invalidatePrefix } from '@/lib/query-cache';
+import { queryKeys } from '@/lib/query-keys';
 import { supabase } from '@/lib/supabase';
 import {
   formatLocalIsoDate,
+  getIstCalendarParts,
   inferPropertyGender,
   isValidIsoDate,
   normalizeIndianPhoneDigits,
@@ -35,12 +43,7 @@ import {
   ResidentGender,
   validateIndianPhone,
 } from '@/lib/ux-utils';
-import {
-  fetchResidentProfile,
-  RESIDENTS_CACHE_PREFIX,
-  ResidentUpdatePatch,
-  updateResidentWithLock,
-} from '@/services/residents.service';
+import { ResidentUpdatePatch } from '@/services/residents.service';
 import {
   EditResidentDangerZone,
   EditResidentPortalSection,
@@ -95,13 +98,6 @@ interface LoadedFormValues {
   notes: string;
 }
 
-interface PeerResidentRow {
-  id: string;
-  full_name: string;
-  room_number: string;
-  phone_number: string | null;
-}
-
 interface RpcResponse {
   success: boolean;
   message?: string;
@@ -134,32 +130,20 @@ export default function EditResidentScreen() {
   const { showToast } = useToast();
   const { id } = useLocalSearchParams<{ id?: string }>();
 
-  const [loading, setLoading] = useState(true);
-  const [resident, setResident] = useState<ResidentData | null>(null);
-  const [loadedUpdatedAt, setLoadedUpdatedAt] = useState<string | null>(null);
-  const [loadedForm, setLoadedForm] = useState<LoadedFormValues | null>(null);
-  const [peerResidents, setPeerResidents] = useState<PeerResidentRow[]>([]);
+  const qc = useQueryClient();
 
-  // Form Fields (aligned with add-resident.tsx + Private Owner Notes)
-  const [fullName, setFullName] = useState('');
-  const [gender, setGender] = useState<ResidentGender>('male');
-  const [roomNumber, setRoomNumber] = useState('');
-  const [bedLabel, setBedLabel] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [joiningDate, setJoiningDate] = useState(() => getTodayIsoDate());
+  const [formDraft, setFormDraft] = useState<{
+    residentId: string;
+    edits: Partial<LoadedFormValues>;
+  }>({ residentId: '', edits: {} });
+  const [savedUpdatedAtOverride, setSavedUpdatedAtOverride] = useState<{
+    residentId: string;
+    updatedAt: string | null;
+  } | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [monthlyRent, setMonthlyRent] = useState('');
-  const [depositAmount, setDepositAmount] = useState('');
-  const [emergencyContact, setEmergencyContact] = useState('');
-  const [notes, setNotes] = useState('');
   const [studentEmail, setStudentEmail] = useState('');
   const [roomRefreshSignal, setRoomRefreshSignal] = useState(0);
 
-  // Mutation states
-  const [saving, setSaving] = useState(false);
-  const [deactivating, setDeactivating] = useState(false);
-  const [linking, setLinking] = useState(false);
-  const [unlinking, setUnlinking] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoadError, setIsLoadError] = useState(false);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -174,8 +158,224 @@ export default function EditResidentScreen() {
     setErrorMessage(msg);
   }, []);
 
+  const profileQuery = useResidentProfileQuery(user?.id ? id : undefined);
+  const linkedProfileQuery = useQuery<{ id: string; full_name: string } | null>({
+    queryKey: ['residents', 'linkedProfile', profileQuery.data?.profileId ?? ''],
+    enabled: Boolean(profileQuery.data?.profileId),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, full_name')
+        .eq('id', profileQuery.data!.profileId!)
+        .maybeSingle();
+      if (error) throw error;
+      return (data as { id: string; full_name: string } | null) ?? null;
+    },
+  });
+  const updatedAtFallbackQuery = useQuery<string | null>({
+    queryKey: ['residents', 'updatedAtFallback', profileQuery.data?.id ?? ''],
+    enabled: Boolean(profileQuery.data?.id && !profileQuery.data?.updatedAt),
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('residents')
+        .select('id, updated_at')
+        .eq('id', profileQuery.data!.id)
+        .maybeSingle();
+      if (error) throw error;
+      return (data as { updated_at?: string | null } | null)?.updated_at ?? null;
+    },
+  });
+  const peersQuery = useActiveResidentPeersQuery(profileQuery.data?.propertyId);
+
+  const updateResidentMutation = useUpdateResidentWithLockMutation();
+  const checkoutMutation = useCheckoutResidentMutation();
+
+  const linkStudentMutation = useMutation({
+    mutationFn: async (input: { residentId: string; email: string }) => {
+      const { data, error } = await supabase.rpc('link_resident_profile', {
+        p_resident_id: input.residentId,
+        p_student_email: input.email,
+      });
+      if (error) throw error;
+      const res = data as RpcResponse | null;
+      if (!res?.success) {
+        throw new Error(res?.error || 'Failed to link student account.');
+      }
+      return res;
+    },
+    onSuccess: async () => {
+      setSavedUpdatedAtOverride(null);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
+        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
+      ]);
+    },
+  });
+
+  const unlinkStudentMutation = useMutation({
+    mutationFn: async (residentId: string) => {
+      const { data, error } = await supabase.rpc('unlink_resident_profile', {
+        p_resident_id: residentId,
+      });
+      if (error) throw error;
+      const res = data as RpcResponse | null;
+      if (!res?.success) {
+        throw new Error(res?.error || 'Failed to unlink student account.');
+      }
+      return res;
+    },
+    onSuccess: async () => {
+      setSavedUpdatedAtOverride(null);
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
+        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
+      ]);
+    },
+  });
+
+  const saving = updateResidentMutation.isPending;
+  const deactivating = checkoutMutation.isPending;
+  const linking = linkStudentMutation.isPending;
+  const unlinking = unlinkStudentMutation.isPending;
+  const loading = Boolean(id) && (!user?.id || profileQuery.isLoading);
+
+  const resident: ResidentData | null = useMemo(() => {
+    const data = profileQuery.data;
+    if (!data) return null;
+    const ctxProp = properties.find((p) => p.id === data.propertyId);
+    const resolvedPropGender =
+      ctxProp?.gender_type ??
+      inferPropertyGender(data.propertyName, data.propertyGender);
+
+    return {
+      id: data.id,
+      property_id: data.propertyId,
+      propertyName: data.propertyName,
+      propertyGender: resolvedPropGender,
+      profile_id: data.profileId,
+      full_name: data.fullName,
+      phone_number: data.phoneNumber,
+      room_number: data.roomNumber,
+      bed_label: data.bedLabel,
+      gender: data.gender,
+      joining_date: data.joiningDate,
+      monthly_rent_paise: data.monthlyRentPaise,
+      deposit_paise: data.depositPaise,
+      emergency_contact: data.emergencyContact,
+      notes: data.notes,
+      is_active: data.isActive,
+      profile: data.profileId ? (linkedProfileQuery.data ?? null) : null,
+    };
+  }, [profileQuery.data, properties, linkedProfileQuery.data]);
+
+  const loadedUpdatedAt = useMemo(() => {
+    if (!profileQuery.data) return null;
+    if (
+      savedUpdatedAtOverride &&
+      savedUpdatedAtOverride.residentId === profileQuery.data.id
+    ) {
+      return savedUpdatedAtOverride.updatedAt;
+    }
+    return profileQuery.data.updatedAt ?? updatedAtFallbackQuery.data ?? null;
+  }, [profileQuery.data, savedUpdatedAtOverride, updatedAtFallbackQuery.data]);
+
+  const loadedForm: LoadedFormValues | null = useMemo(() => {
+    if (!resident) return null;
+    const initialGender: ResidentGender =
+      resident.gender ?? (resident.propertyGender === 'girls' ? 'female' : 'male');
+    const normalizedPhone = normalizeIndianPhoneDigits(resident.phone_number);
+    const initialPhone = normalizedPhone || (resident.phone_number || '').trim();
+    const initialJoining = resident.joining_date || getTodayIsoDate();
+
+    return {
+      fullName: resident.full_name.trim(),
+      gender: initialGender,
+      roomNumber: resident.room_number.trim(),
+      bedLabel: (resident.bed_label || '').trim(),
+      phoneNumber: initialPhone,
+      joiningDate: initialJoining,
+      monthlyRent: paiseToRupeesInput(resident.monthly_rent_paise),
+      depositAmount: paiseToRupeesInput(resident.deposit_paise),
+      emergencyContact: (resident.emergency_contact || '').trim(),
+      notes: (resident.notes || '').trim(),
+    };
+  }, [resident]);
+
+  const activeEdits = useMemo(
+    () => (formDraft.residentId === (resident?.id ?? '') ? formDraft.edits : {}),
+    [formDraft, resident?.id]
+  );
+
+  const fullName = activeEdits.fullName ?? loadedForm?.fullName ?? '';
+  const gender = activeEdits.gender ?? loadedForm?.gender ?? 'male';
+  const roomNumber = activeEdits.roomNumber ?? loadedForm?.roomNumber ?? '';
+  const bedLabel = activeEdits.bedLabel ?? loadedForm?.bedLabel ?? '';
+  const phoneNumber = activeEdits.phoneNumber ?? loadedForm?.phoneNumber ?? '';
+  const joiningDate =
+    activeEdits.joiningDate ?? loadedForm?.joiningDate ?? getTodayIsoDate();
+  const monthlyRent = activeEdits.monthlyRent ?? loadedForm?.monthlyRent ?? '';
+  const depositAmount =
+    activeEdits.depositAmount ?? loadedForm?.depositAmount ?? '';
+  const emergencyContact =
+    activeEdits.emergencyContact ?? loadedForm?.emergencyContact ?? '';
+  const notes = activeEdits.notes ?? loadedForm?.notes ?? '';
+
+  const setField = useCallback(
+    <K extends keyof LoadedFormValues>(key: K, value: LoadedFormValues[K]) => {
+      const targetId = resident?.id ?? '';
+      setFormDraft((prev) => ({
+        residentId: targetId,
+        edits: {
+          ...(prev.residentId === targetId ? prev.edits : {}),
+          [key]: value,
+        },
+      }));
+    },
+    [resident?.id]
+  );
+
+  const setFullName = useCallback(
+    (val: string) => setField('fullName', val),
+    [setField]
+  );
+  const setGender = useCallback(
+    (val: ResidentGender) => setField('gender', val),
+    [setField]
+  );
+  const setRoomNumber = useCallback(
+    (val: string) => setField('roomNumber', val),
+    [setField]
+  );
+  const setBedLabel = useCallback(
+    (val: string) => setField('bedLabel', val),
+    [setField]
+  );
+  const setPhoneNumber = useCallback(
+    (val: string) => setField('phoneNumber', val),
+    [setField]
+  );
+  const setJoiningDate = useCallback(
+    (val: string) => setField('joiningDate', val),
+    [setField]
+  );
+  const setMonthlyRent = useCallback(
+    (val: string) => setField('monthlyRent', val),
+    [setField]
+  );
+  const setDepositAmount = useCallback(
+    (val: string) => setField('depositAmount', val),
+    [setField]
+  );
+  const setEmergencyContact = useCallback(
+    (val: string) => setField('emergencyContact', val),
+    [setField]
+  );
+  const setNotes = useCallback(
+    (val: string) => setField('notes', val),
+    [setField]
+  );
+
   // Refs used exclusively inside effects/callbacks (never read/written during render)
-  const propertiesRef = useRef(properties);
   const isScreenFocusedRef = useRef(false);
   const initialResidentPropertyIdRef = useRef<string | null>(null);
   const initialSelectedPropertyIdRef = useRef<string | null>(null);
@@ -183,8 +383,10 @@ export default function EditResidentScreen() {
   const hasExitedForPropertySwitchRef = useRef(false);
 
   useEffect(() => {
-    propertiesRef.current = properties;
-  }, [properties]);
+    if (resident?.property_id && !initialResidentPropertyIdRef.current) {
+      initialResidentPropertyIdRef.current = resident.property_id;
+    }
+  }, [resident?.property_id]);
 
   useFocusEffect(
     useCallback(() => {
@@ -276,161 +478,27 @@ export default function EditResidentScreen() {
     if (!resident) return null;
     const normalized = normalizeIndianPhoneDigits(phoneNumber);
     if (!normalized) return null;
+    const peers = peersQuery.data ?? [];
     return (
-      peerResidents.find(
+      peers.find(
         (r) =>
           r.id !== resident.id &&
           normalizeIndianPhoneDigits(r.phone_number) === normalized
       ) ?? null
     );
-  }, [peerResidents, phoneNumber, resident]);
+  }, [peersQuery.data, phoneNumber, resident]);
 
-  // 1. Fetch resident details (including updated_at & extended metadata)
-  const loadResident = useCallback(async () => {
-    if (!id || !user?.id) {
-      if (!id) {
-        showFormError('No resident ID provided.');
-      }
-      setLoading(false);
-      return;
-    }
+  const refetchProfile = profileQuery.refetch;
+  const refetchPeers = peersQuery.refetch;
 
-    try {
-      clearError();
-      setLoading(true);
-
-      const profileRes = await fetchResidentProfile(id);
-      if (!profileRes.ok) {
-        throw new Error(profileRes.error.message);
-      }
-
-      const data = profileRes.data;
-
-      // Fetch linked student profile name, updated_at fallback, and property peers for duplicate-phone check
-      const [linkedProfileRes, updatedAtRes, peersRes] = await Promise.all([
-        data.profileId
-          ? supabase
-              .from('profiles')
-              .select('id, full_name')
-              .eq('id', data.profileId)
-              .maybeSingle()
-          : Promise.resolve({ data: null, error: null }),
-        !data.updatedAt
-          ? supabase
-              .from('residents')
-              .select('id, updated_at')
-              .eq('id', data.id)
-              .maybeSingle()
-          : Promise.resolve({ data: null, error: null }),
-        supabase
-          .from('residents')
-          .select('id, full_name, room_number, phone_number')
-          .eq('property_id', data.propertyId)
-          .eq('is_active', true),
-      ]);
-
-      const resolvedUpdatedAt =
-        data.updatedAt ??
-        ((updatedAtRes.data as { updated_at?: string | null } | null)
-          ?.updated_at ??
-          null);
-
-      const linkedProfile = linkedProfileRes.data
-        ? (linkedProfileRes.data as { id: string; full_name: string })
-        : null;
-
-      const ctxProp = propertiesRef.current.find((p) => p.id === data.propertyId);
-      const resolvedPropGender =
-        ctxProp?.gender_type ??
-        inferPropertyGender(data.propertyName, data.propertyGender);
-
-      const initialGender: ResidentGender =
-        data.gender ?? (resolvedPropGender === 'girls' ? 'female' : 'male');
-      const normalizedPhone = normalizeIndianPhoneDigits(data.phoneNumber);
-      const initialPhone = normalizedPhone || (data.phoneNumber || '').trim();
-      const initialJoining = data.joiningDate || getTodayIsoDate();
-      const initialRent = paiseToRupeesInput(data.monthlyRentPaise);
-      const initialDeposit = paiseToRupeesInput(data.depositPaise);
-      const initialBed = (data.bedLabel || '').trim();
-      const initialEmergency = (data.emergencyContact || '').trim();
-      const initialNotes = (data.notes || '').trim();
-
-      const residentInfo: ResidentData = {
-        id: data.id,
-        property_id: data.propertyId,
-        propertyName: data.propertyName,
-        propertyGender: resolvedPropGender,
-        profile_id: data.profileId,
-        full_name: data.fullName,
-        phone_number: data.phoneNumber,
-        room_number: data.roomNumber,
-        bed_label: data.bedLabel,
-        gender: data.gender,
-        joining_date: data.joiningDate,
-        monthly_rent_paise: data.monthlyRentPaise,
-        deposit_paise: data.depositPaise,
-        emergency_contact: data.emergencyContact,
-        notes: data.notes,
-        is_active: data.isActive,
-        profile: linkedProfile,
-      };
-
-      const initialForm: LoadedFormValues = {
-        fullName: data.fullName.trim(),
-        gender: initialGender,
-        roomNumber: data.roomNumber.trim(),
-        bedLabel: initialBed,
-        phoneNumber: initialPhone,
-        joiningDate: initialJoining,
-        monthlyRent: initialRent,
-        depositAmount: initialDeposit,
-        emergencyContact: initialEmergency,
-        notes: initialNotes,
-      };
-
-      initialResidentPropertyIdRef.current = residentInfo.property_id;
-      setResident(residentInfo);
-      setLoadedUpdatedAt(resolvedUpdatedAt);
-      setLoadedForm(initialForm);
-      setPeerResidents(
-        !peersRes.error && peersRes.data
-          ? (peersRes.data as PeerResidentRow[])
-          : []
-      );
-
-      setFullName(initialForm.fullName);
-      setGender(initialForm.gender);
-      setRoomNumber(initialForm.roomNumber);
-      setBedLabel(initialForm.bedLabel);
-      setPhoneNumber(initialForm.phoneNumber);
-      setJoiningDate(initialForm.joiningDate);
-      setMonthlyRent(initialForm.monthlyRent);
-      setDepositAmount(initialForm.depositAmount);
-      setEmergencyContact(initialForm.emergencyContact);
-      setNotes(initialForm.notes);
-      setRoomRefreshSignal((n) => n + 1);
-    } catch (err: unknown) {
-      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
-      console.error('[EditResident] Error fetching resident:', err);
-      setIsLoadError(true);
-      setErrorMessage(`Failed to load resident: ${msg}`);
-    } finally {
-      setLoading(false);
-    }
-  }, [id, user?.id, clearError, showFormError]);
-
-  useEffect(() => {
-    let active = true;
-    const timer = setTimeout(() => {
-      if (active && (!id || user?.id)) {
-        void loadResident();
-      }
-    }, 0);
-    return () => {
-      active = false;
-      clearTimeout(timer);
-    };
-  }, [id, user?.id, loadResident]);
+  const handleReloadLatest = useCallback(() => {
+    clearError();
+    setSuccessMessage(null);
+    setFormDraft({ residentId: '', edits: {} });
+    setSavedUpdatedAtOverride(null);
+    setRoomRefreshSignal((n) => n + 1);
+    void Promise.all([refetchProfile(), refetchPeers()]);
+  }, [clearError, refetchPeers, refetchProfile]);
 
   // Back navigation with unsaved changes confirmation
   const handleBack = () => {
@@ -532,7 +600,8 @@ export default function EditResidentScreen() {
       return;
     }
 
-    setSaving(true);
+    if (updateResidentMutation.isPending) return;
+
     clearError();
     setSuccessMessage(null);
 
@@ -550,19 +619,12 @@ export default function EditResidentScreen() {
         notes: trimmedNotes || null,
       };
 
-      const res = await updateResidentWithLock(
-        resident.id,
-        resident.property_id,
+      const outcome = await updateResidentMutation.mutateAsync({
+        residentId: resident.id,
+        propertyId: resident.property_id,
         loadedUpdatedAt,
-        patch
-      );
-
-      if (!res.ok) {
-        showFormError(`Update Failed: ${res.error.message}`);
-        return;
-      }
-
-      const outcome = res.data;
+        patch,
+      });
 
       if (outcome.status === 'stale') {
         Alert.alert(
@@ -573,9 +635,7 @@ export default function EditResidentScreen() {
             { text: 'Cancel', style: 'cancel' },
             {
               text: 'Reload Latest',
-              onPress: () => {
-                void loadResident();
-              },
+              onPress: handleReloadLatest,
             },
           ]
         );
@@ -594,43 +654,11 @@ export default function EditResidentScreen() {
         return;
       }
 
-      const nextRentStr = paiseToRupeesInput(rentParsed.paise);
-      const nextDepositStr = paiseToRupeesInput(depositParsed.paise);
-      const nextForm: LoadedFormValues = {
-        fullName: trimmedName,
-        gender,
-        roomNumber: trimmedRoom,
-        bedLabel: trimmedBed,
-        phoneNumber: phoneValidation.normalized10,
-        joiningDate: trimmedJoiningDate,
-        monthlyRent: nextRentStr,
-        depositAmount: nextDepositStr,
-        emergencyContact: trimmedEmergency,
-        notes: trimmedNotes,
-      };
-
-      setLoadedUpdatedAt(outcome.updatedAt);
-      setResident((prev) =>
-        prev
-          ? {
-              ...prev,
-              full_name: trimmedName,
-              room_number: trimmedRoom,
-              bed_label: trimmedBed || null,
-              phone_number: phoneValidation.normalized10,
-              gender,
-              joining_date: trimmedJoiningDate,
-              monthly_rent_paise: rentParsed.paise,
-              deposit_paise: depositParsed.paise,
-              emergency_contact: trimmedEmergency || null,
-              notes: trimmedNotes || null,
-            }
-          : prev
-      );
-      setLoadedForm(nextForm);
-      setPhoneNumber(nextForm.phoneNumber);
-      setMonthlyRent(nextForm.monthlyRent);
-      setDepositAmount(nextForm.depositAmount);
+      setSavedUpdatedAtOverride({
+        residentId: resident.id,
+        updatedAt: outcome.updatedAt,
+      });
+      setFormDraft({ residentId: resident.id, edits: {} });
       setSuccessMessage('Resident details updated successfully.');
 
       showToast(`${trimmedName}'s details updated.`);
@@ -643,14 +671,12 @@ export default function EditResidentScreen() {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       console.error('[EditResident] Update error:', err);
       showFormError(`Update Failed: ${msg}`);
-    } finally {
-      setSaving(false);
     }
   };
 
   // 3. Handle Link Student Account (Owner RPC)
   const handleLinkStudent = async () => {
-    if (!user?.id || !resident) return;
+    if (!user?.id || !resident || linkStudentMutation.isPending) return;
 
     const trimmedEmail = studentEmail.trim().toLowerCase();
     if (!trimmedEmail) {
@@ -664,32 +690,22 @@ export default function EditResidentScreen() {
       return;
     }
 
-    setLinking(true);
     clearError();
     setSuccessMessage(null);
 
     try {
-      const { data, error } = await supabase.rpc('link_resident_profile', {
-        p_resident_id: resident.id,
-        p_student_email: trimmedEmail,
+      const res = await linkStudentMutation.mutateAsync({
+        residentId: resident.id,
+        email: trimmedEmail,
       });
-
-      if (error) throw error;
-      const res = data as RpcResponse | null;
-      if (!res?.success) {
-        throw new Error(res?.error || 'Failed to link student account.');
-      }
 
       const successMsg = res.message || 'Student account linked successfully.';
       setSuccessMessage(successMsg);
       setStudentEmail('');
       showToast(successMsg);
-      await loadResident();
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       showFormError(msg);
-    } finally {
-      setLinking(false);
     }
   };
 
@@ -712,42 +728,30 @@ export default function EditResidentScreen() {
   };
 
   const performUnlink = async () => {
-    if (!user?.id || !resident) return;
+    if (!user?.id || !resident || unlinkStudentMutation.isPending) return;
 
-    setUnlinking(true);
     clearError();
     setSuccessMessage(null);
 
     try {
-      const { data, error } = await supabase.rpc('unlink_resident_profile', {
-        p_resident_id: resident.id,
-      });
-
-      if (error) throw error;
-      const res = data as RpcResponse | null;
-      if (!res?.success) {
-        throw new Error(res?.error || 'Failed to unlink student account.');
-      }
+      const res = await unlinkStudentMutation.mutateAsync(resident.id);
 
       const successMsg = res.message || 'Student account unlinked successfully.';
       setSuccessMessage(successMsg);
       showToast(successMsg);
-      await loadResident();
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       showFormError(msg);
-    } finally {
-      setUnlinking(false);
     }
   };
 
-  // 5. Handle Deactivate Resident (Soft Deactivation: is_active = false)
+  // 5. Handle Deactivate Resident (Soft Deactivation: is_active = false + cleanup)
   const handleConfirmDeactivate = () => {
     if (!resident) return;
 
     Alert.alert(
       'Deactivate Resident?',
-      `Are you sure you want to deactivate ${resident.full_name} (Room ${resident.room_number})?\n\n• They will no longer appear in active attendance lists.\n• All previous payments, receipts, and gate history are strictly preserved.\n• This action does NOT delete any historical data.`,
+      `Are you sure you want to deactivate ${resident.full_name} (Room ${resident.room_number})?\n\n• They will no longer appear in active attendance lists and any active washing machine session is released.\n• All previous payments, receipts, unpaid bills, and gate history are strictly preserved.\n• This action does NOT delete any historical data.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -760,35 +764,25 @@ export default function EditResidentScreen() {
   };
 
   const performDeactivation = async () => {
-    if (!resident || !user?.id) return;
+    if (!resident || !user?.id || checkoutMutation.isPending) return;
 
-    setDeactivating(true);
     clearError();
     setSuccessMessage(null);
 
     try {
-      const { error } = await supabase
-        .from('residents')
-        .update({ is_active: false })
-        .eq('id', resident.id)
-        .eq('property_id', resident.property_id)
-        .select('id, full_name, is_active')
-        .single();
-
-      if (error) throw error;
-
-      await Promise.all([
-        invalidatePrefix(RESIDENTS_CACHE_PREFIX),
-        invalidatePrefix('dashboard:'),
-      ]);
+      await checkoutMutation.mutateAsync({
+        residentId: resident.id,
+        propertyId: resident.property_id,
+        leavingDateIso: getIstCalendarParts().isoDate,
+        generateFinalBill: false,
+        finalBillPaise: 0,
+      });
 
       showToast(`${resident.full_name} deactivated. Historical records preserved.`);
       router.replace('/(tabs)');
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       showFormError(`Deactivation Failed: ${msg}`);
-    } finally {
-      setDeactivating(false);
     }
   };
 
@@ -803,6 +797,16 @@ export default function EditResidentScreen() {
       </SafeAreaView>
     );
   }
+
+  const displayErrorMessage =
+    errorMessage ??
+    (!id
+      ? 'No resident ID provided.'
+      : profileQuery.error
+        ? `Failed to load resident: ${profileQuery.error.message}`
+        : null);
+  const displayIsLoadError =
+    isLoadError || (Boolean(id) && Boolean(profileQuery.error));
 
   const isLinked = Boolean(resident?.profile_id);
 
@@ -830,11 +834,11 @@ export default function EditResidentScreen() {
           showsVerticalScrollIndicator={false}
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled">
-          {errorMessage && (
-            isLoadError || (!resident && Boolean(id)) ? (
+          {displayErrorMessage && (
+            displayIsLoadError || (!resident && Boolean(id)) ? (
               <ErrorState
-                message={errorMessage}
-                onRetry={() => void loadResident()}
+                message={displayErrorMessage}
+                onRetry={handleReloadLatest}
               />
             ) : (
               <View style={styles.validationErrorBanner}>
@@ -844,7 +848,9 @@ export default function EditResidentScreen() {
                   style={{ marginRight: 8, marginTop: 1 }}
                 />
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.validationErrorText}>{errorMessage}</Text>
+                  <Text style={styles.validationErrorText}>
+                    {displayErrorMessage}
+                  </Text>
                 </View>
                 <Pressable
                   accessibilityRole="button"

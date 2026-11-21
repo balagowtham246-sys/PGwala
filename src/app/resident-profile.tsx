@@ -12,7 +12,8 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Href, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
+import { Href, router, useLocalSearchParams } from 'expo-router';
 import {
   Eye,
   EyeOff,
@@ -36,11 +37,18 @@ import {
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useToast } from '@/context/toast-context';
+import { useConfirmMonthlyPaymentMutation } from '@/hooks/use-owner-billing';
+import {
+  useCheckoutResidentMutation,
+  useResidentProfileQuery,
+  useUpdateResidentWithLockMutation,
+} from '@/hooks/use-residents';
 import {
   buildWhatsAppReminderUrl,
   formatPaiseToRupees,
 } from '@/lib/billing-utils';
 import { triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
+import { queryKeys } from '@/lib/query-keys';
 import {
   calculateProRataFinalBillPaise,
   formatLocalIsoDate,
@@ -48,27 +56,16 @@ import {
   toSentenceCaseStatus,
   validateIndianPhone,
 } from '@/lib/ux-utils';
-import {
-  confirmMonthlyPayment,
-  PaymentMethod,
-} from '@/services/billing.service';
-import {
-  checkoutResident,
-  fetchResidentProfile,
-  ResidentProfileData,
-  subscribePropertyResidentsRealtime,
-  updateResidentWithLock,
-} from '@/services/residents.service';
+import { PaymentMethod } from '@/services/billing.service';
+import { subscribePropertyResidentsRealtime } from '@/services/residents.service';
 
 export default function ResidentProfileScreen() {
+  const qc = useQueryClient();
   const { id } = useLocalSearchParams<{ id?: string }>();
   const residentId = typeof id === 'string' ? id : Array.isArray(id) ? id[0] : '';
   const { showToast } = useToast();
 
-  const [profile, setProfile] = useState<ResidentProfileData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   // Privacy toggle for phone number
   const [showFullPhone, setShowFullPhone] = useState(false);
@@ -76,19 +73,16 @@ export default function ResidentProfileScreen() {
   // Inline Owner Notes editor
   const [editingNotes, setEditingNotes] = useState(false);
   const [notesDraft, setNotesDraft] = useState('');
-  const [savingNotes, setSavingNotes] = useState(false);
 
   // Change Room modal state
   const [roomModalVisible, setRoomModalVisible] = useState(false);
   const [draftRoomNumber, setDraftRoomNumber] = useState('');
   const [draftBedLabel, setDraftBedLabel] = useState('');
-  const [savingRoom, setSavingRoom] = useState(false);
   const [roomPickerRefreshSignal, setRoomPickerRefreshSignal] = useState(0);
 
   // Record Payment modal state
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
-  const [confirmingPayment, setConfirmingPayment] = useState(false);
 
   // Checkout modal & single-modal state machine (prevents nested Modal issues on iOS)
   const [checkoutModalMode, setCheckoutModalMode] = useState<
@@ -98,72 +92,45 @@ export default function ResidentProfileScreen() {
     formatLocalIsoDate()
   );
   const [generateFinalBill, setGenerateFinalBill] = useState(true);
-  const [checkingOut, setCheckingOut] = useState(false);
+  const checkingOutRef = useRef(false);
 
-  const requestSeqRef = useRef(0);
-  const loadedResidentIdRef = useRef<string>('');
+  const profileQuery = useResidentProfileQuery(residentId || undefined);
+  const updateResidentMutation = useUpdateResidentWithLockMutation();
+  const confirmPaymentMutation = useConfirmMonthlyPaymentMutation();
+  const checkoutMutation = useCheckoutResidentMutation();
 
-  const loadProfile = useCallback(
-    async (forceSpinner = false) => {
-      if (!residentId) {
-        loadedResidentIdRef.current = '';
-        setProfile(null);
-        setErrorMessage('No resident ID provided.');
-        setLoading(false);
-        setRefreshing(false);
-        return;
-      }
+  const profile = residentId ? profileQuery.data ?? null : null;
+  const loading = Boolean(residentId) && profileQuery.isPending && !profile;
+  const refreshing = manualRefreshing;
+  const errorMessage = !residentId
+    ? 'No resident ID provided.'
+    : profileQuery.isError
+      ? profileQuery.error.message
+      : null;
 
-      const seq = ++requestSeqRef.current;
-      const isInitialForId = loadedResidentIdRef.current !== residentId;
-      if (forceSpinner || isInitialForId) {
-        setLoading(true);
-      }
-
-      const res = await fetchResidentProfile(residentId);
-      if (seq !== requestSeqRef.current) return;
-
-      if (res.ok) {
-        loadedResidentIdRef.current = residentId;
-        setProfile(res.data);
-        setErrorMessage(null);
-      } else {
-        setErrorMessage(res.error.message);
-      }
-      setLoading(false);
-      setRefreshing(false);
-    },
-    [residentId]
-  );
-
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-      const timer = setTimeout(() => {
-        if (active) {
-          void loadProfile(false);
-        }
-      }, 0);
-      return () => {
-        active = false;
-        clearTimeout(timer);
-      };
-    }, [loadProfile])
-  );
+  const savingNotes = updateResidentMutation.isPending && editingNotes;
+  const savingRoom = updateResidentMutation.isPending && roomModalVisible;
+  const confirmingPayment = confirmPaymentMutation.isPending;
+  const checkingOut = checkoutMutation.isPending;
 
   const propertyId = profile?.propertyId ?? null;
 
   useEffect(() => {
-    if (!propertyId) return;
+    if (!propertyId || !residentId) return;
     return subscribePropertyResidentsRealtime(propertyId, () => {
-      void loadProfile(false);
+      void qc.invalidateQueries({
+        queryKey: queryKeys.residents.detail(residentId),
+      });
     });
-  }, [propertyId, loadProfile]);
+  }, [propertyId, residentId, qc]);
 
   const handleRefresh = useCallback(() => {
-    setRefreshing(true);
-    void loadProfile(false);
-  }, [loadProfile]);
+    if (!residentId) return;
+    setManualRefreshing(true);
+    void profileQuery.refetch().finally(() => {
+      setManualRefreshing(false);
+    });
+  }, [residentId, profileQuery]);
 
   const phoneNumber = profile?.phoneNumber;
 
@@ -245,44 +212,43 @@ export default function ResidentProfileScreen() {
   }, [profile]);
 
   const handleSaveNotes = useCallback(async () => {
-    if (!profile || savingNotes) return;
-    setSavingNotes(true);
+    if (!profile || updateResidentMutation.isPending) return;
     const trimmed = notesDraft.trim();
-    const res = await updateResidentWithLock(
-      profile.id,
-      profile.propertyId,
-      profile.updatedAt,
-      { notes: trimmed || null }
-    );
-    setSavingNotes(false);
+    try {
+      const outcome = await updateResidentMutation.mutateAsync({
+        residentId: profile.id,
+        propertyId: profile.propertyId,
+        loadedUpdatedAt: profile.updatedAt,
+        patch: { notes: trimmed || null },
+      });
 
-    if (!res.ok) {
-      Alert.alert('Could Not Save Notes', res.error.message);
-      return;
-    }
-
-    if (res.data.status === 'stale') {
-      Alert.alert('Update Conflict', res.data.message, [
-        {
-          text: 'Reload Latest',
-          onPress: () => {
-            setEditingNotes(false);
-            void loadProfile(true);
+      if (outcome.status === 'stale') {
+        Alert.alert('Update Conflict', outcome.message, [
+          {
+            text: 'Reload Latest',
+            onPress: () => {
+              setEditingNotes(false);
+              void profileQuery.refetch();
+            },
           },
-        },
-      ]);
-      return;
-    }
+        ]);
+        return;
+      }
 
-    if (res.data.status !== 'saved') {
-      Alert.alert('Could Not Save Notes', res.data.message);
-      return;
-    }
+      if (outcome.status !== 'saved') {
+        Alert.alert('Could Not Save Notes', outcome.message);
+        return;
+      }
 
-    triggerSuccessHaptic();
-    setEditingNotes(false);
-    await loadProfile(false);
-  }, [profile, savingNotes, notesDraft, loadProfile]);
+      triggerSuccessHaptic();
+      setEditingNotes(false);
+    } catch (err) {
+      Alert.alert(
+        'Could Not Save Notes',
+        err instanceof Error ? err.message : 'Failed to save notes.'
+      );
+    }
+  }, [profile, notesDraft, updateResidentMutation, profileQuery]);
 
   const handleOpenRoomModal = useCallback(() => {
     if (!profile) return;
@@ -293,45 +259,44 @@ export default function ResidentProfileScreen() {
   }, [profile]);
 
   const handleSaveRoomChange = useCallback(async () => {
-    if (!profile || savingRoom) return;
+    if (!profile || updateResidentMutation.isPending) return;
     if (!draftRoomNumber.trim() || !draftBedLabel.trim()) {
       Alert.alert('Select Room & Bed', 'Please choose a room and an available bed.');
       return;
     }
 
-    setSavingRoom(true);
-    const res = await updateResidentWithLock(
-      profile.id,
-      profile.propertyId,
-      profile.updatedAt,
-      {
-        room_number: draftRoomNumber.trim(),
-        bed_label: draftBedLabel.trim(),
-        gender: profile.gender ?? undefined,
+    try {
+      const outcome = await updateResidentMutation.mutateAsync({
+        residentId: profile.id,
+        propertyId: profile.propertyId,
+        loadedUpdatedAt: profile.updatedAt,
+        patch: {
+          room_number: draftRoomNumber.trim(),
+          bed_label: draftBedLabel.trim(),
+          gender: profile.gender ?? undefined,
+        },
+      });
+
+      if (
+        outcome.status === 'bed_taken' ||
+        outcome.status === 'stale' ||
+        outcome.status === 'gender_mismatch'
+      ) {
+        Alert.alert('Unable to Move Resident', outcome.message);
+        setRoomPickerRefreshSignal((n) => n + 1);
+        void profileQuery.refetch();
+        return;
       }
-    );
-    setSavingRoom(false);
 
-    if (!res.ok) {
-      Alert.alert('Room Update Failed', res.error.message);
-      return;
+      triggerSuccessHaptic();
+      setRoomModalVisible(false);
+    } catch (err) {
+      Alert.alert(
+        'Room Update Failed',
+        err instanceof Error ? err.message : 'Could not update room.'
+      );
     }
-
-    if (
-      res.data.status === 'bed_taken' ||
-      res.data.status === 'stale' ||
-      res.data.status === 'gender_mismatch'
-    ) {
-      Alert.alert('Unable to Move Resident', res.data.message);
-      setRoomPickerRefreshSignal((n) => n + 1);
-      await loadProfile(false);
-      return;
-    }
-
-    triggerSuccessHaptic();
-    setRoomModalVisible(false);
-    await loadProfile(false);
-  }, [profile, savingRoom, draftRoomNumber, draftBedLabel, loadProfile]);
+  }, [profile, draftRoomNumber, draftBedLabel, updateResidentMutation, profileQuery]);
 
   const handleRecordPaymentPress = useCallback(() => {
     if (!profile) return;
@@ -347,26 +312,25 @@ export default function ResidentProfileScreen() {
   }, [profile, firstUnpaidCharge]);
 
   const handleConfirmPayment = useCallback(async () => {
-    if (!profile || !firstUnpaidCharge || confirmingPayment) return;
-    setConfirmingPayment(true);
-    const res = await confirmMonthlyPayment({
-      chargeId: firstUnpaidCharge.id,
-      method: paymentMethod,
-    });
-    setConfirmingPayment(false);
+    if (!profile || !firstUnpaidCharge || confirmPaymentMutation.isPending) return;
+    try {
+      const data = await confirmPaymentMutation.mutateAsync({
+        chargeId: firstUnpaidCharge.id,
+        method: paymentMethod,
+      });
 
-    if (!res.ok) {
-      Alert.alert('Payment Confirmation Failed', res.error.message);
-      return;
+      triggerSuccessHaptic();
+      setPaymentModalVisible(false);
+      showToast(
+        `Marked ${formatPaiseToRupees(firstUnpaidCharge.amount_paise)} paid via ${paymentMethod.toUpperCase()} (Receipt #${data.receipt_number}).`
+      );
+    } catch (err) {
+      Alert.alert(
+        'Payment Confirmation Failed',
+        err instanceof Error ? err.message : 'Could not confirm payment.'
+      );
     }
-
-    triggerSuccessHaptic();
-    setPaymentModalVisible(false);
-    showToast(
-      `Marked ${formatPaiseToRupees(firstUnpaidCharge.amount_paise)} paid via ${paymentMethod.toUpperCase()} (Receipt #${res.data.receipt_number}).`
-    );
-    await loadProfile(false);
-  }, [profile, firstUnpaidCharge, confirmingPayment, paymentMethod, loadProfile, showToast]);
+  }, [profile, firstUnpaidCharge, paymentMethod, confirmPaymentMutation, showToast]);
 
   const handleOpenCheckoutModal = useCallback(() => {
     if (!profile) return;
@@ -376,41 +340,44 @@ export default function ResidentProfileScreen() {
   }, [profile]);
 
   const handleConfirmCheckout = useCallback(async () => {
-    if (!profile || checkingOut) return;
-    setCheckingOut(true);
-    const res = await checkoutResident({
-      residentId: profile.id,
-      propertyId: profile.propertyId,
-      leavingDateIso,
-      generateFinalBill,
-      finalBillPaise: generateFinalBill ? proRataFinalBillPaise : 0,
-    });
-    setCheckingOut(false);
+    if (!profile || checkoutMutation.isPending || checkingOutRef.current) return;
+    checkingOutRef.current = true;
+    try {
+      const outcome = await checkoutMutation.mutateAsync({
+        residentId: profile.id,
+        propertyId: profile.propertyId,
+        leavingDateIso,
+        generateFinalBill,
+        finalBillPaise: generateFinalBill ? proRataFinalBillPaise : 0,
+      });
 
-    if (!res.ok) {
-      Alert.alert('Check-out Failed', res.error.message);
-      return;
-    }
+      triggerSuccessHaptic();
+      setCheckoutModalMode('closed');
 
-    triggerSuccessHaptic();
-    setCheckoutModalMode('closed');
-    await loadProfile(false);
+      const wmSuffix =
+        outcome.releasedMachinesCount > 0 ? ' · Active wash released' : '';
+      const summaryNote = outcome.finalBillCreated
+        ? `${profile.fullName} checked out · Final bill ${formatPaiseToRupees(proRataFinalBillPaise)} added${wmSuffix}.`
+        : `${profile.fullName} checked out · ${profile.bedLabel || 'Bed'} in Room ${profile.roomNumber} is free${wmSuffix}.`;
 
-    const summaryNote = res.data.finalBillCreated
-      ? `${profile.fullName} checked out · Final bill ${formatPaiseToRupees(proRataFinalBillPaise)} added.`
-      : `${profile.fullName} checked out · ${profile.bedLabel || 'Bed'} in Room ${profile.roomNumber} is free.`;
-
-    showToast(summaryNote);
-    if (router.canGoBack()) {
-      router.back();
+      showToast(summaryNote);
+      if (router.canGoBack()) {
+        router.back();
+      }
+    } catch (err) {
+      Alert.alert(
+        'Check-out Failed',
+        err instanceof Error ? err.message : 'Could not check out resident.'
+      );
+    } finally {
+      checkingOutRef.current = false;
     }
   }, [
     profile,
-    checkingOut,
+    checkoutMutation,
     leavingDateIso,
     generateFinalBill,
     proRataFinalBillPaise,
-    loadProfile,
     showToast,
   ]);
 
@@ -431,7 +398,7 @@ export default function ResidentProfileScreen() {
           {errorMessage ? (
             <ErrorState
               message={errorMessage}
-              onRetry={() => void loadProfile(true)}
+              onRetry={() => void profileQuery.refetch()}
             />
           ) : (
             <EmptyState
@@ -475,7 +442,7 @@ export default function ResidentProfileScreen() {
           {errorMessage ? (
             <ErrorState
               message={errorMessage}
-              onRetry={() => void loadProfile(false)}
+              onRetry={() => void profileQuery.refetch()}
               style={{ marginBottom: 12 }}
             />
           ) : null}

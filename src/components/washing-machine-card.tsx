@@ -22,6 +22,7 @@ import {
   fetchWashingMachineStatus,
   formatCountdown,
   getRemainingWashSeconds,
+  isWashingMachineConflictError,
   releaseWashingMachineUnit,
   requestWashingMachineAccess,
   startWashingMachineUnit,
@@ -100,6 +101,7 @@ export function WashingMachineCard({
 
   const channelRef = useRef<RealtimeChannel | null>(null);
   const isMountedRef = useRef(true);
+  const actionLockRef = useRef(false);
   const queueActionLockRef = useRef(false);
 
   const activeMachines = machines.filter((m) => m.is_active);
@@ -196,6 +198,7 @@ export function WashingMachineCard({
                     title: 'A washing machine is now free!',
                     body: `${firstFreeMachineName} is free to start your wash.`,
                     sound: true,
+                    data: { type: 'washing_machine' },
                   },
                   trigger: null,
                 });
@@ -293,6 +296,7 @@ export function WashingMachineCard({
           content: {
             title: `${unit.machine_name} is likely free`,
             body: 'The 45-minute wash cycle should be done now.',
+            data: { type: 'washing_machine' },
           },
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
@@ -488,19 +492,16 @@ export function WashingMachineCard({
     }
   };
 
-  // Action: Start washing machine session (strictly online)
+  // Action: Start washing machine session (strictly online, double-tap & race guarded)
   const handleStartUsing = async (targetMachineId?: string) => {
-    if (!propertyId || actionLoading) return;
+    if (!propertyId || actionLoading || actionLockRef.current) return;
 
     if (userRole === 'student' && currentResidentId) {
       const activeUnit = machines.find(
         (m) => m.current_resident_id === currentResidentId && m.status === 'in_use'
       );
       if (activeUnit) {
-        Alert.alert(
-          'Wash Already Running',
-          `You are already using ${activeUnit.machine_name}. Mark it free before starting another machine.`
-        );
+        showToast(`You are already using ${activeUnit.machine_name}. Mark it free first.`);
         return;
       }
     }
@@ -517,6 +518,7 @@ export function WashingMachineCard({
       return;
     }
 
+    actionLockRef.current = true;
     try {
       setActionLoading(true);
       if (targetMachineId) setActionUnitId(targetMachineId);
@@ -524,6 +526,14 @@ export function WashingMachineCard({
 
       const result = await startWashingMachineUnit(propertyId, targetMachineId);
       if (!result.ok) {
+        if (isWashingMachineConflictError(result.error)) {
+          showToast(
+            result.error.message ||
+              'Machine was just booked by another resident — refreshing status'
+          );
+          await fetchStatus(false);
+          return;
+        }
         throw new Error(result.error.message);
       }
 
@@ -541,14 +551,18 @@ export function WashingMachineCard({
           `Wash started on ${result.data.machineName || 'selected machine'}`
         );
       }
-    } catch (err: any) {
-      console.warn('[WashingMachine] Start error:', err.message);
-      Alert.alert(
-        'Could Not Start',
-        err.message || 'Washing machine could not be started.'
-      );
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error ? err.message : 'Washing machine could not be started.';
+      console.warn('[WashingMachine] Start error:', msg);
+      if (isWashingMachineConflictError({ message: msg })) {
+        showToast(msg);
+      } else {
+        Alert.alert('Could Not Start', msg);
+      }
       await fetchStatus(false);
     } finally {
+      actionLockRef.current = false;
       if (isMountedRef.current) {
         setActionLoading(false);
         setActionUnitId(null);
@@ -556,9 +570,9 @@ export function WashingMachineCard({
     }
   };
 
-  // Action: Release washing machine session (strictly online)
+  // Action: Release washing machine session (strictly online, double-tap guarded)
   const handleMarkFree = async (targetMachineId?: string) => {
-    if (!propertyId || actionLoading) return;
+    if (!propertyId || actionLoading || actionLockRef.current) return;
 
     Alert.alert(
       'Finish Washing Session',
@@ -569,6 +583,8 @@ export function WashingMachineCard({
           text: 'Mark Free',
           style: 'default',
           onPress: async () => {
+            if (actionLockRef.current) return;
+            actionLockRef.current = true;
             try {
               setActionLoading(true);
               if (targetMachineId) setActionUnitId(targetMachineId);
@@ -584,14 +600,14 @@ export function WashingMachineCard({
 
               await fetchStatus(false);
               showToast('Machine marked free for fellow residents');
-            } catch (err: any) {
-              console.warn('[WashingMachine] Release error:', err.message);
-              Alert.alert(
-                'Error',
-                err.message || 'Could not mark machine free.'
-              );
+            } catch (err: unknown) {
+              const msg =
+                err instanceof Error ? err.message : 'Could not mark machine free.';
+              console.warn('[WashingMachine] Release error:', msg);
+              Alert.alert('Error', msg);
               await fetchStatus(false);
             } finally {
+              actionLockRef.current = false;
               if (isMountedRef.current) {
                 setActionLoading(false);
                 setActionUnitId(null);
@@ -635,6 +651,7 @@ export function WashingMachineCard({
               content: {
                 title: `${earliest.machine_name} should be free soon`,
                 body: 'The current wash cycle is finishing — check PGwala now.',
+                data: { type: 'washing_machine' },
               },
               trigger: {
                 type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,

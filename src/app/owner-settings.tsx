@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 import { router } from 'expo-router';
 import {
   Building2,
@@ -37,6 +38,7 @@ import { supabase } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader } from '@/components/ui/owner';
 import { BiometricSettingsRow } from '@/components/biometric-settings-row';
+import { SettingsComplianceSection } from '@/components/settings-compliance-section';
 
 interface WashingMachineRow {
   id: string;
@@ -487,6 +489,8 @@ export default function OwnerSettingsScreen() {
           </View>
         </View>
 
+        <SettingsComplianceSection role="owner" userEmail={user?.email} />
+
         {/* Group 3: Log Out */}
         <View style={styles.section}>
           <View style={styles.groupedCard}>
@@ -512,7 +516,7 @@ export default function OwnerSettingsScreen() {
         </View>
 
         <Text style={[styles.versionText, { color: colors.textMuted }]}>
-          PGwala v2.0 • Owner Portal
+          PGwala v{Constants.expoConfig?.version || '1.0.0'} • Owner Portal
         </Text>
       </ScrollView>
 

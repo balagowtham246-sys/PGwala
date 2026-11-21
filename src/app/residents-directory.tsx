@@ -1,4 +1,4 @@
-import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AppState,
   Modal,
@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useQueryClient } from '@tanstack/react-query';
 import { Href, router, useFocusEffect } from 'expo-router';
 import {
   ChevronRight,
@@ -31,16 +32,16 @@ import {
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useProperty } from '@/context/property-context';
+import { useResidentsDirectoryQuery } from '@/hooks/use-residents';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
 import { triggerSelectionHaptic } from '@/lib/haptics';
+import { queryKeys } from '@/lib/query-keys';
 import {
   ResidentGender,
   sortRoomCodes,
   toSentenceCaseStatus,
 } from '@/lib/ux-utils';
 import {
-  fetchResidentsDirectory,
-  getCachedResidentsDirectory,
   ResidentDirectoryItem,
   subscribePropertyResidentsRealtime,
 } from '@/services/residents.service';
@@ -108,12 +109,10 @@ const ResidentDirectoryRow = memo(function ResidentDirectoryRow({
 });
 
 export default function ResidentsDirectoryScreen() {
+  const qc = useQueryClient();
   const { selectedProperty, selectedPropertyId, loadingProperties } = useProperty();
 
-  const [residents, setResidents] = useState<ResidentDirectoryItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   // Search & unified filter modal state
   const [searchQuery, setSearchQuery] = useState('');
@@ -123,49 +122,19 @@ export default function ResidentsDirectoryScreen() {
   const [roomFilter, setRoomFilter] = useState<string>('all');
   const [filterSheetVisible, setFilterSheetVisible] = useState(false);
 
-  const requestSeqRef = useRef(0);
-
-  const refreshFromNetwork = useCallback(
-    async (propertyId: string, showSpinner: boolean) => {
-      const seq = ++requestSeqRef.current;
-      if (showSpinner) {
-        setLoading(true);
-      }
-
-      const res = await fetchResidentsDirectory(propertyId);
-      if (seq !== requestSeqRef.current) return;
-
-      if (res.ok) {
-        setResidents(res.data);
-        setErrorMessage(null);
-      } else {
-        setErrorMessage(res.error.message);
-      }
-      setLoading(false);
-      setRefreshing(false);
-    },
-    []
+  const directoryQuery = useResidentsDirectoryQuery(selectedPropertyId);
+  const residents = useMemo(
+    () => directoryQuery.data ?? [],
+    [directoryQuery.data]
   );
-
-  const syncDirectory = useCallback(async () => {
-    if (!selectedPropertyId) {
-      setResidents([]);
-      setErrorMessage(null);
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
-
-    setErrorMessage(null);
-    const cached = await getCachedResidentsDirectory(selectedPropertyId);
-    if (cached) {
-      setResidents(cached);
-      setLoading(false);
-      await refreshFromNetwork(selectedPropertyId, false);
-    } else {
-      await refreshFromNetwork(selectedPropertyId, true);
-    }
-  }, [selectedPropertyId, refreshFromNetwork]);
+  const loading =
+    Boolean(selectedPropertyId) &&
+    directoryQuery.isPending &&
+    !directoryQuery.data;
+  const refreshing = manualRefreshing;
+  const errorMessage = directoryQuery.isError
+    ? directoryQuery.error.message
+    : null;
 
   const [isScreenFocused, setIsScreenFocused] = useState(true);
   const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
@@ -173,18 +142,10 @@ export default function ResidentsDirectoryScreen() {
   useFocusEffect(
     useCallback(() => {
       setIsScreenFocused(true);
-      let active = true;
-      const timer = setTimeout(() => {
-        if (active) {
-          void syncDirectory();
-        }
-      }, 0);
       return () => {
         setIsScreenFocused(false);
-        active = false;
-        clearTimeout(timer);
       };
-    }, [syncDirectory])
+    }, [])
   );
 
   useEffect(() => {
@@ -201,20 +162,24 @@ export default function ResidentsDirectoryScreen() {
       if (debounceTimer) clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
-        void refreshFromNetwork(selectedPropertyId, false);
+        void qc.invalidateQueries({
+          queryKey: queryKeys.residents.directory(selectedPropertyId),
+        });
       }, 300);
     });
     return () => {
       if (debounceTimer) clearTimeout(debounceTimer);
       unsubscribe();
     };
-  }, [selectedPropertyId, isScreenFocused, isAppActive, refreshFromNetwork]);
+  }, [selectedPropertyId, isScreenFocused, isAppActive, qc]);
 
   const handleRefresh = useCallback(() => {
     if (!selectedPropertyId) return;
-    setRefreshing(true);
-    void refreshFromNetwork(selectedPropertyId, false);
-  }, [selectedPropertyId, refreshFromNetwork]);
+    setManualRefreshing(true);
+    void directoryQuery.refetch().finally(() => {
+      setManualRefreshing(false);
+    });
+  }, [selectedPropertyId, directoryQuery]);
 
   const availableRooms = useMemo(() => {
     const rooms = new Set<string>();
@@ -494,7 +459,7 @@ export default function ResidentsDirectoryScreen() {
                 message={errorMessage}
                 onRetry={() => {
                   if (selectedPropertyId) {
-                    void refreshFromNetwork(selectedPropertyId, true);
+                    void directoryQuery.refetch();
                   }
                 }}
                 style={styles.errorBanner}

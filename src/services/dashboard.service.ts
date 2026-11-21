@@ -193,6 +193,7 @@ export interface StudentDashboardData {
   resident: ResidentAccommodationInfo | null;
   menus: Record<MealType, ResidentFoodMenu | null>;
   pendingDuesPaise: number | null;
+  pendingReviewPaise?: number | null;
   latestMovement: ResidentMovementRecord | null;
   hasUnreadChat: boolean;
 }
@@ -1042,7 +1043,19 @@ export async function fetchStudentDashboard(
     const resolvedMenus = createEmptyResidentMenus();
 
     // 2. Fast Path: Composite summary RPC + outstanding dues + unread chat check + safe property/owner/meal metadata in parallel
-    const [summaryRes, chargesRes, latestChatRes, lastSeenIso, propertyMeta, todayMealTimes] =
+    const fetchPendingReportsSafe = async () => {
+      try {
+        return await supabase
+          .from('student_payment_reports')
+          .select('charge_id')
+          .eq('resident_id', residentInfo.id)
+          .eq('status', 'pending');
+      } catch {
+        return { data: null, error: null };
+      }
+    };
+
+    const [summaryRes, chargesRes, pendingReportsRes, latestChatRes, lastSeenIso, propertyMeta, todayMealTimes] =
       await Promise.all([
         supabase.rpc('get_student_dashboard_summary', {
           p_property_id: residentInfo.property_id,
@@ -1051,9 +1064,10 @@ export async function fetchStudentDashboard(
         }),
         supabase
           .from('charges')
-          .select('amount_paise')
+          .select('id, amount_paise')
           .eq('resident_id', residentInfo.id)
           .eq('status', 'outstanding'),
+        fetchPendingReportsSafe(),
         supabase
           .from('property_chat_messages')
           .select('created_at, resident_id')
@@ -1077,13 +1091,30 @@ export async function fetchStudentDashboard(
     residentInfo.owner_phone = propertyMeta.owner_phone;
     residentInfo.owner_name = propertyMeta.owner_name;
 
+    const pendingChargeIds = new Set<string>(
+      (!pendingReportsRes.error && pendingReportsRes.data
+        ? (pendingReportsRes.data as { charge_id?: string | null }[])
+        : []
+      )
+        .map((r) => r.charge_id)
+        .filter((id): id is string => Boolean(id))
+    );
+
     let pendingDuesPaise: number | null = null;
+    let pendingReviewPaise: number | null = null;
     if (!chargesRes.error && chargesRes.data) {
-      let totalOut = 0;
-      for (const ch of chargesRes.data) {
-        totalOut += ch.amount_paise || 0;
+      let totalDue = 0;
+      let totalReview = 0;
+      for (const ch of chargesRes.data as { id?: string; amount_paise?: number }[]) {
+        const amt = ch.amount_paise || 0;
+        if (ch.id && pendingChargeIds.has(ch.id)) {
+          totalReview += amt;
+        } else {
+          totalDue += amt;
+        }
       }
-      pendingDuesPaise = totalOut;
+      pendingDuesPaise = totalDue;
+      pendingReviewPaise = totalReview;
     } else if (chargesRes.error) {
       console.warn('[ResidentDashboard] Dues fetch error:', chargesRes.error.message);
     }
@@ -1172,6 +1203,7 @@ export async function fetchStudentDashboard(
       resident: residentInfo,
       menus: resolvedMenus,
       pendingDuesPaise,
+      pendingReviewPaise,
       latestMovement: latestGateRecord,
       hasUnreadChat,
     };
@@ -1185,36 +1217,23 @@ export async function fetchStudentDashboard(
   }
 }
 
+const inFlightGateMovements = new Map<string, Promise<ServiceResult<RecordMovementOutcome>>>();
+
 export async function recordStudentMovement(
   input: RecordStudentMovementInput
 ): Promise<ServiceResult<RecordMovementOutcome>> {
-  const traceLabel = `mutation:gate_movement:${input.direction}`;
-  startTrace(traceLabel);
+  const flightKey = `${input.userId || 'anon'}:${input.direction}`;
+  const existingFlight = inFlightGateMovements.get(flightKey);
+  if (existingFlight) {
+    return existingFlight;
+  }
 
-  try {
-    const { data, error } = await supabase.rpc('record_student_movement', {
-      p_direction: input.direction,
-      ...(input.purpose !== undefined ? { p_purpose: input.purpose } : {}),
-      ...(input.expectedReturnTime !== undefined
-        ? { p_expected_return_time: input.expectedReturnTime }
-        : {}),
-      ...(input.foodRequired !== undefined ? { p_food_required: input.foodRequired } : {}),
-      ...(input.note !== undefined ? { p_note: input.note } : {}),
-    });
-    recordRoundTrip(traceLabel, 1);
+  const run = (async (): Promise<ServiceResult<RecordMovementOutcome>> => {
+    const traceLabel = `mutation:gate_movement:${input.direction}`;
+    startTrace(traceLabel);
 
-    if (error) throw error;
-    if (!data?.success) {
-      throw new Error(data?.error || 'Failed to update attendance.');
-    }
-
-    await invalidatePrefix(
-      input.userId ? studentDashboardCacheKey(input.userId) : 'dashboard:student:'
-    );
-    return ok({ queued: false });
-  } catch (err: unknown) {
-    if (isLikelyNetworkError(err)) {
-      const payload: GateMovementOfflinePayload & Record<string, unknown> = {
+    try {
+      const { data, error } = await supabase.rpc('record_student_movement', {
         p_direction: input.direction,
         ...(input.purpose !== undefined ? { p_purpose: input.purpose } : {}),
         ...(input.expectedReturnTime !== undefined
@@ -1222,15 +1241,45 @@ export async function recordStudentMovement(
           : {}),
         ...(input.foodRequired !== undefined ? { p_food_required: input.foodRequired } : {}),
         ...(input.note !== undefined ? { p_note: input.note } : {}),
-      };
-      const key =
-        input.idempotencyKey?.trim() ||
-        `gate-${input.direction}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      await enqueueOfflineMutation('gate_movement_log', payload, key);
-      return ok({ queued: true });
+      });
+      recordRoundTrip(traceLabel, 1);
+
+      if (error) throw error;
+      if (!data?.success) {
+        throw new Error(data?.error || 'Failed to update attendance.');
+      }
+
+      await invalidatePrefix(
+        input.userId ? studentDashboardCacheKey(input.userId) : 'dashboard:student:'
+      );
+      return ok({ queued: false });
+    } catch (err: unknown) {
+      if (isLikelyNetworkError(err)) {
+        const payload: GateMovementOfflinePayload & Record<string, unknown> = {
+          p_direction: input.direction,
+          ...(input.purpose !== undefined ? { p_purpose: input.purpose } : {}),
+          ...(input.expectedReturnTime !== undefined
+            ? { p_expected_return_time: input.expectedReturnTime }
+            : {}),
+          ...(input.foodRequired !== undefined ? { p_food_required: input.foodRequired } : {}),
+          ...(input.note !== undefined ? { p_note: input.note } : {}),
+        };
+        const key =
+          input.idempotencyKey?.trim() ||
+          `gate-${input.direction}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await enqueueOfflineMutation('gate_movement_log', payload, key);
+        return ok({ queued: true });
+      }
+      return fail(err, 'Failed to update attendance.');
+    } finally {
+      endTrace(traceLabel);
     }
-    return fail(err, 'Failed to update attendance.');
+  })();
+
+  inFlightGateMovements.set(flightKey, run);
+  try {
+    return await run;
   } finally {
-    endTrace(traceLabel);
+    inFlightGateMovements.delete(flightKey);
   }
 }

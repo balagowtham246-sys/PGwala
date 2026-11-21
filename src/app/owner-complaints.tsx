@@ -5,7 +5,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react-native';
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -37,11 +37,14 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
+import {
+  useOwnerComplaintsQuery,
+  useOwnerCreateComplaintMutation,
+  useOwnerUpdateComplaintMutation,
+} from '@/hooks/use-complaints';
 import { sortComplaintsByUrgencyThenDate } from '@/lib/complaint-utils';
 import { extractErrorMessage } from '@/lib/error-utils';
-import { getSignedComplaintPhotoUrl, supabase } from '@/lib/supabase';
-import { sortRoomCodes } from '@/lib/ux-utils';
-import { ownerCreateComplaint } from '@/services/residents.service';
+import { getSignedComplaintPhotoUrl } from '@/lib/supabase';
 
 export type {
   ActiveResidentOption,
@@ -67,12 +70,8 @@ export default function OwnerComplaintsScreen() {
   const activeSelectedPropertyId = selectedPropertyId;
   const activeSelectedPropertyName = selectedProperty?.name;
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [propertyId, setPropertyId] = useState<string | null>(null);
-  const [propertyName, setPropertyName] = useState('My PG');
-  const [complaints, setComplaints] = useState<OwnerComplaintItem[]>([]);
-  const [activeResidents, setActiveResidents] = useState<ActiveResidentOption[]>([]);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const lastErrorAtRef = useRef(0);
   const [clearedResidentId, setClearedResidentId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -111,17 +110,87 @@ export default function OwnerComplaintsScreen() {
   const [createPriority, setCreatePriority] = useState<ComplaintPriority>('medium');
   const [createTitle, setCreateTitle] = useState('');
   const [createDescription, setCreateDescription] = useState('');
-  const [creatingComplaint, setCreatingComplaint] = useState(false);
 
   // Edit / Action Modal
   const [selectedComplaint, setSelectedComplaint] = useState<OwnerComplaintItem | null>(null);
   const [newStatus, setNewStatus] = useState<ComplaintStatus>('open');
   const [notes, setNotes] = useState('');
-  const [updating, setUpdating] = useState(false);
 
   // Full-Screen Image Viewer
   const [fullImageUrl, setFullImageUrl] = useState<string | null>(null);
   const [loadingFullImage, setLoadingFullImage] = useState(false);
+
+  const complaintsQuery = useOwnerComplaintsQuery({
+    userId,
+    selectedPropertyId: activeSelectedPropertyId,
+    selectedPropertyName: activeSelectedPropertyName,
+  });
+  const createComplaintMutation = useOwnerCreateComplaintMutation();
+  const updateComplaintMutation = useOwnerUpdateComplaintMutation();
+
+  const firstPage = complaintsQuery.data?.pages[0];
+  const loading = complaintsQuery.isPending && !firstPage;
+  const refreshing = manualRefreshing;
+  const loadingMore = complaintsQuery.isFetchingNextPage;
+  const hasMore = Boolean(complaintsQuery.hasNextPage);
+  const propertyId = firstPage?.propertyId ?? activeSelectedPropertyId ?? null;
+  const propertyName =
+    firstPage?.propertyName ?? activeSelectedPropertyName ?? 'My PG';
+  const activeResidents = useMemo(
+    () => firstPage?.activeResidents ?? [],
+    [firstPage?.activeResidents]
+  );
+  const complaints = useMemo(() => {
+    const pages = complaintsQuery.data?.pages ?? [];
+    const seen = new Set<string>();
+    const combined: OwnerComplaintItem[] = [];
+    for (const page of pages) {
+      for (const item of page.complaints) {
+        if (!seen.has(item.id)) {
+          seen.add(item.id);
+          combined.push(item);
+        }
+      }
+    }
+    return combined;
+  }, [complaintsQuery.data?.pages]);
+
+  const creatingComplaint = createComplaintMutation.isPending;
+  const updating = updateComplaintMutation.isPending;
+
+  useEffect(() => {
+    if (
+      complaintsQuery.isError &&
+      complaintsQuery.errorUpdatedAt > lastErrorAtRef.current &&
+      (!firstPage || manualRefreshing)
+    ) {
+      lastErrorAtRef.current = complaintsQuery.errorUpdatedAt;
+      Alert.alert(
+        'Load Error',
+        complaintsQuery.error.message || 'Could not load complaints.'
+      );
+    }
+  }, [
+    complaintsQuery.isError,
+    complaintsQuery.error,
+    complaintsQuery.errorUpdatedAt,
+    firstPage,
+    manualRefreshing,
+  ]);
+
+  const loadData = async () => {
+    setManualRefreshing(true);
+    try {
+      await complaintsQuery.refetch();
+    } finally {
+      setManualRefreshing(false);
+    }
+  };
+
+  const loadMoreComplaints = () => {
+    if (!hasMore || loadingMore) return;
+    void complaintsQuery.fetchNextPage();
+  };
 
   const handleViewPhoto = async (rawUrlOrPath: string) => {
     try {
@@ -135,115 +204,6 @@ export default function OwnerComplaintsScreen() {
       setLoadingFullImage(false);
     }
   };
-
-  const loadData = useCallback(async () => {
-    if (!userId) return;
-    try {
-      setLoading(true);
-
-      // 1. Resolve active property ID and name
-      let activePropId = activeSelectedPropertyId;
-      let activePropName = activeSelectedPropertyName;
-
-      if (!activePropId) {
-        const { data: propData, error: propError } = await supabase
-          .from('properties')
-          .select('id, name')
-          .eq('owner_id', userId)
-          .eq('is_active', true)
-          .order('created_at', { ascending: true })
-          .limit(1);
-
-        if (propError) throw propError;
-        if (!propData || propData.length === 0) {
-          setPropertyId(null);
-          setComplaints([]);
-          setActiveResidents([]);
-          setLoading(false);
-          return;
-        }
-
-        activePropId = propData[0].id;
-        activePropName = propData[0].name;
-      }
-
-      setPropertyId(activePropId);
-      setPropertyName(activePropName || 'My PG');
-
-      // 2. Fetch complaints & active residents in parallel
-      const [compRes, residentsRes] = await Promise.all([
-        supabase
-          .from('complaints')
-          .select(`
-            id,
-            property_id,
-            resident_id,
-            category,
-            priority,
-            status,
-            title,
-            description,
-            photo_url,
-            owner_notes,
-            resolved_at,
-            created_at,
-            resident:residents (
-              full_name,
-              room_number,
-              phone_number
-            )
-          `)
-          .eq('property_id', activePropId)
-          .order('created_at', { ascending: false }),
-        supabase
-          .from('residents')
-          .select('id, full_name, room_number')
-          .eq('property_id', activePropId)
-          .eq('is_active', true),
-      ]);
-
-      if (compRes.error) {
-        console.warn('[OwnerComplaints] Could not fetch complaints:', compRes.error.message);
-        setComplaints([]);
-      } else {
-        setComplaints((compRes.data as unknown as OwnerComplaintItem[]) || []);
-      }
-
-      if (residentsRes.error) {
-        console.warn('[OwnerComplaints] Could not fetch residents:', residentsRes.error.message);
-        setActiveResidents([]);
-      } else {
-        const sortedResidents = [...((residentsRes.data as ActiveResidentOption[]) || [])].sort(
-          (a, b) => {
-            const roomCmp = sortRoomCodes(a.room_number, b.room_number);
-            if (roomCmp !== 0) return roomCmp;
-            return a.full_name.localeCompare(b.full_name);
-          }
-        );
-        setActiveResidents(sortedResidents);
-      }
-    } catch (err: unknown) {
-      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
-      console.error('[OwnerComplaints] Load error:', err);
-      Alert.alert('Load Error', msg || 'Could not load complaints.');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [userId, activeSelectedPropertyId, activeSelectedPropertyName]);
-
-  useEffect(() => {
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (!cancelled) {
-        void loadData();
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [loadData]);
 
   const handleOpenCreateModal = () => {
     const defaultResidentId =
@@ -277,25 +237,29 @@ export default function OwnerComplaintsScreen() {
       return;
     }
 
-    setCreatingComplaint(true);
-    const res = await ownerCreateComplaint(propertyId, createResidentId, {
-      category: createCategory,
-      priority: createPriority,
-      title: trimmedTitle,
-      description: trimmedDesc,
-    });
-    setCreatingComplaint(false);
-
-    if (!res.ok) {
-      Alert.alert('Could Not Log', res.error.message);
-      return;
-    }
-
+    const resOption = activeResidents.find((r) => r.id === createResidentId);
     setCreateModalVisible(false);
     setCreateTitle('');
     setCreateDescription('');
     showToast('Complaint logged · Maintenance ticket created.');
-    await loadData();
+
+    try {
+      await createComplaintMutation.mutateAsync({
+        propertyId,
+        residentId: createResidentId,
+        residentSnapshot: {
+          full_name: resOption?.full_name || 'Resident',
+          room_number: resOption?.room_number || '',
+        },
+        category: createCategory,
+        priority: createPriority,
+        title: trimmedTitle,
+        description: trimmedDesc,
+      });
+    } catch (err: unknown) {
+      const msg = extractErrorMessage(err, 'Could not log complaint.');
+      Alert.alert('Could Not Log', msg);
+    }
   };
 
   const handleOpenActionModal = (item: OwnerComplaintItem) => {
@@ -307,33 +271,28 @@ export default function OwnerComplaintsScreen() {
   const handleSaveUpdate = async () => {
     if (!selectedComplaint || updating) return;
 
-    setUpdating(true);
+    const targetComplaint = selectedComplaint;
+    const targetStatus = newStatus;
+    const isNowResolved = targetStatus === 'resolved';
+    const resolvedAtValue = isNowResolved
+      ? targetComplaint.resolved_at || new Date().toISOString()
+      : null;
+    const trimmedNotes = notes.trim() || null;
+
+    setSelectedComplaint(null);
+    showToast(`Complaint marked as ${STATUS_CONFIG[targetStatus].label}.`);
+
     try {
-      const isNowResolved = newStatus === 'resolved';
-      const resolvedAtValue = isNowResolved
-        ? selectedComplaint.resolved_at || new Date().toISOString()
-        : null;
-
-      const { error } = await supabase
-        .from('complaints')
-        .update({
-          status: newStatus,
-          owner_notes: notes.trim() || null,
-          resolved_at: resolvedAtValue,
-        })
-        .eq('id', selectedComplaint.id);
-
-      if (error) throw error;
-
-      showToast(`Complaint marked as ${STATUS_CONFIG[newStatus].label}.`);
-      setSelectedComplaint(null);
-      void loadData();
+      await updateComplaintMutation.mutateAsync({
+        id: targetComplaint.id,
+        status: targetStatus,
+        ownerNotes: trimmedNotes,
+        resolvedAt: resolvedAtValue,
+      });
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       console.error('[OwnerComplaints] Update error:', err);
       Alert.alert('Update Failed', msg || 'Could not update complaint.');
-    } finally {
-      setUpdating(false);
     }
   };
 
@@ -421,11 +380,19 @@ export default function OwnerComplaintsScreen() {
         maxToRenderPerBatch={12}
         windowSize={7}
         removeClippedSubviews={Platform.OS === 'android'}
+        onEndReached={() => void loadMoreComplaints()}
+        onEndReachedThreshold={0.4}
+        ListFooterComponent={
+          loadingMore ? (
+            <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+            </View>
+          ) : undefined
+        }
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => {
-              setRefreshing(true);
               void loadData();
             }}
             colors={[OwnerTheme.colors.primary]}

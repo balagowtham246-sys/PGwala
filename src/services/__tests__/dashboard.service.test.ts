@@ -237,4 +237,137 @@ describe('dashboard.service', () => {
     }
     expect(await getPendingCount()).toBe(1);
   });
+
+  it('coalesces concurrent double-tap recordStudentMovement calls for the same direction', async () => {
+    let resolveRpc: (value: unknown) => void = () => {};
+    mockedRpc.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRpc = resolve;
+        })
+    );
+
+    const p1 = recordStudentMovement({ direction: 'IN', userId: 'user-1' });
+    const p2 = recordStudentMovement({ direction: 'IN', userId: 'user-1' });
+    resolveRpc({ data: { success: true }, error: null });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(mockedRpc).toHaveBeenCalledTimes(1);
+    expect(r1).toEqual({ ok: true, data: { queued: false } });
+    expect(r2).toEqual({ ok: true, data: { queued: false } });
+  });
+
+  it('moves charges with pending payment proofs from pendingDuesPaise into pendingReviewPaise', async () => {
+    mockedRpc.mockResolvedValue({ data: null, error: { message: 'missing rpc' } });
+    mockedFrom.mockImplementation((table: string) => {
+      if (table === 'residents') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: jest.fn().mockResolvedValue({
+                  data: {
+                    id: 'res-1',
+                    property_id: 'prop-1',
+                    profile_id: 'user-1',
+                    full_name: 'Asha',
+                    room_number: '101',
+                    phone_number: '9999999999',
+                    is_active: true,
+                    property: { id: 'prop-1', name: 'Alpha PG', address: 'Main Rd' },
+                  },
+                  error: null,
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'charges') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: jest.fn().mockResolvedValue({
+                data: [
+                  { id: 'chg-rent', amount_paise: 850000 },
+                  { id: 'chg-eb', amount_paise: 10000 },
+                ],
+                error: null,
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'student_payment_reports') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: jest.fn().mockResolvedValue({
+                data: [{ charge_id: 'chg-rent' }],
+                error: null,
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'property_chat_messages') {
+        return {
+          select: () => ({
+            eq: () => ({
+              neq: () => ({
+                eq: () => ({
+                  order: () => ({
+                    limit: () => ({
+                      maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'food_menus') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                eq: jest.fn().mockResolvedValue({ data: [], error: null }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'movement_logs') {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: () => ({
+                limit: () => ({
+                  maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+                }),
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'properties') {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+            }),
+          }),
+        };
+      }
+      throw new Error(`Unexpected table: ${table}`);
+    });
+
+    const res = await fetchStudentDashboard('user-1', { dateIso: '2026-11-21' });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.data.pendingDuesPaise).toBe(10000);
+      expect(res.data.pendingReviewPaise).toBe(850000);
+    }
+  });
 });

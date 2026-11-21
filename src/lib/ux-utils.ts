@@ -452,6 +452,10 @@ export function isReturnAfterCurfew(
 
   const returnMins = parseTimeToMinutes(cleanReturn);
   if (returnMins === null) return false;
+  // Early post-midnight returns (12:00 am - 4:59 am) count as overnight past evening curfews (>= 6:00 pm)
+  if (curfewMins >= 18 * 60 && returnMins < 5 * 60) {
+    return returnMins + 24 * 60 > curfewMins;
+  }
   return returnMins > curfewMins;
 }
 
@@ -481,5 +485,66 @@ export function formatLocalIsoDate(date: Date = new Date()): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+export const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+export interface IstCalendarParts {
+  year: number;
+  monthIndex: number;
+  day: number;
+  hours: number;
+  minutes: number;
+  weekdayIndex: number;
+  isoDate: string;
+  monthStartIso: string;
+}
+
+/**
+ * Extracts IST (Asia/Kolkata, UTC+05:30) calendar parts from a Date without
+ * relying on the host OS timezone (prevents 00:00–05:30 IST -> UTC day shifts).
+ */
+export function getIstCalendarParts(date: Date = new Date()): IstCalendarParts {
+  const shifted = new Date(date.getTime() + IST_OFFSET_MS);
+  const year = shifted.getUTCFullYear();
+  const monthIndex = shifted.getUTCMonth();
+  const day = shifted.getUTCDate();
+  const hours = shifted.getUTCHours();
+  const minutes = shifted.getUTCMinutes();
+  const weekdayIndex = shifted.getUTCDay();
+  const monthStr = String(monthIndex + 1).padStart(2, '0');
+  const dayStr = String(day).padStart(2, '0');
+  return {
+    year,
+    monthIndex,
+    day,
+    hours,
+    minutes,
+    weekdayIndex,
+    isoDate: `${year}-${monthStr}-${dayStr}`,
+    monthStartIso: `${year}-${monthStr}-01`,
+  };
+}
+
+/**
+ * Returns the YYYY-MM-01 billing month start string in IST.
+ */
+export function getIstMonthStartIso(date: Date = new Date()): string {
+  return getIstCalendarParts(date).monthStartIso;
+}
+
+/**
+ * Adds deltaDays to a strict YYYY-MM-DD calendar date in UTC without DST/timezone drift.
+ */
+export function addDaysToIsoDate(isoDate: string, deltaDays: number): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate.trim());
+  if (!match) return isoDate;
+  const utc = new Date(
+    Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]) + deltaDays)
+  );
+  const y = utc.getUTCFullYear();
+  const m = String(utc.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(utc.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }

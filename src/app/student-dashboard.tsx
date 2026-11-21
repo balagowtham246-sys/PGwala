@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useQueryClient } from '@tanstack/react-query';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import { Href, router, useFocusEffect } from 'expo-router';
@@ -21,10 +22,16 @@ import { AlertCircle, ChevronRight, ClipboardList, Clock, Megaphone } from 'luci
 import { BottomTabInset, OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useToast } from '@/context/toast-context';
+import {
+  useStudentDashboardQuery,
+  useStudentUnreadNoticesQuery,
+} from '@/hooks/use-dashboards';
+import { useRecordStudentMovementMutation } from '@/hooks/use-movement';
 import { buildWhatsAppReminderUrl } from '@/lib/billing-utils';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { flushOfflineQueue, getPendingCount } from '@/lib/offline-queue';
 import { invalidatePrefix } from '@/lib/query-cache';
+import { queryKeys } from '@/lib/query-keys';
 import { getFirstName, getSmartDefaultMeal } from '@/lib/resident-home-utils';
 import {
   formatRoomLabel,
@@ -34,20 +41,13 @@ import {
 import { defaultOfflineExecutors } from '@/services/offline-executors';
 import {
   createEmptyResidentMenus,
-  fetchStudentDashboard,
-  getCachedStudentDashboard,
   MealType,
-  recordStudentMovement,
-  ResidentAccommodationInfo,
   ResidentFoodMenu,
   ResidentMovementRecord,
-  studentDashboardCacheKey,
+  StudentDashboardData,
+  toLocalIsoDate,
 } from '@/services/dashboard.service';
-import {
-  getUnreadResidentNoticesSummary,
-  RESIDENT_NOTICES_CACHE_PREFIX,
-  ResidentNoticeItem,
-} from '@/services/resident-notices.service';
+import { RESIDENT_NOTICES_CACHE_PREFIX } from '@/services/resident-notices.service';
 import { WashingMachineCard } from '@/components/washing-machine-card';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { FoodStatusBanner } from '@/components/food-status-banner';
@@ -95,6 +95,7 @@ async function scheduleReturnReminderNotification(
       content: {
         title: 'Return time reminder',
         body: 'Your expected return time has passed. Mark Inside or tell your PG owner if you are running late.',
+        data: { type: 'return_reminder' },
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -108,48 +109,55 @@ async function scheduleReturnReminderNotification(
 }
 
 export default function ResidentDashboardScreen() {
+  const qc = useQueryClient();
   const { user, profile, refreshProfile } = useAuth();
   const { showToast } = useToast();
   const userId = user?.id;
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [foodRefreshKey, setFoodRefreshKey] = useState(0);
-  const [resident, setResident] = useState<ResidentAccommodationInfo | null>(null);
-
-  // Active Meal Tab for in-place detail view (defaults to smart upcoming meal)
-  const [activeMealTab, setActiveMealTab] = useState<MealType>(() =>
-    getSmartDefaultMeal(createEmptyResidentMenus())
-  );
+  const [manualMealTab, setManualMealTab] = useState<MealType | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
-  const [hasUnreadChat, setHasUnreadChat] = useState(false);
-  const [unreadSummary, setUnreadSummary] = useState<{
-    unreadCount: number;
-    latestUnreadAnnouncement: ResidentNoticeItem | null;
-  }>({
-    unreadCount: 0,
-    latestUnreadAnnouncement: null,
-  });
-  const [menus, setMenus] = useState<Record<MealType, ResidentFoodMenu | null>>(() =>
-    createEmptyResidentMenus()
-  );
-
-  // Billing dues indicator
-  const [pendingDuesPaise, setPendingDuesPaise] = useState<number | null>(null);
-
-  // Movement & Gate Status
-  const [latestMovement, setLatestMovement] = useState<ResidentMovementRecord | null>(null);
   const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
-  const [savingMovement, setSavingMovement] = useState(false);
   const [pendingOfflineCount, setPendingOfflineCount] = useState(0);
 
-  // Feedback State
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const hasMountedRef = useRef(false);
   const savingMovementRef = useRef(false);
 
+  const dashboardQuery = useStudentDashboardQuery(userId);
+  const movementMutation = useRecordStudentMovementMutation();
+
+  const dashData = dashboardQuery.data;
+  const resident = dashData?.resident ?? null;
+  const menus = useMemo(
+    () => dashData?.menus ?? createEmptyResidentMenus(),
+    [dashData?.menus]
+  );
+  const activeMealTab = manualMealTab ?? getSmartDefaultMeal(menus);
+  const setActiveMealTab = setManualMealTab;
+  const pendingDuesPaise = dashData?.pendingDuesPaise ?? null;
+  const pendingReviewPaise = dashData?.pendingReviewPaise ?? null;
+  const latestMovement = dashData?.latestMovement ?? null;
+  const hasUnreadChat = dashData?.hasUnreadChat ?? false;
+  const loading = Boolean(userId) && dashboardQuery.isPending && !dashData;
+  const refreshing = manualRefreshing;
+  const savingMovement = movementMutation.isPending;
+  const errorMessage = dashboardQuery.isError
+    ? `Failed to load resident data: ${dashboardQuery.error.message}`
+    : null;
+
   const residentPropertyId = resident?.property_id ?? null;
   const residentRoomNumber = resident?.room_number ?? '';
+
+  const noticesQuery = useStudentUnreadNoticesQuery(
+    userId,
+    residentPropertyId,
+    residentRoomNumber
+  );
+  const unreadSummary = noticesQuery.data ?? {
+    unreadCount: 0,
+    latestUnreadAnnouncement: null,
+  };
 
   const loadUnreadNotices = useCallback(
     async (forceInvalidate = false) => {
@@ -157,106 +165,27 @@ export default function ResidentDashboardScreen() {
       if (forceInvalidate) {
         await invalidatePrefix(RESIDENT_NOTICES_CACHE_PREFIX);
       }
-      const summary = await getUnreadResidentNoticesSummary(
-        userId,
-        residentPropertyId,
-        residentRoomNumber
-      );
-      setUnreadSummary(summary);
+      await noticesQuery.refetch();
     },
-    [userId, residentPropertyId, residentRoomNumber]
-  );
-
-  const applyStudentDashboardResult = useCallback(
-    (result: Awaited<ReturnType<typeof fetchStudentDashboard>>) => {
-      if (result.ok) {
-        setErrorMessage(null);
-        setResident(result.data.resident);
-        setMenus(result.data.menus);
-        setPendingDuesPaise(result.data.pendingDuesPaise);
-        setLatestMovement(result.data.latestMovement);
-        setHasUnreadChat(result.data.hasUnreadChat);
-        setActiveMealTab(getSmartDefaultMeal(result.data.menus));
-        setNowMs(Date.now());
-      } else {
-        console.error('[ResidentDashboard] Error loading resident data:', result.error);
-        setErrorMessage(`Failed to load resident data: ${result.error.message}`);
-      }
-      setLoading(false);
-      setRefreshing(false);
-    },
-    []
+    [userId, residentPropertyId, noticesQuery]
   );
 
   const loadResidentData = useCallback(async () => {
     if (!userId) return;
-    const result = await fetchStudentDashboard(userId);
-    applyStudentDashboardResult(result);
-  }, [userId, applyStudentDashboardResult]);
+    await dashboardQuery.refetch();
+  }, [userId, dashboardQuery]);
 
   const flushOfflineAndSync = useCallback(async () => {
     const summary = await flushOfflineQueue(defaultOfflineExecutors);
     setPendingOfflineCount(summary.remainingCount);
     setNowMs(Date.now());
     if (summary.succeeded > 0) {
-      if (userId) {
-        await invalidatePrefix(studentDashboardCacheKey(userId));
-      }
-      await loadResidentData();
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
+        qc.invalidateQueries({ queryKey: queryKeys.movement.all }),
+      ]);
     }
-  }, [userId, loadResidentData]);
-
-  useEffect(() => {
-    if (!userId) return;
-    let cancelled = false;
-    void fetchStudentDashboard(userId).then((result) => {
-      if (!cancelled) {
-        applyStudentDashboardResult(result);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [userId, applyStudentDashboardResult]);
-
-  // Instant 0ms cache restore on slow connections
-  useEffect(() => {
-    if (!userId) return;
-    let cancelled = false;
-    void getCachedStudentDashboard(userId).then((cached) => {
-      if (cancelled || !cached) return;
-      if (cached.resident) setResident(cached.resident);
-      const cachedMenus = cached.menus ?? createEmptyResidentMenus();
-      setMenus(cachedMenus);
-      setActiveMealTab(getSmartDefaultMeal(cachedMenus));
-      setPendingDuesPaise(cached.pendingDuesPaise);
-      setLatestMovement(cached.latestMovement);
-      setHasUnreadChat(cached.hasUnreadChat);
-      setNowMs(Date.now());
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [userId]);
-
-  // Load unread PG notices & announcements summary when resident property is known
-  useEffect(() => {
-    if (!userId || !residentPropertyId) return;
-    let cancelled = false;
-    void getUnreadResidentNoticesSummary(
-      userId,
-      residentPropertyId,
-      residentRoomNumber
-    ).then((summary) => {
-      if (!cancelled) {
-        setUnreadSummary(summary);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [userId, residentPropertyId, residentRoomNumber]);
+  }, [qc]);
 
   // Refresh unread notices immediately when a push notification arrives in foreground
   useEffect(() => {
@@ -303,25 +232,41 @@ export default function ResidentDashboardScreen() {
   useFocusEffect(
     useCallback(() => {
       void flushOfflineAndSync();
-      void loadUnreadNotices();
       if (!hasMountedRef.current) {
         hasMountedRef.current = true;
         return;
       }
       void refreshProfile();
-      void loadResidentData();
-    }, [flushOfflineAndSync, loadResidentData, loadUnreadNotices, refreshProfile])
+      if (userId) {
+        void qc.invalidateQueries({
+          queryKey: queryKeys.dashboard.student(userId, toLocalIsoDate()),
+        });
+      }
+      if (userId && residentPropertyId) {
+        void qc.invalidateQueries({
+          queryKey: queryKeys.dashboard.studentNotices(
+            userId,
+            residentPropertyId,
+            residentRoomNumber
+          ),
+        });
+      }
+    }, [flushOfflineAndSync, refreshProfile, qc, userId, residentPropertyId, residentRoomNumber])
   );
 
   const handleRefresh = () => {
-    setRefreshing(true);
+    setManualRefreshing(true);
     setFoodRefreshKey((k) => k + 1);
     void refreshProfile();
     void (async () => {
-      await flushOfflineQueue(defaultOfflineExecutors);
-      const count = await getPendingCount();
-      setPendingOfflineCount(count);
-      await Promise.all([loadResidentData(), loadUnreadNotices(true)]);
+      try {
+        await flushOfflineQueue(defaultOfflineExecutors);
+        const count = await getPendingCount();
+        setPendingOfflineCount(count);
+        await Promise.all([loadResidentData(), loadUnreadNotices(true)]);
+      } finally {
+        setManualRefreshing(false);
+      }
     })();
   };
 
@@ -330,93 +275,72 @@ export default function ResidentDashboardScreen() {
       if (savingMovementRef.current) return;
       savingMovementRef.current = true;
       triggerLightHaptic();
-      setSavingMovement(true);
       try {
-        const result = await recordStudentMovement({
-          direction: targetDir,
-          note: 'Undo previous gate tap',
-          userId,
+        const outcome = await movementMutation.mutateAsync({
+          residentId: resident?.id,
+          input: {
+            direction: targetDir,
+            note: 'Undo previous gate tap',
+            userId,
+          },
         });
-        if (!result.ok) {
-          Alert.alert(
-            'Undo Failed',
-            result.error.message || 'Could not undo last gate action.'
-          );
-          return;
-        }
         if (targetDir === 'IN') {
           void cancelReturnReminderNotification();
         }
-        if (result.data.queued) {
-          setLatestMovement({
-            id: 'offline-queued',
-            direction: targetDir,
-            event_time: new Date().toISOString(),
-            purpose: null,
-            expected_return_time: null,
-            food_required: true,
-            note: 'Undo previous gate tap',
-          });
+        if (outcome.queued) {
           setPendingOfflineCount(await getPendingCount());
           showToast('Saved offline — will sync automatically');
-          return;
         }
-        await loadResidentData();
+      } catch (err) {
+        Alert.alert(
+          'Undo Failed',
+          err instanceof Error ? err.message : 'Could not undo last gate action.'
+        );
       } finally {
         savingMovementRef.current = false;
-        setSavingMovement(false);
       }
     },
-    [userId, loadResidentData, showToast]
+    [movementMutation, resident, userId, showToast]
   );
 
-  // 1-tap Check-In when back at PG
+  // 1-tap Check-In when back at PG (optimistic update + rollback via useRecordStudentMovementMutation)
   const proceedMarkBackIn = useCallback(async () => {
     if (savingMovementRef.current) return;
     savingMovementRef.current = true;
-    setSavingMovement(true);
 
     try {
-      const result = await recordStudentMovement({
-        direction: 'IN',
-        userId,
+      const outcome = await movementMutation.mutateAsync({
+        residentId: resident?.id,
+        input: {
+          direction: 'IN',
+          userId,
+        },
       });
-
-      if (!result.ok) {
-        Alert.alert('Update Failed', result.error.message || 'Could not record check-in.');
-        return;
-      }
 
       triggerSuccessHaptic();
       void cancelReturnReminderNotification();
 
-      if (result.data.queued) {
-        setLatestMovement({
-          id: 'offline-queued',
-          direction: 'IN',
-          event_time: new Date().toISOString(),
-          purpose: null,
-          expected_return_time: null,
-          food_required: true,
-          note: null,
-        });
+      if (outcome.queued) {
         setPendingOfflineCount(await getPendingCount());
         showToast('Saved offline — will sync automatically');
         return;
       }
 
-      await loadResidentData();
       showToast('Marked Inside PG', {
         actionLabel: 'Undo',
         onAction: () => {
           void performUndoDirection('OUT');
         },
       });
+    } catch (err) {
+      Alert.alert(
+        'Update Failed',
+        err instanceof Error ? err.message : 'Could not record check-in.'
+      );
     } finally {
       savingMovementRef.current = false;
-      setSavingMovement(false);
     }
-  }, [userId, loadResidentData, performUndoDirection, showToast]);
+  }, [movementMutation, resident, userId, performUndoDirection, showToast]);
 
   const handleMarkBackIn = () => {
     if (savingMovementRef.current) return;
@@ -441,56 +365,47 @@ export default function ResidentDashboardScreen() {
     void proceedMarkBackIn();
   };
 
-  // Confirm Going Out with Purpose, Return Time & Food Requirement
+  // Confirm Going Out with Purpose, Return Time & Food Requirement (optimistic)
   const handleConfirmGoingOut = async (payload: GoingOutSubmitPayload) => {
     if (savingMovementRef.current) return;
     savingMovementRef.current = true;
-    setSavingMovement(true);
 
     try {
-      const result = await recordStudentMovement({
-        direction: 'OUT',
-        purpose: payload.purpose,
-        expectedReturnTime: payload.expectedReturnTime || undefined,
-        foodRequired: payload.foodRequired,
-        userId,
+      const nowIso = new Date().toISOString();
+      const outcome = await movementMutation.mutateAsync({
+        residentId: resident?.id,
+        input: {
+          direction: 'OUT',
+          purpose: payload.purpose,
+          expectedReturnTime: payload.expectedReturnTime || undefined,
+          foodRequired: payload.foodRequired,
+          userId,
+        },
       });
-
-      if (!result.ok) {
-        Alert.alert('Update Failed', result.error.message || 'Could not record departure.');
-        return;
-      }
 
       setGoingOutModalVisible(false);
       triggerSuccessHaptic();
-      const nowIso = new Date().toISOString();
       void scheduleReturnReminderNotification(payload.expectedReturnTime, nowIso);
 
-      if (result.data.queued) {
-        setLatestMovement({
-          id: 'offline-queued',
-          direction: 'OUT',
-          event_time: nowIso,
-          purpose: payload.purpose,
-          expected_return_time: payload.expectedReturnTime || null,
-          food_required: payload.foodRequired,
-          note: null,
-        });
+      if (outcome.queued) {
         setPendingOfflineCount(await getPendingCount());
         showToast('Saved offline — will sync automatically');
         return;
       }
 
-      await loadResidentData();
       showToast('Marked Outside PG', {
         actionLabel: 'Undo',
         onAction: () => {
           void performUndoDirection('IN');
         },
       });
+    } catch (err) {
+      Alert.alert(
+        'Update Failed',
+        err instanceof Error ? err.message : 'Could not record departure.'
+      );
     } finally {
       savingMovementRef.current = false;
-      setSavingMovement(false);
     }
   };
 
@@ -503,40 +418,27 @@ export default function ResidentDashboardScreen() {
       return;
     }
     savingMovementRef.current = true;
-    setSavingMovement(true);
     try {
-      const result = await recordStudentMovement({
-        direction: 'OUT',
-        purpose: latestMovement.purpose || 'Running late',
-        expectedReturnTime: 'Running late',
-        note: 'Resident running late (expected return passed)',
-        userId,
+      const outcome = await movementMutation.mutateAsync({
+        residentId: resident?.id,
+        input: {
+          direction: 'OUT',
+          purpose: latestMovement.purpose || 'Running late',
+          expectedReturnTime: 'Running late',
+          note: 'Resident running late (expected return passed)',
+          userId,
+        },
       });
-
-      if (!result.ok) {
-        Alert.alert('Update Failed', result.error.message || 'Could not notify PG owner.');
-        return;
-      }
 
       triggerSuccessHaptic();
       void cancelReturnReminderNotification();
 
-      if (result.data.queued) {
-        setLatestMovement({
-          id: 'offline-queued',
-          direction: 'OUT',
-          event_time: new Date().toISOString(),
-          purpose: latestMovement.purpose || 'Running late',
-          expected_return_time: 'Running late',
-          food_required: latestMovement.food_required ?? true,
-          note: 'Resident running late (expected return passed)',
-        });
+      if (outcome.queued) {
         setPendingOfflineCount(await getPendingCount());
         showToast('Saved offline — will sync automatically');
         return;
       }
 
-      await loadResidentData();
       const ownerPhone = resident?.owner_phone ?? null;
       const whatsappUrl = buildWhatsAppReminderUrl(
         ownerPhone,
@@ -558,9 +460,13 @@ export default function ResidentDashboardScreen() {
             }
           : undefined
       );
+    } catch (err) {
+      Alert.alert(
+        'Update Failed',
+        err instanceof Error ? err.message : 'Could not notify PG owner.'
+      );
     } finally {
       savingMovementRef.current = false;
-      setSavingMovement(false);
     }
   };
 
@@ -572,7 +478,12 @@ export default function ResidentDashboardScreen() {
         hasUnreadChat={hasUnreadChat}
         unreadNoticesCount={unreadSummary.unreadCount}
         onPressChat={() => {
-          setHasUnreadChat(false);
+          if (userId) {
+            qc.setQueryData<StudentDashboardData>(
+              queryKeys.dashboard.student(userId, toLocalIsoDate()),
+              (prev) => (prev ? { ...prev, hasUnreadChat: false } : prev)
+            );
+          }
           router.push('/student-chat');
         }}
         onPressNotices={() => router.push('/student-announcements' as Href)}
@@ -697,6 +608,7 @@ export default function ResidentDashboardScreen() {
             {/* Lead Hero Card + Washing Machine & Gate Attendance 1x2 Hero */}
             <ResidentQuickTiles
               pendingDuesPaise={pendingDuesPaise}
+              pendingReviewPaise={pendingReviewPaise}
               latestMovement={latestMovement}
               savingMovement={savingMovement}
               washingMachineSlot={

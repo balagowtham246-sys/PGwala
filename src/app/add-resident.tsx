@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Href, router, useFocusEffect } from 'expo-router';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle,
   AlertTriangle,
@@ -22,10 +23,11 @@ import {
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { useActiveResidentPeersQuery } from '@/hooks/use-residents';
 import { EdgeFunctionError, invokeEdgeFunction } from '@/lib/edge-functions';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
-import { invalidatePrefix } from '@/lib/query-cache';
+import { queryKeys } from '@/lib/query-keys';
 import { normalizeAppError } from '@/lib/service-result';
 import { supabase } from '@/lib/supabase';
 import {
@@ -39,10 +41,7 @@ import {
   ResidentGender,
   validateIndianPhone,
 } from '@/lib/ux-utils';
-import {
-  RESIDENTS_CACHE_PREFIX,
-  writeLocalResidentMeta,
-} from '@/services/residents.service';
+import { writeLocalResidentMeta } from '@/services/residents.service';
 import {
   AddResidentAccountStep,
   AddResidentSuccessView,
@@ -64,13 +63,6 @@ interface PropertyOption {
   id: string;
   name: string;
   gender_type?: PropertyGenderType | null;
-}
-
-interface ExistingResidentRow {
-  id: string;
-  room_number: string;
-  phone_number: string | null;
-  full_name: string;
 }
 
 function generateRandomPassword(length = 8): string {
@@ -192,12 +184,6 @@ export default function AddResidentScreen() {
   const [showPassword, setShowPassword] = useState(false);
   const [roomRefreshSignal, setRoomRefreshSignal] = useState(0);
 
-  // Duplicate-phone lookup for active target property
-  const [residentSnapshot, setResidentSnapshot] = useState<{
-    propertyId: string;
-    rows: ExistingResidentRow[];
-  }>({ propertyId: '', rows: [] });
-
   // Created Resident summary for Step 3
   const [createdSummary, setCreatedSummary] = useState<{
     id: string;
@@ -210,7 +196,6 @@ export default function AddResidentScreen() {
   } | null>(null);
 
   // Status & Feedback
-  const [saving, setSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isLoadError, setIsLoadError] = useState(false);
 
@@ -322,70 +307,14 @@ export default function AddResidentScreen() {
     return compatibleProperties[0];
   }, [compatibleProperties, selectedTargetPropertyId, selectedProperty]);
 
+  const qc = useQueryClient();
   const activePropertyId = activeProperty?.id ?? null;
 
+  const peersQuery = useActiveResidentPeersQuery(activePropertyId);
   const existingResidents = useMemo(
-    () =>
-      activePropertyId && residentSnapshot.propertyId === activePropertyId
-        ? residentSnapshot.rows
-        : [],
-    [activePropertyId, residentSnapshot]
+    () => (activePropertyId ? (peersQuery.data ?? []) : []),
+    [activePropertyId, peersQuery.data]
   );
-
-  const fetchPropertyResidents = useCallback(async (propertyId: string) => {
-    try {
-      const { data, error } = await supabase
-        .from('residents')
-        .select('id, room_number, phone_number, full_name')
-        .eq('property_id', propertyId)
-        .eq('is_active', true);
-
-      if (error) {
-        console.warn('[AddResident] Could not fetch residents:', error.message);
-        setResidentSnapshot({ propertyId, rows: [] });
-        return;
-      }
-
-      setResidentSnapshot({
-        propertyId,
-        rows: (data as ExistingResidentRow[]) ?? [],
-      });
-    } catch {
-      setResidentSnapshot({ propertyId, rows: [] });
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!activePropertyId) return;
-    let active = true;
-    (async () => {
-      try {
-        const { data, error } = await supabase
-          .from('residents')
-          .select('id, room_number, phone_number, full_name')
-          .eq('property_id', activePropertyId)
-          .eq('is_active', true);
-
-        if (!active) return;
-        if (error) {
-          console.warn('[AddResident] Could not fetch rooms:', error.message);
-          setResidentSnapshot({ propertyId: activePropertyId, rows: [] });
-          return;
-        }
-        setResidentSnapshot({
-          propertyId: activePropertyId,
-          rows: (data as ExistingResidentRow[]) ?? [],
-        });
-      } catch {
-        if (active) {
-          setResidentSnapshot({ propertyId: activePropertyId, rows: [] });
-        }
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [activePropertyId]);
 
   const duplicatePhoneResident = useMemo(() => {
     const normalized = normalizeIndianPhoneDigits(phoneNumber);
@@ -443,7 +372,9 @@ export default function AddResidentScreen() {
     setCurrentStep(1);
     setRoomRefreshSignal((n) => n + 1);
     if (activeProperty?.id) {
-      void fetchPropertyResidents(activeProperty.id);
+      void qc.invalidateQueries({
+        queryKey: queryKeys.residents.activePeers(activeProperty.id),
+      });
     }
   };
 
@@ -502,8 +433,131 @@ export default function AddResidentScreen() {
     setCurrentStep(2);
   };
 
+  const createResidentMutation = useMutation({
+    mutationFn: async (input: {
+      propertyId: string;
+      fullName: string;
+      roomNumber: string;
+      bedLabel: string;
+      phoneNumber: string;
+      email: string;
+      temporaryPassword: string;
+      gender: ResidentGender;
+      joiningDate: string;
+      monthlyRentPaise?: number;
+      depositPaise?: number;
+      emergencyContact: string;
+    }) => {
+      const traceLabel = 'add-resident:create';
+      startTrace(traceLabel);
+
+      try {
+        const { data: sessionData, error: sessionError } =
+          await supabase.auth.getSession();
+        if (sessionError) {
+          throw new Error(
+            `Authentication check failed: ${sessionError.message}`
+          );
+        }
+
+        let activeSession = sessionData?.session ?? null;
+        const isExpiringSoon =
+          !activeSession?.expires_at ||
+          activeSession.expires_at * 1000 < Date.now() + 60_000;
+
+        if (!activeSession || isExpiringSoon) {
+          const { data: refreshedData, error: refreshError } =
+            await supabase.auth.refreshSession();
+          if (refreshError || !refreshedData?.session) {
+            throw new Error(
+              'Your login session has expired. Please sign out and sign in again.'
+            );
+          }
+          activeSession = refreshedData.session;
+        }
+
+        if (!activeSession?.user?.id || !activeSession.access_token) {
+          throw new Error(
+            'No active authenticated owner session found. Please sign in again.'
+          );
+        }
+
+        // Invoke the protected create-resident Edge Function (strictly online)
+        const edgeData = await invokeEdgeFunction<{
+          success: boolean;
+          resident_id?: string;
+          id?: string;
+          full_name?: string;
+          room_number?: string;
+          email?: string;
+          error?: string;
+        }>('create-resident', {
+          property_id: input.propertyId,
+          full_name: input.fullName,
+          room_number: input.roomNumber,
+          phone_number: input.phoneNumber,
+          email: input.email,
+          temporary_password: input.temporaryPassword,
+          gender: input.gender,
+          joining_date: input.joiningDate,
+          monthly_rent_paise: input.monthlyRentPaise,
+          deposit_paise: input.depositPaise,
+          ...(input.bedLabel ? { bed_label: input.bedLabel } : {}),
+          ...(input.emergencyContact
+            ? { emergency_contact: input.emergencyContact }
+            : {}),
+        });
+        recordRoundTrip(traceLabel);
+
+        if (!edgeData || !edgeData.success) {
+          throw new Error(
+            edgeData?.error || 'Failed to create resident account.'
+          );
+        }
+
+        const createdResidentId = edgeData.resident_id || edgeData.id || '';
+
+        if (createdResidentId) {
+          await persistExtendedResidentFields(createdResidentId, {
+            gender: input.gender,
+            joining_date: input.joiningDate,
+            monthly_rent_paise: input.monthlyRentPaise,
+            deposit_paise: input.depositPaise,
+            ...(input.bedLabel ? { bed_label: input.bedLabel } : {}),
+            ...(input.emergencyContact
+              ? { emergency_contact: input.emergencyContact }
+              : {}),
+          });
+          await writeLocalResidentMeta(createdResidentId, {
+            bed_label: input.bedLabel || null,
+            gender: input.gender,
+            joining_date: input.joiningDate,
+            deposit_paise: input.depositPaise,
+            emergency_contact: input.emergencyContact || null,
+          });
+        }
+
+        return { edgeData, createdResidentId };
+      } finally {
+        endTrace(traceLabel);
+      }
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
+        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
+        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
+        qc.invalidateQueries({ queryKey: queryKeys.movement.all }),
+      ]);
+    },
+  });
+
+  const saving = createResidentMutation.isPending;
+
   // Validate and submit unified resident + auth creation via Edge Function
   const handleSaveResident = async () => {
+    if (createResidentMutation.isPending) return;
+
     if (!user?.id || profile?.role !== 'owner') {
       Alert.alert(
         'Authorization Required',
@@ -560,96 +614,26 @@ export default function AddResidentScreen() {
       return;
     }
 
-    setSaving(true);
     clearError();
-    const traceLabel = 'add-resident:create';
-    startTrace(traceLabel);
 
     try {
-      const { data: sessionData, error: sessionError } =
-        await supabase.auth.getSession();
-      if (sessionError) {
-        throw new Error(
-          `Authentication check failed: ${sessionError.message}`
-        );
-      }
-
-      let activeSession = sessionData?.session ?? null;
-      const isExpiringSoon =
-        !activeSession?.expires_at ||
-        activeSession.expires_at * 1000 < Date.now() + 60_000;
-
-      if (!activeSession || isExpiringSoon) {
-        const { data: refreshedData, error: refreshError } =
-          await supabase.auth.refreshSession();
-        if (refreshError || !refreshedData?.session) {
-          throw new Error(
-            'Your login session has expired. Please sign out and sign in again.'
-          );
-        }
-        activeSession = refreshedData.session;
-      }
-
-      if (!activeSession?.user?.id || !activeSession.access_token) {
-        throw new Error(
-          'No active authenticated owner session found. Please sign in again.'
-        );
-      }
-
-      // Invoke the protected create-resident Edge Function (strictly online)
-      const edgeData = await invokeEdgeFunction<{
-        success: boolean;
-        resident_id?: string;
-        id?: string;
-        full_name?: string;
-        room_number?: string;
-        email?: string;
-        error?: string;
-      }>('create-resident', {
-        property_id: activeProperty.id,
-        full_name: trimmedName,
-        room_number: trimmedRoom,
-        phone_number: phoneValidation.normalized10,
-        email: trimmedEmail,
-        temporary_password: trimmedPassword,
-        gender,
-        joining_date: trimmedJoiningDate,
-        monthly_rent_paise: rentParsed.paise,
-        deposit_paise: depositParsed.paise,
-        ...(trimmedBed ? { bed_label: trimmedBed } : {}),
-        ...(trimmedEmergency ? { emergency_contact: trimmedEmergency } : {}),
-      });
-      recordRoundTrip(traceLabel);
-
-      if (!edgeData || !edgeData.success) {
-        throw new Error(
-          edgeData?.error || 'Failed to create resident account.'
-        );
-      }
-
-      const createdResidentId = edgeData.resident_id || edgeData.id || '';
+      const { edgeData, createdResidentId } =
+        await createResidentMutation.mutateAsync({
+          propertyId: activeProperty.id,
+          fullName: trimmedName,
+          roomNumber: trimmedRoom,
+          bedLabel: trimmedBed,
+          phoneNumber: phoneValidation.normalized10,
+          email: trimmedEmail,
+          temporaryPassword: trimmedPassword,
+          gender,
+          joiningDate: trimmedJoiningDate,
+          monthlyRentPaise: rentParsed.paise,
+          depositPaise: depositParsed.paise,
+          emergencyContact: trimmedEmergency,
+        });
 
       if (createdResidentId) {
-        await persistExtendedResidentFields(createdResidentId, {
-          gender,
-          joining_date: trimmedJoiningDate,
-          monthly_rent_paise: rentParsed.paise,
-          deposit_paise: depositParsed.paise,
-          ...(trimmedBed ? { bed_label: trimmedBed } : {}),
-          ...(trimmedEmergency ? { emergency_contact: trimmedEmergency } : {}),
-        });
-        await writeLocalResidentMeta(createdResidentId, {
-          bed_label: trimmedBed || null,
-          gender,
-          joining_date: trimmedJoiningDate,
-          deposit_paise: depositParsed.paise,
-          emergency_contact: trimmedEmergency || null,
-        });
-        await Promise.all([
-          invalidatePrefix(RESIDENTS_CACHE_PREFIX),
-          invalidatePrefix('dashboard:'),
-        ]);
-
         router.replace({
           pathname: '/resident-profile',
           params: { id: createdResidentId },
@@ -700,9 +684,6 @@ export default function AddResidentScreen() {
           : normalized.message;
       }
       showFormError(msg);
-    } finally {
-      endTrace(traceLabel);
-      setSaving(false);
     }
   };
 

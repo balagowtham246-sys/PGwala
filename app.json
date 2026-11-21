@@ -35,20 +35,25 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#F5F7FA",
-          "image": "./assets/images/icon.png",
-          "imageWidth": 120
+          "backgroundColor": "#F5F7FA"
         }
       ],
       [
         "expo-image-picker",
         {
-          "photosPermission": "The app needs access to your photos so you can attach payment screenshots."
+          "photosPermission": "Allow PGwala to access your photos so you can attach UPI payment screenshots and maintenance issue photos.",
+          "cameraPermission": "Allow PGwala to use your camera so you can take photos of maintenance issues and payment receipts."
         }
       ],
       "expo-status-bar",
       "expo-web-browser",
-      "@sentry/react-native",
+      [
+        "@sentry/react-native",
+        {
+          "organization": "sri-krishna-college-of-engi-ft",
+          "project": "pgwala"
+        }
+      ],
       "expo-secure-store",
       [
         "expo-local-authentication",

@@ -1,12 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
-import {
-  getCached,
-  getCachedEntry,
-  invalidatePrefix,
-  setCached,
-} from '@/lib/query-cache';
+import { uploadStorageWithRetry } from '@/lib/image-upload';
+import { invalidatePrefix } from '@/lib/query-cache';
 import {
   fail,
   normalizeAppError,
@@ -288,6 +284,53 @@ interface RawPaymentAllocRow {
     | null;
 }
 
+interface RawOwnerResidentRow {
+  id: string;
+  full_name: string;
+  room_number: string;
+  phone_number: string | null;
+  monthly_rent_paise: number | null;
+  is_active: boolean;
+}
+
+interface RawOwnerOptInRow {
+  resident_id: string;
+  is_enabled: boolean;
+}
+
+interface RawWmPendingRequestRow {
+  resident_id: string;
+}
+
+interface RawOwnerBillingRpcResponse {
+  success?: boolean;
+  error?: string;
+  property?: { id: string; name: string } | null;
+  residents?: RawOwnerResidentRow[];
+  opt_ins?: RawOwnerOptInRow[];
+  wm_pending_requests?: RawWmPendingRequestRow[];
+  charges?: RawChargeRow[];
+  reports?: RawOwnerReportRow[];
+  payment_allocations?: RawPaymentAllocRow[];
+}
+
+interface RawStudentBillingRpcResponse {
+  success?: boolean;
+  error?: string;
+  resident?: {
+    id: string;
+    property_id: string | null;
+    full_name: string;
+    room_number: string;
+    property_name: string | null;
+    owner_upi_id: string | null;
+    owner_upi_payee_name: string | null;
+  } | null;
+  charges?: RawChargeRow[];
+  reports?: RawStudentReportRow[];
+  payment_allocations?: RawPaymentAllocRow[];
+}
+
 interface SettledPaymentInfo {
   id: string;
   receipt: string;
@@ -295,34 +338,12 @@ interface SettledPaymentInfo {
   method: string;
 }
 
-async function fetchSettledPaymentAllocations(
-  settledChargeIds: string[],
-  traceLabel: string
-): Promise<Map<string, SettledPaymentInfo>> {
+function buildPaymentAllocationMap(
+  allocData: RawPaymentAllocRow[] | null | undefined
+): Map<string, SettledPaymentInfo> {
   const paymentMap = new Map<string, SettledPaymentInfo>();
-  if (settledChargeIds.length === 0) {
-    return paymentMap;
-  }
-
-  const { data: allocData } = await supabase
-    .from('payment_allocations')
-    .select(
-      `
-        charge_id,
-        payment:payments (
-          id,
-          receipt_number,
-          payment_date,
-          method
-        )
-      `
-    )
-    .in('charge_id', settledChargeIds)
-    .eq('status', 'active');
-  recordRoundTrip(traceLabel, 1);
-
   if (allocData) {
-    for (const a of allocData as unknown as RawPaymentAllocRow[]) {
+    for (const a of allocData) {
       const p = Array.isArray(a.payment) ? a.payment[0] : a.payment;
       if (p) {
         paymentMap.set(a.charge_id, {
@@ -334,256 +355,88 @@ async function fetchSettledPaymentAllocations(
       }
     }
   }
-
   return paymentMap;
 }
 
-export const BILLING_CACHE_PREFIX = 'billing:';
+function buildOwnerBillingSnapshot(params: {
+  propertyId: string;
+  propertyName: string;
+  residents: RawOwnerResidentRow[];
+  optIns: RawOwnerOptInRow[];
+  wmPendingRequests: RawWmPendingRequestRow[];
+  charges: RawChargeRow[];
+  reports: RawOwnerReportRow[];
+  paymentMap: Map<string, SettledPaymentInfo>;
+}): OwnerBillingSnapshot {
+  const {
+    propertyId,
+    propertyName,
+    residents,
+    optIns,
+    wmPendingRequests,
+    charges,
+    reports,
+    paymentMap,
+  } = params;
 
-export function getOwnerBillingCacheKey(
-  propertyId: string,
-  monthIsoStart: string
-): string {
-  const monthKey = monthIsoStart.slice(0, 7);
-  return `billing:owner:${propertyId}:${monthKey}`;
-}
+  const availableRooms = Array.from(
+    new Set(residents.map((r) => r.room_number))
+  ).sort();
+  const allResidents: RoomResidentInfo[] = residents.map((r) => ({
+    id: r.id,
+    full_name: r.full_name,
+    room_number: r.room_number,
+  }));
 
-export function getStudentBillingCacheKey(userId: string): string {
-  return `billing:student:${userId}`;
-}
+  if (residents.length === 0) {
+    return {
+      propertyId,
+      propertyName,
+      rentBills: [],
+      ebBills: [],
+      allResidents,
+      availableRooms,
+    };
+  }
 
-export async function getCachedOwnerBilling(
-  propertyId: string,
-  monthIsoStart: string
-): Promise<OwnerBillingSnapshot | null> {
-  return getCached<OwnerBillingSnapshot>(
-    getOwnerBillingCacheKey(propertyId, monthIsoStart)
-  );
-}
+  const wmMap = new Map<string, boolean>();
+  for (const o of optIns) {
+    wmMap.set(o.resident_id, o.is_enabled);
+  }
 
-export async function getCachedStudentBilling(
-  userId: string
-): Promise<StudentBillingSnapshot | null> {
-  return getCached<StudentBillingSnapshot>(getStudentBillingCacheKey(userId));
-}
+  const wmPendingRequestSet = new Set<string>();
+  for (const req of wmPendingRequests) {
+    wmPendingRequestSet.add(req.resident_id);
+  }
 
-/**
- * Fetches owner billing state for a property and month using SWR caching
- * and parallelized Supabase queries.
- */
-export async function getOwnerBilling(
-  params: GetOwnerBillingParams,
-  options?: SwrReadOptions<OwnerBillingSnapshot>
-): Promise<ServiceResult<OwnerBillingSnapshot>> {
-  const { userId, selectedPropertyId, selectedPropertyName, monthIsoStart } =
-    params;
-  const traceLabel = `billing:owner:${selectedPropertyId || 'auto'}:${monthIsoStart.slice(0, 7)}`;
-  startTrace(traceLabel);
-
-  try {
-    let activePropId = selectedPropertyId || null;
-    let activePropName = selectedPropertyName || null;
-
-    if (activePropId && !options?.forceNetwork) {
-      const cached = await getCachedEntry<OwnerBillingSnapshot>(
-        getOwnerBillingCacheKey(activePropId, monthIsoStart)
-      );
-      if (cached) {
-        options?.onCachedData?.(cached.data);
-      }
+  const rentChargeMap = new Map<string, RawChargeRow>();
+  const ebChargeMap = new Map<string, RawChargeRow>();
+  for (const c of charges) {
+    if (c.category === 'rent') {
+      rentChargeMap.set(c.resident_id, c);
+    } else if (c.category === 'electricity') {
+      ebChargeMap.set(c.resident_id, c);
     }
+  }
 
-    if (!activePropId) {
-      const { data: properties, error: propErr } = await supabase
-        .from('properties')
-        .select('id, name')
-        .eq('owner_id', userId)
-        .eq('is_active', true)
-        .limit(1);
-      recordRoundTrip(traceLabel, 1);
-
-      if (propErr) throw propErr;
-      if (!properties || properties.length === 0) {
-        return ok({
-          propertyId: null,
-          propertyName: activePropName || 'Shalom Residency',
-          rentBills: [],
-          ebBills: [],
-          allResidents: [],
-          availableRooms: [],
-        });
-      }
-
-      activePropId = properties[0].id;
-      activePropName = properties[0].name;
-
-      if (activePropId && !options?.forceNetwork) {
-        const cached = await getCachedEntry<OwnerBillingSnapshot>(
-          getOwnerBillingCacheKey(activePropId, monthIsoStart)
-        );
-        if (cached) {
-          options?.onCachedData?.(cached.data);
-        }
-      }
+  const reportByChargeMap = new Map<string, RawOwnerReportRow>();
+  for (const rep of reports) {
+    if (rep.charge_id && !reportByChargeMap.has(rep.charge_id)) {
+      reportByChargeMap.set(rep.charge_id, rep);
     }
+  }
 
-    const resolvedPropertyId = activePropId as string;
-    const resolvedPropertyName = activePropName || 'Shalom Residency';
+  const rentBills: ResidentRentBillItem[] = residents.map((r) => {
+    const optWm = wmMap.get(r.id) ?? false;
+    const defaultRent = r.monthly_rent_paise || 800000;
+    const chg = rentChargeMap.get(r.id);
+    const rep = chg ? reportByChargeMap.get(chg.id) : null;
+    const isPendingReport = rep?.status === 'pending';
+    const isRejectedReport = rep?.status === 'rejected';
 
-    const { data: resData, error: resErr } = await supabase
-      .from('residents')
-      .select(
-        'id, full_name, room_number, phone_number, monthly_rent_paise, is_active'
-      )
-      .eq('property_id', resolvedPropertyId)
-      .eq('is_active', true)
-      .order('room_number', { ascending: true });
-    recordRoundTrip(traceLabel, 1);
-
-    if (resErr) throw resErr;
-    const residents = resData ?? [];
-    const residentIds = residents.map((r) => r.id);
-    const availableRooms = Array.from(
-      new Set(residents.map((r) => r.room_number))
-    ).sort();
-    const allResidents: RoomResidentInfo[] = residents.map((r) => ({
-      id: r.id,
-      full_name: r.full_name,
-      room_number: r.room_number,
-    }));
-
-    if (residentIds.length === 0) {
-      const emptySnapshot: OwnerBillingSnapshot = {
-        propertyId: resolvedPropertyId,
-        propertyName: resolvedPropertyName,
-        rentBills: [],
-        ebBills: [],
-        allResidents,
-        availableRooms,
-      };
-      await setCached(
-        getOwnerBillingCacheKey(resolvedPropertyId, monthIsoStart),
-        emptySnapshot
-      );
-      return ok(emptySnapshot);
-    }
-
-    // Parallelize independent property/resident queries in a single batch
-    const [optRes, wmReqRes, chargeRes, reportRes] = await Promise.all([
-      supabase
-        .from('resident_opt_ins')
-        .select('resident_id, is_enabled')
-        .eq('feature_name', 'washing_machine')
-        .in('resident_id', residentIds),
-      supabase
-        .from('washing_machine_requests')
-        .select('resident_id')
-        .eq('property_id', resolvedPropertyId)
-        .eq('status', 'pending')
-        .then(
-          (res) => res,
-          () => ({ data: null, error: null })
-        ),
-      supabase
-        .from('charges')
-        .select(
-          'id, resident_id, category, amount_paise, rent_amount_paise, wm_amount_paise, status, due_date'
-        )
-        .eq('property_id', resolvedPropertyId)
-        .eq('billing_period_start', monthIsoStart),
-      supabase
-        .from('student_payment_reports')
-        .select(
-          'id, resident_id, charge_id, amount_paise, claimed_method, payment_date, reference_number, screenshot_url, notes, status, rejection_reason'
-        )
-        .eq('property_id', resolvedPropertyId)
-        .in('status', ['pending', 'rejected'])
-        .order('created_at', { ascending: false }),
-    ]);
-    recordRoundTrip(traceLabel, 1);
-
-    if (chargeRes.error) throw chargeRes.error;
-
-    const wmMap = new Map<string, boolean>();
-    if (optRes.data) {
-      for (const o of optRes.data) {
-        wmMap.set(o.resident_id, o.is_enabled);
-      }
-    }
-
-    const wmPendingRequestSet = new Set<string>();
-    if (!wmReqRes.error && wmReqRes.data) {
-      for (const req of wmReqRes.data) {
-        wmPendingRequestSet.add(req.resident_id);
-      }
-    }
-
-    const chargeData = (chargeRes.data ?? []) as RawChargeRow[];
-    const rentChargeMap = new Map<string, RawChargeRow>();
-    const ebChargeMap = new Map<string, RawChargeRow>();
-
-    for (const c of chargeData) {
-      if (c.category === 'rent') {
-        rentChargeMap.set(c.resident_id, c);
-      } else if (c.category === 'electricity') {
-        ebChargeMap.set(c.resident_id, c);
-      }
-    }
-
-    const reportByChargeMap = new Map<string, RawOwnerReportRow>();
-    const reportData = (reportRes.data ?? []) as RawOwnerReportRow[];
-    for (const rep of reportData) {
-      if (rep.charge_id && !reportByChargeMap.has(rep.charge_id)) {
-        reportByChargeMap.set(rep.charge_id, rep);
-      }
-    }
-
-    const settledChargeIds = chargeData
-      .filter((c) => c.status === 'settled')
-      .map((c) => c.id);
-
-    const paymentMap = await fetchSettledPaymentAllocations(
-      settledChargeIds,
-      traceLabel
-    );
-
-    const rentBills: ResidentRentBillItem[] = residents.map((r) => {
-      const optWm = wmMap.get(r.id) ?? false;
-      const defaultRent = r.monthly_rent_paise || 800000;
-      const chg = rentChargeMap.get(r.id);
-      const rep = chg ? reportByChargeMap.get(chg.id) : null;
-      const isPendingReport = rep?.status === 'pending';
-      const isRejectedReport = rep?.status === 'rejected';
-
-      if (chg) {
-        const isSettled = chg.status === 'settled';
-        const pInfo = paymentMap.get(chg.id);
-
-        return {
-          resident_id: r.id,
-          full_name: r.full_name,
-          room_number: r.room_number,
-          phone_number: r.phone_number,
-          opt_in_wm: optWm,
-          wm_request_pending: wmPendingRequestSet.has(r.id),
-          monthly_rent_paise: defaultRent,
-          charge_id: chg.id,
-          rent_paise: chg.rent_amount_paise || defaultRent,
-          wm_paise: chg.wm_amount_paise || (optWm ? 50000 : 0),
-          total_paise: chg.amount_paise,
-          status: isSettled ? 'paid' : 'unpaid',
-          has_pending_report: isPendingReport,
-          pending_report: isPendingReport && rep ? rep : null,
-          rejected_report:
-            isRejectedReport && rep
-              ? { id: rep.id, rejection_reason: rep.rejection_reason }
-              : null,
-          receipt_number: pInfo?.receipt || null,
-          paid_date: pInfo?.date || null,
-          paid_method: pInfo?.method || null,
-          due_date: chg.due_date || null,
-        };
-      }
+    if (chg) {
+      const isSettled = chg.status === 'settled';
+      const pInfo = paymentMap.get(chg.id);
 
       return {
         resident_id: r.id,
@@ -593,81 +446,164 @@ export async function getOwnerBilling(
         opt_in_wm: optWm,
         wm_request_pending: wmPendingRequestSet.has(r.id),
         monthly_rent_paise: defaultRent,
-        charge_id: null,
-        rent_paise: defaultRent,
-        wm_paise: optWm ? 50000 : 0,
-        total_paise: defaultRent + (optWm ? 50000 : 0),
-        status: 'not_generated',
-        has_pending_report: false,
-        pending_report: null,
-        rejected_report: null,
-        receipt_number: null,
-        paid_date: null,
-        paid_method: null,
+        charge_id: chg.id,
+        rent_paise: chg.rent_amount_paise || defaultRent,
+        wm_paise: chg.wm_amount_paise || (optWm ? 50000 : 0),
+        total_paise: chg.amount_paise,
+        status: isSettled ? 'paid' : 'unpaid',
+        has_pending_report: isPendingReport,
+        pending_report: isPendingReport && rep ? rep : null,
+        rejected_report:
+          isRejectedReport && rep
+            ? { id: rep.id, rejection_reason: rep.rejection_reason }
+            : null,
+        receipt_number: pInfo?.receipt || null,
+        paid_date: pInfo?.date || null,
+        paid_method: pInfo?.method || null,
+        due_date: chg.due_date || null,
       };
-    });
+    }
 
-    const ebBills: ResidentEbBillItem[] = residents.map((r) => {
-      const chg = ebChargeMap.get(r.id);
-      const rep = chg ? reportByChargeMap.get(chg.id) : null;
-      const isPendingReport = rep?.status === 'pending';
-      const isRejectedReport = rep?.status === 'rejected';
+    return {
+      resident_id: r.id,
+      full_name: r.full_name,
+      room_number: r.room_number,
+      phone_number: r.phone_number,
+      opt_in_wm: optWm,
+      wm_request_pending: wmPendingRequestSet.has(r.id),
+      monthly_rent_paise: defaultRent,
+      charge_id: null,
+      rent_paise: defaultRent,
+      wm_paise: optWm ? 50000 : 0,
+      total_paise: defaultRent + (optWm ? 50000 : 0),
+      status: 'not_generated',
+      has_pending_report: false,
+      pending_report: null,
+      rejected_report: null,
+      receipt_number: null,
+      paid_date: null,
+      paid_method: null,
+    };
+  });
 
-      if (chg) {
-        const isSettled = chg.status === 'settled';
-        const pInfo = paymentMap.get(chg.id);
+  const ebBills: ResidentEbBillItem[] = residents.map((r) => {
+    const chg = ebChargeMap.get(r.id);
+    const rep = chg ? reportByChargeMap.get(chg.id) : null;
+    const isPendingReport = rep?.status === 'pending';
+    const isRejectedReport = rep?.status === 'rejected';
 
-        return {
-          resident_id: r.id,
-          full_name: r.full_name,
-          room_number: r.room_number,
-          phone_number: r.phone_number,
-          charge_id: chg.id,
-          amount_paise: chg.amount_paise,
-          status: isSettled ? 'paid' : 'unpaid',
-          has_pending_report: isPendingReport,
-          pending_report: isPendingReport && rep ? rep : null,
-          rejected_report:
-            isRejectedReport && rep
-              ? { id: rep.id, rejection_reason: rep.rejection_reason }
-              : null,
-          receipt_number: pInfo?.receipt || null,
-          paid_date: pInfo?.date || null,
-          paid_method: pInfo?.method || null,
-          due_date: chg.due_date || null,
-        };
-      }
+    if (chg) {
+      const isSettled = chg.status === 'settled';
+      const pInfo = paymentMap.get(chg.id);
 
       return {
         resident_id: r.id,
         full_name: r.full_name,
         room_number: r.room_number,
         phone_number: r.phone_number,
-        charge_id: null,
-        amount_paise: 0,
-        status: 'not_generated',
-        has_pending_report: false,
-        pending_report: null,
-        rejected_report: null,
-        receipt_number: null,
-        paid_date: null,
-        paid_method: null,
+        charge_id: chg.id,
+        amount_paise: chg.amount_paise,
+        status: isSettled ? 'paid' : 'unpaid',
+        has_pending_report: isPendingReport,
+        pending_report: isPendingReport && rep ? rep : null,
+        rejected_report:
+          isRejectedReport && rep
+            ? { id: rep.id, rejection_reason: rep.rejection_reason }
+            : null,
+        receipt_number: pInfo?.receipt || null,
+        paid_date: pInfo?.date || null,
+        paid_method: pInfo?.method || null,
+        due_date: chg.due_date || null,
       };
-    });
+    }
 
-    const snapshot: OwnerBillingSnapshot = {
+    return {
+      resident_id: r.id,
+      full_name: r.full_name,
+      room_number: r.room_number,
+      phone_number: r.phone_number,
+      charge_id: null,
+      amount_paise: 0,
+      status: 'not_generated',
+      has_pending_report: false,
+      pending_report: null,
+      rejected_report: null,
+      receipt_number: null,
+      paid_date: null,
+      paid_method: null,
+    };
+  });
+
+  return {
+    propertyId,
+    propertyName,
+    rentBills,
+    ebBills,
+    allResidents,
+    availableRooms,
+  };
+}
+
+export const BILLING_CACHE_PREFIX = 'billing:';
+
+/**
+ * Fetches owner billing state for a property and month via the single-roundtrip
+ * `get_owner_billing_summary` RPC.
+ */
+export async function getOwnerBilling(
+  params: GetOwnerBillingParams
+): Promise<ServiceResult<OwnerBillingSnapshot>> {
+  const { selectedPropertyId, selectedPropertyName, monthIsoStart } = params;
+  const traceLabel = `billing:owner:${selectedPropertyId || 'auto'}:${monthIsoStart.slice(0, 7)}`;
+  startTrace(traceLabel);
+
+  try {
+    const activePropId = selectedPropertyId || null;
+    const activePropName = selectedPropertyName || null;
+
+    const { data: rpcData, error: rpcError } = await supabase.rpc(
+      'get_owner_billing_summary',
+      {
+        p_property_id: activePropId,
+        p_billing_month: monthIsoStart,
+      }
+    );
+    recordRoundTrip(traceLabel, 1);
+
+    if (rpcError) throw rpcError;
+
+    const payload = rpcData as RawOwnerBillingRpcResponse | null;
+    if (!payload || payload.success === false) {
+      throw new Error(
+        payload?.error || 'Could not load billing information.'
+      );
+    }
+
+    if (!payload.property?.id) {
+      return ok({
+        propertyId: null,
+        propertyName: activePropName || 'Shalom Residency',
+        rentBills: [],
+        ebBills: [],
+        allResidents: [],
+        availableRooms: [],
+      });
+    }
+
+    const resolvedPropertyId = payload.property.id;
+    const resolvedPropertyName =
+      activePropName || payload.property.name || 'Shalom Residency';
+    const paymentMap = buildPaymentAllocationMap(payload.payment_allocations);
+    const snapshot = buildOwnerBillingSnapshot({
       propertyId: resolvedPropertyId,
       propertyName: resolvedPropertyName,
-      rentBills,
-      ebBills,
-      allResidents,
-      availableRooms,
-    };
-
-    await setCached(
-      getOwnerBillingCacheKey(resolvedPropertyId, monthIsoStart),
-      snapshot
-    );
+      residents: payload.residents ?? [],
+      optIns: payload.opt_ins ?? [],
+      wmPendingRequests: payload.wm_pending_requests ?? [],
+      charges: payload.charges ?? [],
+      reports: payload.reports ?? [],
+      paymentMap,
+    });
 
     return ok(snapshot);
   } catch (err) {
@@ -893,59 +829,135 @@ export async function resolvePaymentProofUrl(
 
 const STORAGE_PROPERTY_META_PREFIX = '@pgwala_property_meta:';
 
-async function fetchPropertyUpiMeta(
-  propId: string | null
+async function readLocalPropertyUpiMeta(
+  propId: string | null,
+  initial: { ownerUpiId: string | null; ownerUpiPayeeName: string | null }
 ): Promise<{ ownerUpiId: string | null; ownerUpiPayeeName: string | null }> {
-  let ownerUpiId: string | null = null;
-  let ownerUpiPayeeName: string | null = null;
-  if (!propId) {
+  let { ownerUpiId, ownerUpiPayeeName } = initial;
+  if (!propId || (ownerUpiId && ownerUpiPayeeName)) {
     return { ownerUpiId, ownerUpiPayeeName };
   }
 
   try {
-    const { data, error } = await supabase
-      .from('properties')
-      .select('upi_id, upi_payee_name')
-      .eq('id', propId)
-      .maybeSingle();
-    if (!error && data) {
-      const row = data as {
+    const rawMeta = await AsyncStorage.getItem(
+      `${STORAGE_PROPERTY_META_PREFIX}${propId}`
+    );
+    if (rawMeta) {
+      const parsed = JSON.parse(rawMeta) as {
         upi_id?: string | null;
         upi_payee_name?: string | null;
+        upiId?: string | null;
+        upiPayeeName?: string | null;
       };
-      ownerUpiId = row.upi_id?.trim() || null;
-      ownerUpiPayeeName = row.upi_payee_name?.trim() || null;
+      if (!ownerUpiId) {
+        ownerUpiId = (parsed.upi_id ?? parsed.upiId)?.trim() || null;
+      }
+      if (!ownerUpiPayeeName) {
+        ownerUpiPayeeName =
+          (parsed.upi_payee_name ?? parsed.upiPayeeName)?.trim() || null;
+      }
     }
   } catch {
-    // Ignore errors when DB columns are not yet migrated or test mocks don't handle `properties`
-  }
-
-  if (!ownerUpiId || !ownerUpiPayeeName) {
-    try {
-      const rawMeta = await AsyncStorage.getItem(
-        `${STORAGE_PROPERTY_META_PREFIX}${propId}`
-      );
-      if (rawMeta) {
-        const parsed = JSON.parse(rawMeta) as {
-          upi_id?: string | null;
-          upi_payee_name?: string | null;
-          upiId?: string | null;
-          upiPayeeName?: string | null;
-        };
-        if (!ownerUpiId) {
-          ownerUpiId = (parsed.upi_id ?? parsed.upiId)?.trim() || null;
-        }
-        if (!ownerUpiPayeeName) {
-          ownerUpiPayeeName =
-            (parsed.upi_payee_name ?? parsed.upiPayeeName)?.trim() || null;
-        }
-      }
-    } catch {
-      // Non-fatal fallback read
-    }
+    // Non-fatal fallback read
   }
 
   return { ownerUpiId, ownerUpiPayeeName };
+}
+
+function buildStudentBillingSnapshot(params: {
+  residentId: string;
+  residentName: string;
+  roomNumber: string;
+  propertyName: string;
+  ownerUpiId: string | null;
+  ownerUpiPayeeName: string | null;
+  charges: RawChargeRow[];
+  reports: RawStudentReportRow[];
+  paymentMap: Map<string, SettledPaymentInfo>;
+}): StudentBillingSnapshot {
+  const {
+    residentId,
+    residentName,
+    roomNumber,
+    propertyName,
+    ownerUpiId,
+    ownerUpiPayeeName,
+    charges,
+    reports,
+    paymentMap,
+  } = params;
+
+  const pendingReportMap = new Map<string, RawStudentReportRow>();
+  for (const rep of reports) {
+    if (rep.charge_id && !pendingReportMap.has(rep.charge_id)) {
+      pendingReportMap.set(rep.charge_id, rep);
+    }
+  }
+
+  const allBills: StudentBillCardItem[] = charges.map((c) => {
+    const billingStart = c.billing_period_start || '';
+    const d = new Date(billingStart);
+    const monthLabel = !isNaN(d.getTime())
+      ? d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
+      : billingStart;
+
+    const isSettled = c.status === 'settled';
+    const pInfo = paymentMap.get(c.id);
+    const pRep = pendingReportMap.get(c.id);
+    const isRent = c.category === 'rent';
+
+    return {
+      charge_id: c.id,
+      category: c.category as 'rent' | 'electricity',
+      title: isRent ? 'Room Rent Bill' : 'Electricity (EB) Bill',
+      month_label: monthLabel,
+      billing_month: billingStart,
+      due_date: c.due_date || '',
+      rent_paise: isRent ? c.rent_amount_paise || c.amount_paise : undefined,
+      wm_paise: isRent ? c.wm_amount_paise || 0 : undefined,
+      total_paise: c.amount_paise,
+      status: isSettled ? 'paid' : 'unpaid',
+      receipt_number: pInfo?.receipt || null,
+      paid_date: pInfo?.date || null,
+      paid_method: pInfo?.method || null,
+      payment_id: pInfo?.id || null,
+      pending_report: pRep
+        ? {
+            id: pRep.id,
+            claimed_method: pRep.claimed_method,
+            amount_paise: pRep.amount_paise,
+            reference_number: pRep.reference_number,
+            screenshot_url: pRep.screenshot_url,
+            notes: pRep.notes,
+            created_at: pRep.created_at,
+            status: pRep.status,
+            rejection_reason: pRep.rejection_reason,
+          }
+        : null,
+    };
+  });
+
+  const rentCharges = allBills.filter((b) => b.category === 'rent');
+  const ebCharges = allBills.filter((b) => b.category === 'electricity');
+  const currentRentBill = rentCharges.length > 0 ? rentCharges[0] : null;
+  const currentEbBill = ebCharges.length > 0 ? ebCharges[0] : null;
+  const pastBills = allBills.filter(
+    (b) =>
+      b.charge_id !== currentRentBill?.charge_id &&
+      b.charge_id !== currentEbBill?.charge_id
+  );
+
+  return {
+    residentId,
+    residentName,
+    roomNumber,
+    propertyName,
+    ownerUpiId,
+    ownerUpiPayeeName,
+    currentRentBill,
+    currentEbBill,
+    pastBills,
+  };
 }
 
 export interface PreResolvedStudentContext {
@@ -960,202 +972,80 @@ export interface PreResolvedStudentContext {
 
 /**
  * Fetches student billing snapshot (current & past charges, payment reports, receipts)
- * using SWR caching and parallelized Supabase queries.
+ * via the single-roundtrip `get_student_billing_summary` RPC.
  */
 export async function getStudentBilling(
   userId: string,
-  options?: SwrReadOptions<StudentBillingSnapshot> & {
+  options?: {
     residentContext?: PreResolvedStudentContext | null;
   }
 ): Promise<ServiceResult<StudentBillingSnapshot>> {
-  const cacheKey = getStudentBillingCacheKey(userId);
-  const traceLabel = cacheKey;
+  const traceLabel = `billing:student:${userId}`;
   startTrace(traceLabel);
 
   try {
-    if (!options?.forceNetwork) {
-      const cached = await getCachedEntry<StudentBillingSnapshot>(cacheKey);
-      if (cached) {
-        options?.onCachedData?.(cached.data);
+    const { data: rpcData, error: rpcError } = await supabase.rpc(
+      'get_student_billing_summary',
+      {
+        p_resident_id: options?.residentContext?.residentId ?? null,
       }
-    }
-
-    let resolvedResidentId: string;
-    let resolvedResidentName: string;
-    let resolvedRoomNumber: string;
-    let propertyName: string;
-    let propId: string | null;
-    let preResolvedUpi: {
-      ownerUpiId: string | null;
-      ownerUpiPayeeName: string | null;
-    } | null = null;
-
-    if (options?.residentContext) {
-      resolvedResidentId = options.residentContext.residentId;
-      resolvedResidentName = options.residentContext.residentName;
-      resolvedRoomNumber = options.residentContext.roomNumber;
-      propertyName = options.residentContext.propertyName;
-      propId = options.residentContext.propertyId;
-      preResolvedUpi = {
-        ownerUpiId: options.residentContext.ownerUpiId ?? null,
-        ownerUpiPayeeName: options.residentContext.ownerUpiPayeeName ?? null,
-      };
-    } else {
-      const { data: resData, error: resErr } = await supabase
-        .from('residents')
-        .select(
-          `
-          id,
-          property_id,
-          full_name,
-          room_number,
-          property:properties (
-            id,
-            name
-          )
-        `
-        )
-        .eq('profile_id', userId)
-        .eq('is_active', true)
-        .maybeSingle();
-      recordRoundTrip(traceLabel, 1);
-
-      if (resErr) throw resErr;
-      if (!resData) {
-        return ok({
-          residentId: null,
-          residentName: 'Resident',
-          roomNumber: '',
-          propertyName: 'My PG',
-          ownerUpiId: null,
-          ownerUpiPayeeName: null,
-          currentRentBill: null,
-          currentEbBill: null,
-          pastBills: [],
-        });
-      }
-
-      const propObj = Array.isArray(resData.property)
-        ? resData.property[0]
-        : resData.property;
-      propertyName = propObj?.name || 'My PG';
-      propId =
-        (resData as { property_id?: string | null }).property_id ||
-        (propObj as { id?: string | null } | null)?.id ||
-        null;
-      resolvedResidentId = resData.id;
-      resolvedResidentName = resData.full_name;
-      resolvedRoomNumber = resData.room_number;
-    }
-
-    // Parallelize charges, payment reports, and owner UPI metadata after resolving resident
-    const [chargesRes, reportsRes, upiMeta] = await Promise.all([
-      supabase
-        .from('charges')
-        .select(
-          'id, category, amount_paise, rent_amount_paise, wm_amount_paise, status, billing_period_start, due_date'
-        )
-        .eq('resident_id', resolvedResidentId)
-        .in('category', ['rent', 'electricity'])
-        .order('billing_period_start', { ascending: false }),
-      supabase
-        .from('student_payment_reports')
-        .select(
-          'id, charge_id, amount_paise, claimed_method, reference_number, screenshot_url, notes, status, rejection_reason, created_at'
-        )
-        .eq('resident_id', resolvedResidentId)
-        .in('status', ['pending', 'rejected'])
-        .order('created_at', { ascending: false }),
-      preResolvedUpi ? Promise.resolve(preResolvedUpi) : fetchPropertyUpiMeta(propId),
-    ]);
+    );
     recordRoundTrip(traceLabel, 1);
 
-    if (chargesRes.error) throw chargesRes.error;
+    if (rpcError) throw rpcError;
 
-    const charges = (chargesRes.data ?? []) as RawChargeRow[];
-    const reports = (reportsRes.data ?? []) as RawStudentReportRow[];
-
-    const pendingReportMap = new Map<string, RawStudentReportRow>();
-    for (const rep of reports) {
-      if (rep.charge_id && !pendingReportMap.has(rep.charge_id)) {
-        pendingReportMap.set(rep.charge_id, rep);
-      }
+    const payload = rpcData as RawStudentBillingRpcResponse | null;
+    if (!payload || payload.success === false) {
+      throw new Error(
+        payload?.error || 'Could not load your billing details.'
+      );
     }
 
-    const settledIds = charges
-      .filter((c) => c.status === 'settled')
-      .map((c) => c.id);
-    const paymentMap = await fetchSettledPaymentAllocations(
-      settledIds,
-      traceLabel
-    );
+    if (!payload.resident?.id) {
+      return ok({
+        residentId: null,
+        residentName: 'Resident',
+        roomNumber: '',
+        propertyName: 'My PG',
+        ownerUpiId: null,
+        ownerUpiPayeeName: null,
+        currentRentBill: null,
+        currentEbBill: null,
+        pastBills: [],
+      });
+    }
 
-    const allBills: StudentBillCardItem[] = charges.map((c) => {
-      const billingStart = c.billing_period_start || '';
-      const d = new Date(billingStart);
-      const monthLabel = !isNaN(d.getTime())
-        ? d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
-        : billingStart;
-
-      const isSettled = c.status === 'settled';
-      const pInfo = paymentMap.get(c.id);
-      const pRep = pendingReportMap.get(c.id);
-      const isRent = c.category === 'rent';
-
-      return {
-        charge_id: c.id,
-        category: c.category as 'rent' | 'electricity',
-        title: isRent ? 'Room Rent Bill' : 'Electricity (EB) Bill',
-        month_label: monthLabel,
-        billing_month: billingStart,
-        due_date: c.due_date || '',
-        rent_paise: isRent ? c.rent_amount_paise || c.amount_paise : undefined,
-        wm_paise: isRent ? c.wm_amount_paise || 0 : undefined,
-        total_paise: c.amount_paise,
-        status: isSettled ? 'paid' : 'unpaid',
-        receipt_number: pInfo?.receipt || null,
-        paid_date: pInfo?.date || null,
-        paid_method: pInfo?.method || null,
-        payment_id: pInfo?.id || null,
-        pending_report: pRep
-          ? {
-              id: pRep.id,
-              claimed_method: pRep.claimed_method,
-              amount_paise: pRep.amount_paise,
-              reference_number: pRep.reference_number,
-              screenshot_url: pRep.screenshot_url,
-              notes: pRep.notes,
-              created_at: pRep.created_at,
-              status: pRep.status,
-              rejection_reason: pRep.rejection_reason,
-            }
-          : null,
-      };
+    const res = payload.resident;
+    const propId =
+      res.property_id || options?.residentContext?.propertyId || null;
+    const upiMeta = await readLocalPropertyUpiMeta(propId, {
+      ownerUpiId:
+        res.owner_upi_id?.trim() ||
+        options?.residentContext?.ownerUpiId?.trim() ||
+        null,
+      ownerUpiPayeeName:
+        res.owner_upi_payee_name?.trim() ||
+        options?.residentContext?.ownerUpiPayeeName?.trim() ||
+        null,
     });
 
-    const rentCharges = allBills.filter((b) => b.category === 'rent');
-    const ebCharges = allBills.filter((b) => b.category === 'electricity');
-    const currentRentBill = rentCharges.length > 0 ? rentCharges[0] : null;
-    const currentEbBill = ebCharges.length > 0 ? ebCharges[0] : null;
-    const pastBills = allBills.filter(
-      (b) =>
-        b.charge_id !== currentRentBill?.charge_id &&
-        b.charge_id !== currentEbBill?.charge_id
-    );
-
-    const snapshot: StudentBillingSnapshot = {
-      residentId: resolvedResidentId,
-      residentName: resolvedResidentName,
-      roomNumber: resolvedRoomNumber,
-      propertyName,
+    const snapshot = buildStudentBillingSnapshot({
+      residentId: res.id,
+      residentName:
+        res.full_name || options?.residentContext?.residentName || 'Resident',
+      roomNumber:
+        res.room_number || options?.residentContext?.roomNumber || '',
+      propertyName:
+        res.property_name ||
+        options?.residentContext?.propertyName ||
+        'My PG',
       ownerUpiId: upiMeta.ownerUpiId,
       ownerUpiPayeeName: upiMeta.ownerUpiPayeeName,
-      currentRentBill,
-      currentEbBill,
-      pastBills,
-    };
+      charges: payload.charges ?? [],
+      reports: payload.reports ?? [],
+      paymentMap: buildPaymentAllocationMap(payload.payment_allocations),
+    });
 
-    await setCached(cacheKey, snapshot);
     return ok(snapshot);
   } catch (err) {
     return fail(err, 'Could not load your billing details.');
@@ -1164,70 +1054,94 @@ export async function getStudentBilling(
   }
 }
 
+const inFlightPaymentProofs = new Map<string, Promise<ServiceResult<null>>>();
+
 /**
  * Uploads optional payment screenshot to `payment-proofs` storage bucket and
- * submits the payment proof via RPC (strictly online).
+ * submits the payment proof via RPC (strictly online). Coalesces concurrent
+ * double-tap submissions for the same resident + chargeId.
  */
 export async function submitStudentPaymentProof(
   params: SubmitStudentPaymentProofParams
 ): Promise<ServiceResult<null>> {
-  const traceLabel = `billing:rpc:submit_student_payment_proof:${params.chargeId}`;
-  startTrace(traceLabel);
-  try {
-    let uploadedScreenshotPath: string | null = null;
+  const flightKey = `${params.residentId}:${params.chargeId}`;
+  const existingFlight = inFlightPaymentProofs.get(flightKey);
+  if (existingFlight) {
+    return existingFlight;
+  }
 
-    if (params.screenshot?.base64) {
-      try {
-        const fileExt =
-          params.screenshot.uri.split('.').pop()?.toLowerCase() || 'jpg';
-        const fileName = `${params.residentId}/${Date.now()}_${params.chargeId}.${fileExt}`;
-        const bytes = decodeBase64ToBytes(params.screenshot.base64);
+  const run = (async (): Promise<ServiceResult<null>> => {
+    const traceLabel = `billing:rpc:submit_student_payment_proof:${params.chargeId}`;
+    startTrace(traceLabel);
+    try {
+      let uploadedScreenshotPath: string | null = null;
 
-        const { error: uploadErr } = await supabase.storage
-          .from('payment-proofs')
-          .upload(fileName, bytes, {
+      if (params.screenshot?.base64) {
+        try {
+          const fileExt =
+            params.screenshot.uri.split('.').pop()?.toLowerCase() || 'jpg';
+          const fileName = `${params.residentId}/${Date.now()}_${params.chargeId}.${fileExt}`;
+          const bytes = decodeBase64ToBytes(params.screenshot.base64);
+
+          const { error: uploadErr } = await uploadStorageWithRetry({
+            bucket: 'payment-proofs',
+            path: fileName,
+            bytes,
+            fileUri: params.screenshot.uri,
             contentType: `image/${fileExt === 'png' ? 'png' : 'jpeg'}`,
             upsert: true,
+            maxAttempts: 2,
           });
-        recordRoundTrip(traceLabel, 1);
+          recordRoundTrip(traceLabel, 1);
 
-        if (uploadErr) {
-          throw new Error(`Storage upload failed: ${uploadErr.message}`);
+          if (uploadErr) {
+            throw new Error(`Storage upload failed: ${uploadErr.message}`);
+          }
+
+          uploadedScreenshotPath = fileName;
+        } catch (uploadException) {
+          const appErr = normalizeAppError(
+            uploadException,
+            'Failed to upload payment screenshot. Please try again.'
+          );
+          throw new Error(appErr.message);
         }
-
-        uploadedScreenshotPath = fileName;
-      } catch (uploadException) {
-        const appErr = normalizeAppError(
-          uploadException,
-          'Failed to upload payment screenshot. Please try again.'
+      } else if (params.screenshot && !params.screenshot.base64) {
+        throw new Error(
+          'Image data could not be processed. Please select the screenshot again.'
         );
-        throw new Error(appErr.message);
       }
-    } else if (params.screenshot && !params.screenshot.base64) {
-      throw new Error(
-        'Image data could not be processed. Please select the screenshot again.'
-      );
+
+      const { data, error } = await supabase.rpc('submit_student_payment_proof', {
+        p_charge_id: params.chargeId,
+        p_claimed_method: params.paymentMethod,
+        p_screenshot_url: uploadedScreenshotPath || undefined,
+        p_reference_number: params.referenceNumber?.trim() || undefined,
+        p_notes: params.notes?.trim() || undefined,
+      });
+      recordRoundTrip(traceLabel, 1);
+
+      if (error) throw error;
+      if (!data?.success) {
+        throw new Error(data?.error || 'Failed to submit payment proof.');
+      }
+
+      await Promise.all([
+        invalidatePrefix(BILLING_CACHE_PREFIX),
+        invalidatePrefix('dashboard:student:'),
+      ]);
+      return ok(null);
+    } catch (err) {
+      return fail(err, 'Could not send payment report.');
+    } finally {
+      endTrace(traceLabel);
     }
+  })();
 
-    const { data, error } = await supabase.rpc('submit_student_payment_proof', {
-      p_charge_id: params.chargeId,
-      p_claimed_method: params.paymentMethod,
-      p_screenshot_url: uploadedScreenshotPath || undefined,
-      p_reference_number: params.referenceNumber?.trim() || undefined,
-      p_notes: params.notes?.trim() || undefined,
-    });
-    recordRoundTrip(traceLabel, 1);
-
-    if (error) throw error;
-    if (!data?.success) {
-      throw new Error(data?.error || 'Failed to submit payment proof.');
-    }
-
-    await invalidatePrefix(BILLING_CACHE_PREFIX);
-    return ok(null);
-  } catch (err) {
-    return fail(err, 'Could not send payment report.');
+  inFlightPaymentProofs.set(flightKey, run);
+  try {
+    return await run;
   } finally {
-    endTrace(traceLabel);
+    inFlightPaymentProofs.delete(flightKey);
   }
 }

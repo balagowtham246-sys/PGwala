@@ -39,3 +39,12 @@ Docs: https://docs.expo.dev/eas/index.md
 - If `ios/` and `android/` directories do not exist, they are generated (Continuous Native Generation). Never create or edit them by hand — configure native behavior in `app.json` and config plugins.
 - Expo Go only includes its bundled native modules. After adding a library with native code, the app needs a development build: `npx expo run:ios|android` locally, or `eas build --profile development`.
 - Prefer recommended Expo modules over third-party libraries, and check your available skills before adding dependencies. Docs: https://docs.expo.dev/versions/latest/index.md
+
+## UI/UX & Performance Guardrails
+
+When creating or refactoring UI components and layouts:
+1. **No queries in child components**: Never call database queries, fetch calls, or query hooks inside repeated child items/cards (e.g., inside `<ResidentCard>` or `<ComplaintRow>`). Fetch at the screen level and pass data down via props or shared selectors.
+2. **Lists over ScrollView**: For lists of dynamic items (residents, transactions, complaints, rooms), always use `<FlatList>` (or FlashList) with a stable `keyExtractor` and memoized `renderItem`. Never use `<ScrollView>` with `.map()` for unbounded or long lists.
+3. **Memoize heavy computations**: Always wrap client-side filtering, sorting, totals, or aggregations in `useMemo` so they do not execute on every keystroke or unrelated re-render.
+4. **Preserve mutation semantics**: Never break or bypass existing optimistic updates or pending-state mutation hooks during UI redesigns.
+

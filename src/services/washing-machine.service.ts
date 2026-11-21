@@ -193,69 +193,128 @@ function isMissingRpcError(err: { code?: string; message?: string } | null | und
   );
 }
 
+export function isWashingMachineConflictError(err: {
+  code?: string;
+  message?: string;
+} | null | undefined): boolean {
+  if (!err) return false;
+  if (
+    err.code === 'WM_CONFLICT' ||
+    err.code === 'WM_RESIDENT_ACTIVE_SESSION' ||
+    err.code === '23505'
+  ) {
+    return true;
+  }
+  const msg = (err.message || '').toLowerCase();
+  return (
+    msg.includes('currently in use') ||
+    msg.includes('no washing machines are currently free') ||
+    msg.includes('already using') ||
+    msg.includes('another resident') ||
+    msg.includes('mark it free before starting')
+  );
+}
+
+const inFlightWmStarts = new Map<string, Promise<ServiceResult<StartWashingMachineResult>>>();
+
+function createTaggedWmError(message: string, code: string): Error & { code: string } {
+  const e = new Error(message) as Error & { code: string };
+  e.code = code;
+  return e;
+}
+
 export async function startWashingMachineUnit(
   propertyId: string,
   targetMachineId?: string
 ): Promise<ServiceResult<StartWashingMachineResult>> {
-  const traceLabel = `wm:start:${propertyId}`;
-  startTrace(traceLabel);
-  try {
-    // Try multi-unit RPC
-    const { data: rpcRes, error } = await supabase.rpc('start_washing_machine_unit', {
-      p_property_id: propertyId,
-      p_machine_id: targetMachineId || null,
-    });
-    recordRoundTrip(traceLabel);
+  const flightKey = `${propertyId}:${targetMachineId || 'auto'}`;
+  const existingFlight = inFlightWmStarts.get(flightKey);
+  if (existingFlight) {
+    return existingFlight;
+  }
 
-    if (!error && rpcRes) {
-      if (rpcRes.success) {
-        return ok({
-          status: 'started',
-          machineName: rpcRes.machine_name ?? rpcRes.machine?.machine_name,
-          usedLegacyFallback: false,
-        });
-      }
-
-      if (rpcRes.not_enabled) {
-        return ok({
-          status: 'not_enabled',
-          errorMessage: rpcRes.error || 'Please request access from owner.',
-        });
-      }
-
-      // Domain rejections (machine busy, out of order, active wash on another machine)
-      // must fail directly instead of falling back to legacy single-machine RPC.
-      return fail(new Error(rpcRes.error || 'Could not start washing machine.'));
-    }
-
-    if (error && !isMissingRpcError(error)) {
-      return fail(error, error.message || 'Could not start washing machine.');
-    }
-
-    // Legacy fallback only when multi-unit RPC is not yet deployed
-    const { data: legacyRes, error: legacyErr } = await supabase.rpc(
-      'start_washing_machine',
-      {
+  const run = (async (): Promise<ServiceResult<StartWashingMachineResult>> => {
+    const traceLabel = `wm:start:${propertyId}`;
+    startTrace(traceLabel);
+    try {
+      // Try multi-unit RPC
+      const { data: rpcRes, error } = await supabase.rpc('start_washing_machine_unit', {
         p_property_id: propertyId,
+        p_machine_id: targetMachineId || null,
+      });
+      recordRoundTrip(traceLabel);
+
+      if (!error && rpcRes) {
+        if (rpcRes.success) {
+          return ok({
+            status: 'started',
+            machineName: rpcRes.machine_name ?? rpcRes.machine?.machine_name,
+            usedLegacyFallback: false,
+          });
+        }
+
+        if (rpcRes.not_enabled) {
+          return ok({
+            status: 'not_enabled',
+            errorMessage: rpcRes.error || 'Please request access from owner.',
+          });
+        }
+
+        const msg = rpcRes.error || 'Could not start washing machine.';
+        const conflictCode =
+          typeof rpcRes.code === 'string' && rpcRes.code
+            ? rpcRes.code
+            : isWashingMachineConflictError({ message: msg })
+              ? 'WM_CONFLICT'
+              : 'WM_START_FAILED';
+        // Domain rejections (machine busy, out of order, active wash on another machine)
+        // must fail directly instead of falling back to legacy single-machine RPC.
+        return fail(createTaggedWmError(msg, conflictCode), msg);
       }
-    );
-    recordRoundTrip(traceLabel);
 
-    if (legacyErr) {
-      return fail(legacyErr, legacyErr.message || 'Could not start machine.');
-    }
-    if (!legacyRes?.success) {
-      return fail(new Error(legacyRes?.error || 'Could not start machine.'));
-    }
+      if (error && !isMissingRpcError(error)) {
+        const conflictCode = isWashingMachineConflictError(error) ? 'WM_CONFLICT' : error.code;
+        const msg = error.message || 'Could not start washing machine.';
+        return fail(
+          conflictCode ? createTaggedWmError(msg, conflictCode) : error,
+          msg
+        );
+      }
 
-    return ok({
-      status: 'started',
-      usedLegacyFallback: true,
-    });
-  } catch (err: unknown) {
-    return fail(err, 'Washing machine could not be started.');
+      // Legacy fallback only when multi-unit RPC is not yet deployed
+      const { data: legacyRes, error: legacyErr } = await supabase.rpc(
+        'start_washing_machine',
+        {
+          p_property_id: propertyId,
+        }
+      );
+      recordRoundTrip(traceLabel);
+
+      if (legacyErr) {
+        return fail(legacyErr, legacyErr.message || 'Could not start machine.');
+      }
+      if (!legacyRes?.success) {
+        const msg = legacyRes?.error || 'Could not start machine.';
+        const code = isWashingMachineConflictError({ message: msg }) ? 'WM_CONFLICT' : 'WM_START_FAILED';
+        return fail(createTaggedWmError(msg, code), msg);
+      }
+
+      return ok({
+        status: 'started',
+        usedLegacyFallback: true,
+      });
+    } catch (err: unknown) {
+      return fail(err, 'Washing machine could not be started.');
+    } finally {
+      endTrace(traceLabel);
+    }
+  })();
+
+  inFlightWmStarts.set(flightKey, run);
+  try {
+    return await run;
   } finally {
-    endTrace(traceLabel);
+    inFlightWmStarts.delete(flightKey);
   }
 }
 

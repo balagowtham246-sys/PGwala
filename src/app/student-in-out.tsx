@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Href, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
+import { Href, router, useLocalSearchParams } from 'expo-router';
 import {
   LogIn,
   LogOut,
@@ -24,13 +24,15 @@ import { GateHistoryModal } from '@/components/student-gate/GateHistoryModal';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
-import { extractErrorMessage } from '@/lib/error-utils';
-import { supabase } from '@/lib/supabase';
+import {
+  MovementLogItem,
+  MovementResidentRecord,
+  useOwnerMovementQuery,
+} from '@/hooks/use-movement';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import {
   groupLogsByLocalDay,
   isLateReturn,
-  sortLogsDescending,
 } from '@/lib/movement-utils';
 import {
   formatGateEventTimestamp,
@@ -48,28 +50,8 @@ import {
 // --- Types ---
 export type ResidentStatus = 'IN' | 'OUT';
 
-export interface ResidentRecord {
-  id: string;
-  property_id: string;
-  profile_id: string | null;
-  full_name: string;
-  phone_number: string | null;
-  room_number: string;
-  is_active: boolean;
-}
-
-export interface MovementLogRecord {
-  id: string;
-  resident_id: string;
-  property_id?: string;
-  direction: 'IN' | 'OUT';
-  event_time: string;
-  note: string | null;
-  purpose?: string | null;
-  expected_return_time?: string | null;
-  food_required?: boolean;
-  recorded_by: string;
-}
+export type ResidentRecord = MovementResidentRecord;
+export type MovementLogRecord = MovementLogItem;
 
 function formatEventTime(isoString: string): string {
   try {
@@ -97,14 +79,7 @@ export default function StudentInOutScreen() {
   const activeSelectedPropertyId = selectedPropertyId;
   const activeSelectedPropertyName = selectedProperty?.name;
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [propertyName, setPropertyName] = useState('Shalom Residency');
-
-  const [residents, setResidents] = useState<ResidentRecord[]>([]);
-  const [allResidents, setAllResidents] = useState<ResidentRecord[]>([]);
-  const [logs, setLogs] = useState<MovementLogRecord[]>([]);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [clearedResidentId, setClearedResidentId] = useState<string | null>(
     null
   );
@@ -144,120 +119,43 @@ export default function StudentInOutScreen() {
   const [historyDateFilter, setHistoryDateFilter] = useState<
     'ALL' | 'TODAY' | 'WEEK'
   >('ALL');
-  const [referenceTimeMs, setReferenceTimeMs] = useState(() => Date.now());
 
-  const loadData = useCallback(async () => {
-    try {
-      setErrorMessage(null);
+  const movementQuery = useOwnerMovementQuery({
+    userId,
+    selectedPropertyId: activeSelectedPropertyId,
+    selectedPropertyName: activeSelectedPropertyName,
+  });
 
-      // 1. Resolve active property ID & name
-      let activePropId = activeSelectedPropertyId;
-      let activePropName = activeSelectedPropertyName;
-
-      if (!activePropId) {
-        let query = supabase
-          .from('properties')
-          .select('id, name')
-          .eq('is_active', true);
-
-        if (userId) {
-          query = query.eq('owner_id', userId);
-        }
-
-        const { data: properties, error: propError } = await query.limit(1);
-        if (propError) throw propError;
-
-        if (!properties || properties.length === 0) {
-          setResidents([]);
-          setAllResidents([]);
-          setLogs([]);
-          setLoading(false);
-          return;
-        }
-
-        activePropId = properties[0].id;
-        activePropName = properties[0].name;
-      }
-
-      setPropertyName(activePropName || 'Shalom Residency');
-
-      // 2. Fetch all residents
-      const { data: residentsData, error: resError } = await supabase
-        .from('residents')
-        .select(
-          'id, property_id, profile_id, full_name, phone_number, room_number, is_active'
-        )
-        .eq('property_id', activePropId)
-        .order('room_number', { ascending: true });
-
-      if (resError) throw resError;
-
-      const loadedAll: ResidentRecord[] = residentsData ?? [];
-      setAllResidents(loadedAll);
-
-      const activeResidents = loadedAll.filter((r) => r.is_active);
-      setResidents(activeResidents);
-
-      const allResidentIds = loadedAll.map((r) => r.id);
-      if (allResidentIds.length === 0) {
-        setLogs([]);
-        setLoading(false);
-        return;
-      }
-
-      // 3. Fetch movement logs directly scoped by property_id
-      let { data: logsData, error: logsError } = await supabase
-        .from('movement_logs')
-        .select(
-          'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
-        )
-        .eq('property_id', activePropId)
-        .order('event_time', { ascending: false })
-        .limit(100);
-
-      // Backwards-compatibility fallback if property_id was not yet backfilled
-      if (
-        !logsError &&
-        (!logsData || logsData.length === 0) &&
-        allResidentIds.length > 0
-      ) {
-        const { data: fallbackData } = await supabase
-          .from('movement_logs')
-          .select(
-            'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
-          )
-          .in('resident_id', allResidentIds)
-          .order('event_time', { ascending: false })
-          .limit(100);
-
-        if (fallbackData && fallbackData.length > 0) {
-          logsData = fallbackData;
-        }
-      }
-
-      if (logsError) throw logsError;
-
-      setLogs(sortLogsDescending(logsData ?? []));
-      setReferenceTimeMs(Date.now());
-    } catch (err: unknown) {
-      const msg = extractErrorMessage(err, 'Could not load gate logs.');
-      console.error('[StudentInOut] Error fetching data:', err);
-      setErrorMessage(msg);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [userId, activeSelectedPropertyId, activeSelectedPropertyName]);
-
-  useFocusEffect(
-    useCallback(() => {
-      loadData();
-    }, [loadData])
+  const snapshot = movementQuery.data;
+  const loading = movementQuery.isPending && !snapshot;
+  const refreshing = manualRefreshing;
+  const propertyName =
+    snapshot?.propertyName ?? activeSelectedPropertyName ?? 'Shalom Residency';
+  const residents = useMemo(
+    () => snapshot?.activeResidents ?? [],
+    [snapshot?.activeResidents]
   );
+  const allResidents = useMemo(
+    () => snapshot?.allResidents ?? [],
+    [snapshot?.allResidents]
+  );
+  const logs = useMemo(() => snapshot?.logs ?? [], [snapshot?.logs]);
+  const errorMessage = movementQuery.isError
+    ? movementQuery.error.message
+    : null;
+  const referenceTimeMs = snapshot?.fetchedAtMs ?? 0;
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    loadData();
+  const handleRefresh = async () => {
+    setManualRefreshing(true);
+    try {
+      await movementQuery.refetch();
+    } finally {
+      setManualRefreshing(false);
+    }
+  };
+
+  const loadData = () => {
+    void movementQuery.refetch();
   };
 
   const getLatestResidentLog = (
@@ -649,7 +547,6 @@ export default function StudentInOutScreen() {
           <Pressable
             accessibilityRole="button"
             onPress={() => {
-              setReferenceTimeMs(Date.now());
               setFullHistoryVisible(true);
             }}>
             <Text style={styles.viewAllText}>View All ›</Text>

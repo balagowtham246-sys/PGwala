@@ -64,26 +64,41 @@ function unwrapResident(
   return Array.isArray(raw) ? raw[0] ?? null : raw;
 }
 
-export async function fetchOwnerInbox(
+export interface InboxPage {
+  items: InboxItem[];
+  hasMore: boolean;
+}
+
+const DEFAULT_INBOX_PAGE_SIZE = 30;
+
+export async function fetchOwnerInboxPage(
   ownerId: string,
   propertyId: string,
-  options?: { forceRefresh?: boolean }
-): Promise<ServiceResult<InboxItem[]>> {
+  options?: { forceRefresh?: boolean; pageSize?: number; offset?: number }
+): Promise<ServiceResult<InboxPage>> {
   if (!ownerId || !propertyId) {
-    return ok([]);
+    return ok({ items: [], hasMore: false });
   }
 
+  const pageSize = Math.max(1, options?.pageSize ?? DEFAULT_INBOX_PAGE_SIZE);
+  const offset = Math.max(0, options?.offset ?? 0);
+  const isFirstPage = offset === 0 && pageSize === DEFAULT_INBOX_PAGE_SIZE;
+
   const cacheKey = `${INBOX_CACHE_PREFIX}${ownerId}:${propertyId}`;
-  if (!options?.forceRefresh) {
+  if (isFirstPage && !options?.forceRefresh) {
     const entry = await getCachedEntry<InboxItem[]>(cacheKey);
     if (entry && !entry.isStale) {
-      return ok(entry.data);
+      return ok({
+        items: entry.data,
+        hasMore: entry.data.length >= pageSize,
+      });
     }
   }
 
-  const traceLabel = `inbox:fetch:${propertyId}`;
+  const traceLabel = `inbox:fetch:${propertyId}:${offset}`;
   startTrace(traceLabel);
   try {
+    const rangeEnd = offset + pageSize - 1;
     const [logsRes, complaintsRes, readSet] = await Promise.all([
       supabase
         .from('movement_logs')
@@ -92,7 +107,7 @@ export async function fetchOwnerInbox(
         )
         .eq('property_id', propertyId)
         .order('event_time', { ascending: false })
-        .limit(30),
+        .range(offset, rangeEnd),
       supabase
         .from('complaints')
         .select(
@@ -101,7 +116,7 @@ export async function fetchOwnerInbox(
         .eq('property_id', propertyId)
         .neq('status', 'resolved')
         .order('created_at', { ascending: false })
-        .limit(30),
+        .range(offset, rangeEnd),
       getReadSet(ownerId, propertyId),
     ]);
     recordRoundTrip(traceLabel, 2);
@@ -111,6 +126,9 @@ export async function fetchOwnerInbox(
     }
 
     const items: InboxItem[] = [];
+    const logsCount = !logsRes.error && logsRes.data ? logsRes.data.length : 0;
+    const complaintsCount =
+      !complaintsRes.error && complaintsRes.data ? complaintsRes.data.length : 0;
 
     if (!logsRes.error && logsRes.data) {
       for (const row of logsRes.data as {
@@ -190,13 +208,30 @@ export async function fetchOwnerInbox(
       (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
     );
 
-    await setCached(cacheKey, items, 20_000);
-    return ok(items);
+    if (isFirstPage) {
+      await setCached(cacheKey, items, 20_000);
+    }
+    return ok({
+      items,
+      hasMore: logsCount >= pageSize || complaintsCount >= pageSize,
+    });
   } catch (err) {
     return fail(err, 'Failed to load notification center.');
   } finally {
     endTrace(traceLabel);
   }
+}
+
+export async function fetchOwnerInbox(
+  ownerId: string,
+  propertyId: string,
+  options?: { forceRefresh?: boolean }
+): Promise<ServiceResult<InboxItem[]>> {
+  const pageRes = await fetchOwnerInboxPage(ownerId, propertyId, options);
+  if (!pageRes.ok) {
+    return fail(pageRes.error, pageRes.error.message);
+  }
+  return ok(pageRes.data.items);
 }
 
 export async function getUnreadInboxCount(

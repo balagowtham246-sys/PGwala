@@ -8,6 +8,7 @@ import {
   formatAlertTime,
   formatFoodAlertBody,
   isFoodAlertExpired,
+  isFoodAlertExpiredAtIst,
   istDateIso,
   latestAlertPerMeal,
   uniqueRooms,
@@ -166,6 +167,34 @@ describe('food-alert-utils', () => {
         'Delayed by 15 mins'
       );
       expect(formatFoodAlertBody('dinner', 'ready', null, null)).toBe('');
+    });
+
+    it('evaluates meal cutoffs and midnight boundaries strictly in IST regardless of host timezone', () => {
+      // 2026-11-16T05:59:00Z === 11:29 IST (1 min before 11:30 breakfast cutoff)
+      const createdMorningIst = '2026-11-16T02:30:00.000Z'; // 08:00 IST
+      expect(
+        isFoodAlertExpiredAtIst(
+          'breakfast',
+          createdMorningIst,
+          new Date('2026-11-16T05:59:00.000Z')
+        )
+      ).toBe(false);
+      // 2026-11-16T06:00:00Z === 11:30 IST (breakfast cutoff reached)
+      expect(
+        isFoodAlertExpiredAtIst(
+          'breakfast',
+          createdMorningIst,
+          new Date('2026-11-16T06:00:00.000Z')
+        )
+      ).toBe(true);
+      // 2026-11-16T18:35:00Z === 2026-11-17T00:05:00 IST (post-midnight in IST, expires prior dinner alert)
+      expect(
+        isFoodAlertExpiredAtIst(
+          'dinner',
+          '2026-11-16T14:30:00.000Z',
+          new Date('2026-11-16T18:35:00.000Z')
+        )
+      ).toBe(true);
     });
   });
 });

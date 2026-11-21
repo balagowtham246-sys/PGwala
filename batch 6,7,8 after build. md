@@ -1,0 +1,26 @@
+Batch 6 — Real-World Edge Cases & Concurrency Guards
+
+Prompt for Agent: "Audit and harden pgwala for real-world concurrency and boundary edge cases:
+
+Double-Tap / Idempotency: Disable submit buttons while mutations are in flight and add client-side request guards on Payment Proof submission, Gate In/Out logging, Complaint submission, and Washing Machine booking.
+Washing Machine Race Condition: Ensure booking a machine slot is atomic (Supabase RPC or DB constraint) so two residents tapping 'Book' at the same second cannot double-book the same slot, and surface a clean conflict toast.
+Resident Checkout / Room Transfer: When an owner checks out or transfers a resident, verify handling of unpaid bills, active washing machine bookings, and clearing/updating cached state.
+Midnight & Timezone Boundaries: Audit food opt-in cutoffs, curfew/return-time reminders, and monthly bill generation to ensure consistent local timezone (IST) handling instead of accidental UTC day shifts. Add unit tests for each edge case and run npx tsc --noEmit, npx expo lint -- --max-warnings=0, and npm test."
+Batch 7 — Media, Pagination & Mobile Network Optimization
+
+Prompt for Agent: "Optimize pgwala for slow mobile networks and growing data:
+
+Image Compression Before Upload: Compress/resize camera and gallery images (e.g., via expo-image-manipulator) before uploading to Supabase Storage for Complaints and Payment Proofs, with a max file-size guard and upload progress/retry handling.
+Pagination on Historical Lists: Add cursor/range pagination (limit + onEndReached) to student-gate-history.tsx, billing-management.tsx, owner-complaints.tsx, and notification history so properties with 1,000+ records don't load everything at once.
+Cache Invalidation on Sign-Out: Ensure signing out or switching accounts clears queryCache, ResidentContext, and any persisted offline queue items belonging to the previous user. Run npx tsc --noEmit, npx expo lint -- --max-warnings=0, and npm test."
+Batch 8 — Deep-Link Routing, Crash Recovery & Store Readiness
+
+Prompt for Agent: "Prepare pgwala for public Play Store / App Store release:
+
+Notification Tap Routing: Wire expo-notifications response listeners (including cold-start getLastNotificationResponseAsync) so tapping a push notification for a bill, complaint, announcement, or washing machine turn navigates directly to the relevant screen.
+Global Error Boundary: Add a user-friendly fallback screen with a 'Reload App' button around the root navigator so unexpected runtime errors report to Sentry and recover cleanly instead of showing a blank screen.
+Store Compliance & Permissions: Audit permission prompts (Camera, Photo Library, Notifications, Biometrics) for clear user-facing copy, and verify Account Deletion / Privacy Policy / Support links exist in Settings if required for store review. Run npx expo-doctor, npx tsc --noEmit, npx expo lint -- --max-warnings=0, and npm test."
+Recommended Order
+First: Finish the Preview APK + physical device smoke test from Batch 5 (since real-device testing catches native issues early).
+Next: Run Batch 6 (prevents data corruption and double-bookings).
+Then: Run Batch 7 and Batch 8 before your Play Store / App Store submission.

@@ -9,19 +9,15 @@ import {
   groupLogsByLocalDay,
   isOutOverHours,
 } from '@/lib/movement-utils';
-import { invalidatePrefix } from '@/lib/query-cache';
 import {
   formatRoomLabel,
   normalizeTimeMeridiemLowercase,
   resolveExpectedReturnDate,
   toSentenceCaseStatus,
 } from '@/lib/ux-utils';
-import {
-  recordStudentMovement,
-  studentDashboardCacheKey,
-} from '@/services/dashboard.service';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Notifications from 'expo-notifications';
+import { useQueryClient } from '@tanstack/react-query';
 import { router } from 'expo-router';
 import { Clock, DoorOpen, HelpCircle, Home, LogOut } from 'lucide-react-native';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -42,8 +38,12 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/context/auth-context';
 import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
+import {
+  useRecordStudentMovementMutation,
+  useStudentGateHistoryQuery,
+} from '@/hooks/use-movement';
 import { extractErrorMessage } from '@/lib/error-utils';
-import { supabase } from '@/lib/supabase';
+import { queryKeys } from '@/lib/query-keys';
 
 interface StudentResident {
   id: string;
@@ -109,6 +109,7 @@ async function scheduleReturnReminderNotification(
       content: {
         title: 'Return time reminder',
         body: 'Your expected return time has passed. Mark Inside or tell your PG owner if you are running late.',
+        data: { type: 'return_reminder' },
       },
       trigger: {
         type: Notifications.SchedulableTriggerInputTypes.DATE,
@@ -211,16 +212,26 @@ const GateLogRowCard = memo(function GateLogRowCard({
 });
 
 export default function StudentGateHistoryScreen() {
+  const qc = useQueryClient();
   const { user } = useAuth();
   const { resident: sharedResident, refreshResident } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [resident, setResident] = useState<StudentResident | null>(() =>
-    sharedResident
-      ? {
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [fallbackResident, setFallbackResident] = useState<StudentResident | null>(null);
+  const [filter, setFilter] = useState<DateFilter>('all');
+  const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const savingRef = useRef(false);
+  const lastErrorAtRef = useRef(0);
+  const recordGateToggleRef = useRef<
+    ((targetDirection: 'IN' | 'OUT', isUndo?: boolean) => Promise<void>) | null
+  >(null);
+
+  const resident = useMemo<StudentResident | null>(() => {
+    if (sharedResident) {
+      return {
         id: sharedResident.residentId,
         property_id: sharedResident.propertyId,
         full_name: sharedResident.fullName,
@@ -229,72 +240,114 @@ export default function StudentGateHistoryScreen() {
         owner_phone: sharedResident.ownerPhone,
         owner_name: sharedResident.ownerName,
         property: { name: sharedResident.propertyName },
+      };
+    }
+    return fallbackResident;
+  }, [sharedResident, fallbackResident]);
+
+  useEffect(() => {
+    if (sharedResident || !userId) return;
+    let cancelled = false;
+    void refreshResident(false).then((activeRes) => {
+      if (!cancelled && activeRes) {
+        setFallbackResident({
+          id: activeRes.residentId,
+          property_id: activeRes.propertyId,
+          full_name: activeRes.fullName,
+          room_number: activeRes.roomNumber,
+          curfew_time: activeRes.curfewTime,
+          owner_phone: activeRes.ownerPhone,
+          owner_name: activeRes.ownerName,
+          property: { name: activeRes.propertyName },
+        });
       }
-      : null
-  );
-  const [logs, setLogs] = useState<MovementLog[]>([]);
-  const [filter, setFilter] = useState<DateFilter>('all');
-  const [savingMovement, setSavingMovement] = useState(false);
-  const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const savingRef = useRef(false);
-  const recordGateToggleRef = useRef<
-    ((targetDirection: 'IN' | 'OUT', isUndo?: boolean) => Promise<void>) | null
-  >(null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sharedResident, userId, refreshResident]);
+
+  const gateQuery = useStudentGateHistoryQuery(resident?.id);
+  const movementMutation = useRecordStudentMovementMutation();
+
+  const loading =
+    (!resident && Boolean(userId)) ||
+    (gateQuery.isPending && !gateQuery.data);
+  const refreshing = manualRefreshing;
+  const loadingMoreLogs = gateQuery.isFetchingNextPage;
+  const savingMovement = movementMutation.isPending;
+
+  const logs = useMemo<MovementLog[]>(() => {
+    const pages = gateQuery.data?.pages ?? [];
+    const seen = new Set<string>();
+    const combined: MovementLog[] = [];
+    for (const page of pages) {
+      for (const item of page.logs) {
+        if (!seen.has(item.id)) {
+          seen.add(item.id);
+          combined.push({
+            id: item.id,
+            resident_id: item.resident_id,
+            direction: item.direction,
+            event_time: item.event_time,
+            note: item.note,
+            purpose: item.purpose,
+            expected_return_time: item.expected_return_time,
+            food_required: item.food_required,
+            recorded_by: item.recorded_by,
+          });
+        }
+      }
+    }
+    return combined;
+  }, [gateQuery.data?.pages]);
+
+  useEffect(() => {
+    if (
+      gateQuery.isError &&
+      gateQuery.errorUpdatedAt > lastErrorAtRef.current &&
+      (!gateQuery.data || manualRefreshing)
+    ) {
+      lastErrorAtRef.current = gateQuery.errorUpdatedAt;
+      const msg = extractErrorMessage(
+        gateQuery.error,
+        'Could not load your gate entry and exit history.'
+      );
+      Alert.alert('Load Error', msg);
+    }
+  }, [
+    gateQuery.isError,
+    gateQuery.error,
+    gateQuery.errorUpdatedAt,
+    gateQuery.data,
+    manualRefreshing,
+  ]);
 
   const loadData = useCallback(async () => {
     if (!userId) return;
-    try {
-      const activeRes = sharedResident ?? (await refreshResident(false));
-      if (!activeRes) {
-        setResident(null);
-        return;
+    if (!resident) {
+      const activeRes = await refreshResident(false);
+      if (activeRes) {
+        setFallbackResident({
+          id: activeRes.residentId,
+          property_id: activeRes.propertyId,
+          full_name: activeRes.fullName,
+          room_number: activeRes.roomNumber,
+          curfew_time: activeRes.curfewTime,
+          owner_phone: activeRes.ownerPhone,
+          owner_name: activeRes.ownerName,
+          property: { name: activeRes.propertyName },
+        });
       }
-
-      const resObj: StudentResident = {
-        id: activeRes.residentId,
-        property_id: activeRes.propertyId,
-        full_name: activeRes.fullName,
-        room_number: activeRes.roomNumber,
-        curfew_time: activeRes.curfewTime,
-        owner_phone: activeRes.ownerPhone,
-        owner_name: activeRes.ownerName,
-        property: { name: activeRes.propertyName },
-      };
-      setResident(resObj);
-
-      const { data: logsData, error: logsError } = await supabase
-        .from('movement_logs')
-        .select('*')
-        .eq('resident_id', activeRes.residentId)
-        .order('event_time', { ascending: false });
-
-      if (logsError) throw logsError;
-
-      setLogs(logsData || []);
-      setNowMs(Date.now());
-    } catch (err: unknown) {
-      const msg = extractErrorMessage(err, 'Could not load your gate entry and exit history.');
-      console.error('[StudentGateHistory] Error loading gate logs:', err);
-      Alert.alert('Load Error', msg);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      return;
     }
-  }, [userId, sharedResident, refreshResident]);
+    await gateQuery.refetch();
+  }, [userId, resident, refreshResident, gateQuery]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (!cancelled) {
-        void loadData();
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [loadData]);
+  const loadMoreLogs = () => {
+    if (!gateQuery.hasNextPage || gateQuery.isFetchingNextPage) return;
+    void gateQuery.fetchNextPage();
+  };
 
   // Current status based on most recent log (default IN if no logs yet)
   const latestLog = logs.length > 0 ? logs[0] : null;
@@ -331,19 +384,21 @@ export default function StudentGateHistoryScreen() {
       } else {
         triggerSuccessHaptic();
       }
-      setSavingMovement(true);
       try {
-        const { data, error } = await supabase.rpc('record_student_movement', {
-          p_direction: targetDirection,
-          p_note: isUndo ? 'Undo previous gate tap' : undefined,
+        const outcome = await movementMutation.mutateAsync({
+          residentId: resident?.id,
+          input: {
+            direction: targetDirection,
+            note: isUndo ? 'Undo previous gate tap' : undefined,
+            userId,
+          },
         });
-        if (error) throw error;
-        if (!data?.success) throw new Error(data?.error || 'Could not update gate status.');
         if (targetDirection === 'IN') {
           void cancelReturnReminderNotification();
         }
-        if (userId) {
-          await invalidatePrefix(studentDashboardCacheKey(userId));
+        if (outcome.queued) {
+          showToast('Saved offline — will sync automatically');
+          return;
         }
         if (!isUndo) {
           showToast(
@@ -359,16 +414,14 @@ export default function StudentGateHistoryScreen() {
             }
           );
         }
-        await loadData();
       } catch (err: unknown) {
         const msg = extractErrorMessage(err, 'Could not update gate status.');
         Alert.alert('Update Failed', msg);
       } finally {
         savingRef.current = false;
-        setSavingMovement(false);
       }
     },
-    [loadData, showToast, userId]
+    [movementMutation, resident, showToast, userId]
   );
 
   useEffect(() => {
@@ -381,24 +434,24 @@ export default function StudentGateHistoryScreen() {
   const handleConfirmGoingOut = async (payload: GoingOutSubmitPayload) => {
     if (savingRef.current) return;
     savingRef.current = true;
-    setSavingMovement(true);
     try {
-      const { data, error } = await supabase.rpc('record_student_movement', {
-        p_direction: 'OUT',
-        p_purpose: payload.purpose,
-        p_expected_return_time: payload.expectedReturnTime || undefined,
-        p_food_required: payload.foodRequired,
+      const nowIso = new Date().toISOString();
+      const outcome = await movementMutation.mutateAsync({
+        residentId: resident?.id,
+        input: {
+          direction: 'OUT',
+          purpose: payload.purpose,
+          expectedReturnTime: payload.expectedReturnTime || undefined,
+          foodRequired: payload.foodRequired,
+          userId,
+        },
       });
-      if (error) throw error;
-      if (!data?.success) throw new Error(data?.error || 'Could not update gate status.');
       setGoingOutModalVisible(false);
       triggerSuccessHaptic();
-      void scheduleReturnReminderNotification(
-        payload.expectedReturnTime,
-        new Date().toISOString()
-      );
-      if (userId) {
-        await invalidatePrefix(studentDashboardCacheKey(userId));
+      void scheduleReturnReminderNotification(payload.expectedReturnTime, nowIso);
+      if (outcome.queued) {
+        showToast('Saved offline — will sync automatically');
+        return;
       }
       showToast('Marked Outside PG', {
         actionLabel: 'Undo',
@@ -406,55 +459,37 @@ export default function StudentGateHistoryScreen() {
           void recordGateToggleRef.current?.('IN', true);
         },
       });
-      await loadData();
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Could not update gate status.');
       Alert.alert('Update Failed', msg);
     } finally {
       savingRef.current = false;
-      setSavingMovement(false);
     }
   };
 
   const handleTellOwnerRunningLate = useCallback(async () => {
     if (savingRef.current || currentStatus !== 'OUT' || !latestLog) return;
     savingRef.current = true;
-    setSavingMovement(true);
     try {
-      const result = await recordStudentMovement({
-        direction: 'OUT',
-        purpose: latestLog.purpose || 'Running late',
-        expectedReturnTime: 'Running late',
-        note: 'Resident running late (expected return passed)',
-        userId,
+      const outcome = await movementMutation.mutateAsync({
+        residentId: resident?.id,
+        input: {
+          direction: 'OUT',
+          purpose: latestLog.purpose || 'Running late',
+          expectedReturnTime: 'Running late',
+          note: 'Resident running late (expected return passed)',
+          userId,
+        },
       });
-
-      if (!result.ok) {
-        Alert.alert('Update Failed', result.error.message || 'Could not notify PG owner.');
-        return;
-      }
 
       triggerSuccessHaptic();
       void cancelReturnReminderNotification();
 
-      if (result.data.queued) {
-        const optimisticLog: MovementLog = {
-          id: `offline-queued-${Date.now()}`,
-          resident_id: latestLog.resident_id,
-          direction: 'OUT',
-          event_time: new Date().toISOString(),
-          note: 'Resident running late (expected return passed)',
-          purpose: latestLog.purpose || 'Running late',
-          expected_return_time: 'Running late',
-          food_required: latestLog.food_required ?? true,
-          recorded_by: userId || latestLog.recorded_by,
-        };
-        setLogs((prev) => [optimisticLog, ...prev]);
+      if (outcome.queued) {
         showToast('Saved offline — will sync automatically');
         return;
       }
 
-      await loadData();
       const ownerPhone = resident?.owner_phone ?? null;
       const whatsappUrl = buildWhatsAppReminderUrl(
         ownerPhone,
@@ -476,17 +511,22 @@ export default function StudentGateHistoryScreen() {
           }
           : undefined
       );
+    } catch (err: unknown) {
+      const msg = extractErrorMessage(err, 'Could not notify PG owner.');
+      Alert.alert('Update Failed', msg);
     } finally {
       savingRef.current = false;
-      setSavingMovement(false);
+      void qc.invalidateQueries({ queryKey: queryKeys.movement.all });
     }
   }, [
     currentStatus,
     latestLog,
-    userId,
+    movementMutation,
+    resident?.id,
     resident?.owner_phone,
-    loadData,
+    userId,
     showToast,
+    qc,
   ]);
 
   // Filtered logs
@@ -770,6 +810,15 @@ export default function StudentGateHistoryScreen() {
         renderSectionFooter={() => <View style={{ height: 10 }} />}
         ListHeaderComponent={listHeader}
         ListEmptyComponent={listEmpty}
+        ListFooterComponent={
+          loadingMoreLogs ? (
+            <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color="#0284C7" />
+            </View>
+          ) : undefined
+        }
+        onEndReached={() => void loadMoreLogs()}
+        onEndReachedThreshold={0.4}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         stickySectionHeadersEnabled={false}
@@ -780,8 +829,10 @@ export default function StudentGateHistoryScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => {
-              setRefreshing(true);
-              void loadData();
+              setManualRefreshing(true);
+              void loadData().finally(() => {
+                setManualRefreshing(false);
+              });
             }}
             colors={['#0284C7']}
           />

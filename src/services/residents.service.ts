@@ -5,6 +5,7 @@ import { getCached, invalidatePrefix, setCached } from '@/lib/query-cache';
 import { fail, ok, ServiceResult } from '@/lib/service-result';
 import { supabase } from '@/lib/supabase';
 import {
+  getIstMonthStartIso,
   isPropertyCompatibleWithGender,
   normalizeRoomCode,
   PropertyGenderType,
@@ -518,8 +519,7 @@ export async function fetchResidentsDirectory(
     }
 
     const residentIds = rawResidents.map((r) => r.id);
-    const now = new Date();
-    const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    const currentMonthStart = getIstMonthStartIso();
 
     const [logsRes, chargesRes] = await Promise.all([
       supabase
@@ -737,8 +737,7 @@ export async function fetchResidentProfile(
     recordRoundTrip(traceLabel, 3);
 
     const recentCharges = (chargesRes.data ?? []) as ResidentChargeSummary[];
-    const now = new Date();
-    const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+    const currentMonthStart = getIstMonthStartIso();
     const currentMonthRent = recentCharges.find(
       (c) => c.category === 'rent' && c.billing_period_start === currentMonthStart
     );
@@ -980,6 +979,8 @@ export async function updateResidentWithLock(
       invalidatePrefix(RESIDENTS_CACHE_PREFIX),
       invalidatePrefix('dashboard:'),
       invalidatePrefix('billing:'),
+      invalidatePrefix('announcements:'),
+      invalidatePrefix('resident-ctx:'),
     ]);
 
     return ok({
@@ -999,12 +1000,13 @@ export async function checkoutResident(input: {
   leavingDateIso: string;
   generateFinalBill: boolean;
   finalBillPaise: number;
-}): Promise<ServiceResult<{ finalBillCreated: boolean }>> {
+}): Promise<ServiceResult<{ finalBillCreated: boolean; releasedMachinesCount: number }>> {
   const traceLabel = `residents:checkout:${input.residentId}`;
   startTrace(traceLabel);
 
   try {
     let finalBillCreated = false;
+    let releasedMachinesCount = 0;
 
     if (input.generateFinalBill && input.finalBillPaise > 0) {
       const periodStart = `${input.leavingDateIso.slice(0, 7)}-01`;
@@ -1024,6 +1026,38 @@ export async function checkoutResident(input: {
       if (!chargeErr) {
         finalBillCreated = true;
       }
+    }
+
+    // Best-effort cleanup of any active washing machine session or pending access request
+    // held by this resident so machines are never left locked by an inactive resident.
+    try {
+      const wmRes = await supabase
+        .from('washing_machines')
+        .update({
+          status: 'free',
+          current_resident_id: null,
+          started_at: null,
+        })
+        .eq('property_id', input.propertyId)
+        .eq('current_resident_id', input.residentId)
+        .eq('status', 'in_use')
+        .select('id');
+      if (!wmRes.error && Array.isArray(wmRes.data)) {
+        releasedMachinesCount = wmRes.data.length;
+      }
+    } catch {
+      // Non-fatal if washing_machines schema differs or unit not running
+    }
+
+    try {
+      await supabase
+        .from('washing_machine_requests')
+        .update({ status: 'rejected' })
+        .eq('property_id', input.propertyId)
+        .eq('resident_id', input.residentId)
+        .eq('status', 'pending');
+    } catch {
+      // Non-fatal
     }
 
     const richRes = await supabase
@@ -1050,9 +1084,11 @@ export async function checkoutResident(input: {
       invalidatePrefix(RESIDENTS_CACHE_PREFIX),
       invalidatePrefix('dashboard:'),
       invalidatePrefix('billing:'),
+      invalidatePrefix('announcements:'),
+      invalidatePrefix('resident-ctx:'),
     ]);
 
-    return ok({ finalBillCreated });
+    return ok({ finalBillCreated, releasedMachinesCount });
   } catch (err) {
     return fail(err, 'Failed to check out resident.');
   } finally {

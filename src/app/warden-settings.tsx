@@ -27,6 +27,7 @@ import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
 import { OwnerHeader } from '@/components/ui/owner';
 import { BiometricSettingsRow } from '@/components/biometric-settings-row';
+import { SettingsComplianceSection } from '@/components/settings-compliance-section';
 
 export default function WardenSettingsScreen() {
   const { user, profile, signOut } = useAuth();
@@ -127,6 +128,8 @@ export default function WardenSettingsScreen() {
             <BiometricSettingsRow />
           </View>
         </View>
+
+        <SettingsComplianceSection role="warden" userEmail={user?.email} />
 
         {/* Log Out */}
         <View style={styles.section}>

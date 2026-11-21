@@ -1,6 +1,6 @@
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -24,14 +24,17 @@ import { OwnerHeader } from '@/components/ui/owner';
 import { useAuth } from '@/context/auth-context';
 import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
+import {
+  useStudentBillingQuery,
+  useSubmitPaymentProofMutation,
+} from '@/hooks/use-student-billing';
+import { compressPickedImage } from '@/lib/image-upload';
 import { buildUpiPaymentUrl } from '@/lib/upi';
 import { formatRoomLabel } from '@/lib/ux-utils';
 import {
-  getStudentBilling,
   PaymentMethod,
+  PreResolvedStudentContext,
   StudentBillCardItem,
-  StudentBillingSnapshot,
-  submitStudentPaymentProof,
 } from '@/services/billing.service';
 
 export default function SimplifiedStudentBillingScreen() {
@@ -40,24 +43,9 @@ export default function SimplifiedStudentBillingScreen() {
   const { showToast } = useToast();
   const userId = user?.id;
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [residentId, setResidentId] = useState<string | null>(sharedResident?.residentId ?? null);
-  const [roomNumber, setRoomNumber] = useState(sharedResident?.roomNumber ?? '');
-  const [propertyName, setPropertyName] = useState(sharedResident?.propertyName ?? 'My PG');
-  const [ownerUpiId, setOwnerUpiId] = useState<string | null>(sharedResident?.ownerUpiId ?? null);
-  const [ownerUpiPayeeName, setOwnerUpiPayeeName] = useState<string | null>(
-    sharedResident?.ownerUpiPayeeName ?? null
-  );
-
-  // Current Month Bills
-  const [currentRentBill, setCurrentRentBill] =
-    useState<StudentBillCardItem | null>(null);
-  const [currentEbBill, setCurrentEbBill] =
-    useState<StudentBillCardItem | null>(null);
-
-  // Past Bills History
-  const [pastBills, setPastBills] = useState<StudentBillCardItem[]>([]);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const submittingProofRef = useRef(false);
+  const lastErrorAtRef = useRef(0);
   const [breakdownExpanded, setBreakdownExpanded] = useState(false);
 
   // Payment Proof Modal
@@ -69,88 +57,66 @@ export default function SimplifiedStudentBillingScreen() {
   const [studentNotes, setStudentNotes] = useState('');
   const [selectedScreenshot, setSelectedScreenshot] =
     useState<SelectedScreenshotAsset | null>(null);
-  const [submittingProof, setSubmittingProof] = useState(false);
 
-  const mountedRef = useRef(true);
-  const requestIdRef = useRef(0);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-    };
-  }, []);
-
-  const applySnapshot = useCallback((snapshot: StudentBillingSnapshot) => {
-    setResidentId(snapshot.residentId);
-    setRoomNumber(snapshot.roomNumber);
-    setPropertyName(snapshot.propertyName);
-    setOwnerUpiId(snapshot.ownerUpiId ?? null);
-    setOwnerUpiPayeeName(snapshot.ownerUpiPayeeName ?? null);
-    setCurrentRentBill(snapshot.currentRentBill);
-    setCurrentEbBill(snapshot.currentEbBill);
-    setPastBills(snapshot.pastBills);
-  }, []);
-
-  // Load student bills via SWR service
-  const loadStudentBills = useCallback(
-    async (options?: { forceNetwork?: boolean }) => {
-      if (!userId) return;
-
-      const reqId = ++requestIdRef.current;
-      let hadCacheHit = false;
-
-      const result = await getStudentBilling(userId, {
-        forceNetwork: options?.forceNetwork,
-        residentContext: sharedResident
-          ? {
-              residentId: sharedResident.residentId,
-              residentName: sharedResident.fullName,
-              roomNumber: sharedResident.roomNumber,
-              propertyId: sharedResident.propertyId,
-              propertyName: sharedResident.propertyName,
-              ownerUpiId: sharedResident.ownerUpiId,
-              ownerUpiPayeeName: sharedResident.ownerUpiPayeeName,
-            }
-          : null,
-        onCachedData: (cached) => {
-          if (!mountedRef.current || requestIdRef.current !== reqId) return;
-          hadCacheHit = true;
-          applySnapshot(cached);
-          setLoading(false);
-        },
-      });
-
-      if (!mountedRef.current || requestIdRef.current !== reqId) return;
-
-      if (result.ok) {
-        applySnapshot(result.data);
-      } else if (!hadCacheHit || options?.forceNetwork) {
-        Alert.alert('Load Error', result.error.message);
-      }
-
-      setLoading(false);
-      setRefreshing(false);
-    },
-    [userId, sharedResident, applySnapshot]
+  const residentContext = useMemo<PreResolvedStudentContext | null>(
+    () =>
+      sharedResident
+        ? {
+            residentId: sharedResident.residentId,
+            residentName: sharedResident.fullName,
+            roomNumber: sharedResident.roomNumber,
+            propertyId: sharedResident.propertyId,
+            propertyName: sharedResident.propertyName,
+            ownerUpiId: sharedResident.ownerUpiId,
+            ownerUpiPayeeName: sharedResident.ownerUpiPayeeName,
+          }
+        : null,
+    [sharedResident]
   );
 
-  useEffect(() => {
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (!cancelled) {
-        void loadStudentBills();
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [loadStudentBills]);
+  const billingQuery = useStudentBillingQuery(userId, residentContext);
+  const paymentProofMutation = useSubmitPaymentProofMutation();
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    void loadStudentBills({ forceNetwork: true });
+  const snapshot = billingQuery.data;
+  const loading = billingQuery.isPending && !snapshot;
+  const refreshing = manualRefreshing;
+  const residentId = snapshot?.residentId ?? sharedResident?.residentId ?? null;
+  const roomNumber = snapshot?.roomNumber ?? sharedResident?.roomNumber ?? '';
+  const propertyName =
+    snapshot?.propertyName ?? sharedResident?.propertyName ?? 'My PG';
+  const ownerUpiId =
+    snapshot?.ownerUpiId ?? sharedResident?.ownerUpiId ?? null;
+  const ownerUpiPayeeName =
+    snapshot?.ownerUpiPayeeName ?? sharedResident?.ownerUpiPayeeName ?? null;
+  const currentRentBill = snapshot?.currentRentBill ?? null;
+  const currentEbBill = snapshot?.currentEbBill ?? null;
+  const pastBills = snapshot?.pastBills ?? [];
+  const submittingProof = paymentProofMutation.isPending;
+
+  useEffect(() => {
+    if (
+      billingQuery.isError &&
+      billingQuery.errorUpdatedAt > lastErrorAtRef.current &&
+      (!snapshot || manualRefreshing)
+    ) {
+      lastErrorAtRef.current = billingQuery.errorUpdatedAt;
+      Alert.alert('Load Error', billingQuery.error.message);
+    }
+  }, [
+    billingQuery.isError,
+    billingQuery.error,
+    billingQuery.errorUpdatedAt,
+    snapshot,
+    manualRefreshing,
+  ]);
+
+  const handleRefresh = async () => {
+    setManualRefreshing(true);
+    try {
+      await billingQuery.refetch();
+    } finally {
+      setManualRefreshing(false);
+    }
   };
 
   // Launch Image Picker to choose screenshot proof
@@ -169,14 +135,19 @@ export default function SimplifiedStudentBillingScreen() {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: true,
-        quality: 0.7,
-        base64: true,
+        quality: 0.85,
+        base64: false,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
+        const compressed = await compressPickedImage(result.assets[0]);
+        if (!compressed.ok) {
+          Alert.alert('Image Too Large', compressed.error);
+          return;
+        }
         setSelectedScreenshot({
-          uri: result.assets[0].uri,
-          base64: result.assets[0].base64,
+          uri: compressed.data.uri,
+          base64: compressed.data.base64,
         });
       }
     } catch {
@@ -189,6 +160,10 @@ export default function SimplifiedStudentBillingScreen() {
 
   // Open Payment Proof Modal for a specific bill
   const handleOpenPaymentModal = (bill: StudentBillCardItem) => {
+    if (bill.pending_report?.status === 'pending') {
+      showToast('Payment proof for this bill is already awaiting owner approval');
+      return;
+    }
     setSelectedBillForPayment(bill);
     setPaymentMethod('upi');
     setReferenceNumber('');
@@ -223,31 +198,40 @@ export default function SimplifiedStudentBillingScreen() {
 
   // Submit payment proof
   const handleSubmitPaymentProof = async () => {
-    if (!selectedBillForPayment || submittingProof || !residentId) return;
-
-    setSubmittingProof(true);
-    const result = await submitStudentPaymentProof({
-      residentId,
-      chargeId: selectedBillForPayment.charge_id,
-      paymentMethod,
-      referenceNumber,
-      notes: studentNotes,
-      screenshot: selectedScreenshot,
-    });
-    setSubmittingProof(false);
-
-    if (!result.ok) {
-      Alert.alert('Submission Error', result.error.message);
+    if (
+      !selectedBillForPayment ||
+      paymentProofMutation.isPending ||
+      submittingProofRef.current ||
+      !residentId
+    ) {
       return;
     }
 
+    submittingProofRef.current = true;
     const billTitle = selectedBillForPayment.title;
-    setPaymentModalVisible(false);
-    setSelectedScreenshot(null);
-    setReferenceNumber('');
-    setStudentNotes('');
-    showToast(`${billTitle} payment proof sent for review`);
-    await loadStudentBills({ forceNetwork: true });
+    try {
+      await paymentProofMutation.mutateAsync({
+        residentId,
+        chargeId: selectedBillForPayment.charge_id,
+        paymentMethod,
+        referenceNumber,
+        notes: studentNotes,
+        screenshot: selectedScreenshot,
+      });
+
+      setPaymentModalVisible(false);
+      setSelectedScreenshot(null);
+      setReferenceNumber('');
+      setStudentNotes('');
+      showToast(`${billTitle} payment proof sent for review`);
+    } catch (err) {
+      Alert.alert(
+        'Submission Error',
+        err instanceof Error ? err.message : 'Could not send payment report.'
+      );
+    } finally {
+      submittingProofRef.current = false;
+    }
   };
 
   const headerSubtitle = roomNumber
@@ -271,7 +255,7 @@ export default function SimplifiedStudentBillingScreen() {
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
-            onRefresh={handleRefresh}
+            onRefresh={() => void handleRefresh()}
             colors={['#0284C7']}
           />
         }>

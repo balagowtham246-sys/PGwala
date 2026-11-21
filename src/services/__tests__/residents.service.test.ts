@@ -545,6 +545,59 @@ describe('residents.service', () => {
       });
       expect(residentUpdateEqMock).toHaveBeenCalledWith('id', 'res-2');
     });
+
+    it('releases active washing machines and clears pending requests when checking out a resident', async () => {
+      const wmSelectMock = jest.fn().mockResolvedValue({
+        data: [{ id: 'wm-1' }],
+        error: null,
+      });
+      const wmEqStatusMock = jest.fn().mockReturnValue({ select: wmSelectMock });
+      const wmEqResidentMock = jest.fn().mockReturnValue({ eq: wmEqStatusMock });
+      const wmEqPropMock = jest.fn().mockReturnValue({ eq: wmEqResidentMock });
+      const wmUpdateMock = jest.fn().mockReturnValue({ eq: wmEqPropMock });
+
+      const wmReqEqStatusMock = jest.fn().mockResolvedValue({ error: null });
+      const wmReqEqResidentMock = jest.fn().mockReturnValue({ eq: wmReqEqStatusMock });
+      const wmReqEqPropMock = jest.fn().mockReturnValue({ eq: wmReqEqResidentMock });
+      const wmReqUpdateMock = jest.fn().mockReturnValue({ eq: wmReqEqPropMock });
+
+      const residentUpdateEqMock = jest.fn().mockResolvedValue({ error: null });
+      const residentUpdateMock = jest.fn().mockReturnValue({
+        eq: residentUpdateEqMock,
+      });
+
+      mockedFrom.mockImplementation((table: string) => {
+        if (table === 'washing_machines') {
+          return { update: wmUpdateMock };
+        }
+        if (table === 'washing_machine_requests') {
+          return { update: wmReqUpdateMock };
+        }
+        if (table === 'residents') {
+          return { update: residentUpdateMock };
+        }
+        throw new Error(`Unexpected table: ${table}`);
+      });
+
+      const res = await checkoutResident({
+        residentId: 'res-wm',
+        propertyId: 'prop-1',
+        leavingDateIso: '2026-11-21',
+        generateFinalBill: false,
+        finalBillPaise: 0,
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        expect(res.data.releasedMachinesCount).toBe(1);
+      }
+      expect(wmUpdateMock).toHaveBeenCalledWith({
+        status: 'free',
+        current_resident_id: null,
+        started_at: null,
+      });
+      expect(wmReqUpdateMock).toHaveBeenCalledWith({ status: 'rejected' });
+    });
   });
 
   describe('room code normalization & deduplication', () => {

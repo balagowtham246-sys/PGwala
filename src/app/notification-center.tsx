@@ -1,8 +1,10 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  FlatList,
+  Platform,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -35,7 +37,7 @@ import { useProperty } from '@/context/property-context';
 import { triggerSelectionHaptic } from '@/lib/haptics';
 import { formatGateEventTimestamp, toSentenceCaseStatus } from '@/lib/ux-utils';
 import {
-  fetchOwnerInbox,
+  fetchOwnerInboxPage,
   InboxFilterTab,
   InboxItem,
   markAllInboxRead,
@@ -55,10 +57,14 @@ export default function NotificationCenterScreen() {
   const { selectedProperty, selectedPropertyId, loadingProperties } = useProperty();
   const userId = user?.id ?? null;
 
+  const INBOX_PAGE_SIZE = 30;
   const [items, setItems] = useState<InboxItem[]>([]);
   const [filter, setFilter] = useState<InboxFilterTab>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [pageOffset, setPageOffset] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const requestSeqRef = useRef(0);
@@ -67,6 +73,8 @@ export default function NotificationCenterScreen() {
     async (forceRefresh: boolean, showSpinner = false) => {
       if (!userId || !selectedPropertyId) {
         setItems([]);
+        setHasMore(false);
+        setPageOffset(0);
         setErrorMessage(null);
         setLoading(false);
         setRefreshing(false);
@@ -77,13 +85,17 @@ export default function NotificationCenterScreen() {
         setLoading(true);
       }
       const seq = ++requestSeqRef.current;
-      const res = await fetchOwnerInbox(userId, selectedPropertyId, {
+      const res = await fetchOwnerInboxPage(userId, selectedPropertyId, {
         forceRefresh,
+        pageSize: INBOX_PAGE_SIZE,
+        offset: 0,
       });
       if (seq !== requestSeqRef.current) return;
 
       if (res.ok) {
-        setItems(res.data);
+        setItems(res.data.items);
+        setHasMore(res.data.hasMore);
+        setPageOffset(INBOX_PAGE_SIZE);
         setErrorMessage(null);
       } else {
         setErrorMessage(res.error.message);
@@ -93,6 +105,28 @@ export default function NotificationCenterScreen() {
     },
     [userId, selectedPropertyId]
   );
+
+  const loadMoreInbox = useCallback(async () => {
+    if (!userId || !selectedPropertyId || loadingMore || !hasMore) return;
+    setLoadingMore(true);
+    try {
+      const res = await fetchOwnerInboxPage(userId, selectedPropertyId, {
+        forceRefresh: true,
+        pageSize: INBOX_PAGE_SIZE,
+        offset: pageOffset,
+      });
+      if (res.ok) {
+        setItems((prev) => {
+          const seen = new Set(prev.map((entry) => entry.id));
+          return [...prev, ...res.data.items.filter((entry) => !seen.has(entry.id))];
+        });
+        setHasMore(res.data.hasMore);
+        setPageOffset((prev) => prev + INBOX_PAGE_SIZE);
+      }
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [userId, selectedPropertyId, loadingMore, hasMore, pageOffset]);
 
   useFocusEffect(
     useCallback(() => {
@@ -253,6 +287,12 @@ export default function NotificationCenterScreen() {
     );
   };
 
+  const showListRows =
+    !loadingProperties &&
+    Boolean(selectedPropertyId) &&
+    !(loading && items.length === 0) &&
+    !(errorMessage && items.length === 0);
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
@@ -276,116 +316,126 @@ export default function NotificationCenterScreen() {
         }
       />
 
-      <ScrollView
+      <FlatList
+        data={showListRows ? filteredItems : []}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => {
+          const timeLabel = formatGateEventTimestamp(item.timestamp);
+          const priorityLabel = item.priority
+            ? toSentenceCaseStatus(item.priority)
+            : '';
+
+          return (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`${item.title}${!item.isRead ? ', unread' : ''}`}
+              onPress={() => void handlePressItem(item)}
+              style={({ pressed }) => [
+                styles.itemCard,
+                !item.isRead && styles.itemCardUnread,
+                pressed && styles.itemCardPressed,
+              ]}>
+              {renderCategoryIcon(item)}
+
+              <View style={styles.itemBody}>
+                <View style={styles.itemTopRow}>
+                  <View style={styles.titleRow}>
+                    {!item.isRead && <View style={styles.unreadDot} />}
+                    <Text
+                      style={[
+                        styles.itemTitle,
+                        !item.isRead && styles.itemTitleUnread,
+                      ]}
+                      numberOfLines={2}>
+                      {item.title}
+                    </Text>
+                  </View>
+                  {timeLabel ? (
+                    <Text style={styles.itemTimestamp}>{timeLabel}</Text>
+                  ) : null}
+                </View>
+
+                <Text style={styles.itemSubtitle} numberOfLines={2}>
+                  {item.subtitle}
+                </Text>
+
+                {priorityLabel ? (
+                  <View style={styles.badgeRow}>
+                    <StatusBadge
+                      label={priorityLabel}
+                      variant={getPriorityBadgeVariant(priorityLabel)}
+                      size="sm"
+                    />
+                  </View>
+                ) : null}
+              </View>
+            </Pressable>
+          );
+        }}
+        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
+        onEndReached={() => void loadMoreInbox()}
+        onEndReachedThreshold={0.4}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
             colors={[OwnerTheme.colors.primary]}
           />
-        }>
-        {loadingProperties && !selectedPropertyId ? (
-          <LoadingState message="Loading property..." />
-        ) : !selectedPropertyId ? (
-          <EmptyState
-            icon={Building2}
-            title="No Property Selected"
-            description="Select or add a PG property to view gate alerts and complaint notifications."
-          />
-        ) : (
-          <>
-            <SegmentedFilter
-              options={filterOptions}
-              activeKey={filter}
-              onSelect={(next) => {
-                triggerSelectionHaptic();
-                setFilter(next);
-              }}
-            />
-
-            {loading && items.length === 0 ? (
-              <LoadingState message="Loading notifications..." />
-            ) : errorMessage && items.length === 0 ? (
-              <ErrorState
-                message={errorMessage}
-                onRetry={() => void fetchLatestInbox(true, true)}
+        }
+        ListHeaderComponent={
+          !selectedPropertyId ? undefined : (
+            <View style={{ gap: 12, marginBottom: 12 }}>
+              <SegmentedFilter
+                options={filterOptions}
+                activeKey={filter}
+                onSelect={(next) => {
+                  triggerSelectionHaptic();
+                  setFilter(next);
+                }}
               />
-            ) : (
-              <>
-                {errorMessage && (
-                  <ErrorState
-                    message={errorMessage}
-                    onRetry={() => void fetchLatestInbox(true)}
-                  />
-                )}
-
-                {filteredItems.length === 0 ? (
-                  renderEmptyFilterState()
-                ) : (
-                  <View style={styles.listContainer}>
-                    {filteredItems.map((item) => {
-                      const timeLabel = formatGateEventTimestamp(item.timestamp);
-                      const priorityLabel = item.priority
-                        ? toSentenceCaseStatus(item.priority)
-                        : '';
-
-                      return (
-                        <Pressable
-                          key={item.id}
-                          accessibilityRole="button"
-                          accessibilityLabel={`${item.title}${!item.isRead ? ', unread' : ''}`}
-                          onPress={() => void handlePressItem(item)}
-                          style={({ pressed }) => [
-                            styles.itemCard,
-                            !item.isRead && styles.itemCardUnread,
-                            pressed && styles.itemCardPressed,
-                          ]}>
-                          {renderCategoryIcon(item)}
-
-                          <View style={styles.itemBody}>
-                            <View style={styles.itemTopRow}>
-                              <View style={styles.titleRow}>
-                                {!item.isRead && <View style={styles.unreadDot} />}
-                                <Text
-                                  style={[
-                                    styles.itemTitle,
-                                    !item.isRead && styles.itemTitleUnread,
-                                  ]}
-                                  numberOfLines={2}>
-                                  {item.title}
-                                </Text>
-                              </View>
-                              {timeLabel ? (
-                                <Text style={styles.itemTimestamp}>{timeLabel}</Text>
-                              ) : null}
-                            </View>
-
-                            <Text style={styles.itemSubtitle} numberOfLines={2}>
-                              {item.subtitle}
-                            </Text>
-
-                            {priorityLabel ? (
-                              <View style={styles.badgeRow}>
-                                <StatusBadge
-                                  label={priorityLabel}
-                                  variant={getPriorityBadgeVariant(priorityLabel)}
-                                  size="sm"
-                                />
-                              </View>
-                            ) : null}
-                          </View>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                )}
-              </>
-            )}
-          </>
-        )}
-      </ScrollView>
+              {errorMessage && items.length > 0 && (
+                <ErrorState
+                  message={errorMessage}
+                  onRetry={() => void fetchLatestInbox(true)}
+                />
+              )}
+            </View>
+          )
+        }
+        ListEmptyComponent={
+          loadingProperties && !selectedPropertyId ? (
+            <LoadingState message="Loading property..." />
+          ) : !selectedPropertyId ? (
+            <EmptyState
+              icon={Building2}
+              title="No Property Selected"
+              description="Select or add a PG property to view gate alerts and complaint notifications."
+            />
+          ) : loading && items.length === 0 ? (
+            <LoadingState message="Loading notifications..." />
+          ) : errorMessage && items.length === 0 ? (
+            <ErrorState
+              message={errorMessage}
+              onRetry={() => void fetchLatestInbox(true, true)}
+            />
+          ) : (
+            renderEmptyFilterState()
+          )
+        }
+        ListFooterComponent={
+          loadingMore ? (
+            <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+            </View>
+          ) : undefined
+        }
+      />
     </SafeAreaView>
   );
 }

@@ -5,6 +5,7 @@ import { clearQueryCache } from '@/lib/query-cache';
 import { supabase } from '@/lib/supabase';
 import {
   fetchOwnerInbox,
+  fetchOwnerInboxPage,
   getUnreadInboxCount,
   markAllInboxRead,
   markInboxItemRead,
@@ -54,12 +55,18 @@ interface MockInboxData {
 }
 
 function setupSupabaseInboxMock(data: MockInboxData) {
+  const complaintsRangeSpy = jest.fn().mockResolvedValue({
+    data: data.complaints,
+    error: null,
+  });
+  const logsRangeSpy = jest.fn().mockResolvedValue({
+    data: data.movementLogs,
+    error: null,
+  });
   const complaintsNeqSpy = jest.fn(() => ({
     order: () => ({
-      limit: jest.fn().mockResolvedValue({
-        data: data.complaints,
-        error: null,
-      }),
+      range: complaintsRangeSpy,
+      limit: complaintsRangeSpy,
     }),
   }));
 
@@ -69,10 +76,8 @@ function setupSupabaseInboxMock(data: MockInboxData) {
         select: () => ({
           eq: () => ({
             order: () => ({
-              limit: jest.fn().mockResolvedValue({
-                data: data.movementLogs,
-                error: null,
-              }),
+              range: logsRangeSpy,
+              limit: logsRangeSpy,
             }),
           }),
         }),
@@ -92,7 +97,7 @@ function setupSupabaseInboxMock(data: MockInboxData) {
     throw new Error(`Unexpected table: ${table}`);
   });
 
-  return { complaintsNeqSpy };
+  return { complaintsNeqSpy, logsRangeSpy, complaintsRangeSpy };
 }
 
 describe('notification-center.service', () => {
@@ -274,6 +279,10 @@ describe('notification-center.service', () => {
           select: () => ({
             eq: () => ({
               order: () => ({
+                range: jest.fn().mockResolvedValue({
+                  data: null,
+                  error: { message: 'movement_logs error' },
+                }),
                 limit: jest.fn().mockResolvedValue({
                   data: null,
                   error: { message: 'movement_logs error' },
@@ -289,7 +298,7 @@ describe('notification-center.service', () => {
             eq: () => ({
               neq: () => ({
                 order: () => ({
-                  limit: jest.fn().mockResolvedValue({
+                  range: jest.fn().mockResolvedValue({
                     data: [
                       {
                         id: 'comp-2',
@@ -319,6 +328,44 @@ describe('notification-center.service', () => {
       expect(partialRes.data).toHaveLength(1);
       expect(partialRes.data[0].id).toBe('complaint:comp-2');
       expect(partialRes.data[0].subtitle).toBe('Resident · Open');
+    }
+  });
+
+  it('paginates owner inbox queries with offset and pageSize via fetchOwnerInboxPage', async () => {
+    const { logsRangeSpy, complaintsRangeSpy } = setupSupabaseInboxMock({
+      movementLogs: [
+        {
+          id: 'log-1',
+          resident_id: 'res-1',
+          direction: 'OUT',
+          purpose: 'Work',
+          event_time: '2026-11-20T08:00:00.000Z',
+          residents: { id: 'res-1', full_name: 'Asha', room_number: '101' },
+        },
+        {
+          id: 'log-2',
+          resident_id: 'res-2',
+          direction: 'IN',
+          purpose: null,
+          event_time: '2026-11-20T09:00:00.000Z',
+          residents: { id: 'res-2', full_name: 'Priya', room_number: '102' },
+        },
+      ],
+      complaints: [],
+    });
+
+    const pageRes = await fetchOwnerInboxPage('owner-1', 'prop-1', {
+      forceRefresh: true,
+      pageSize: 2,
+      offset: 2,
+    });
+
+    expect(logsRangeSpy).toHaveBeenCalledWith(2, 3);
+    expect(complaintsRangeSpy).toHaveBeenCalledWith(2, 3);
+    expect(pageRes.ok).toBe(true);
+    if (pageRes.ok) {
+      expect(pageRes.data.hasMore).toBe(true);
+      expect(pageRes.data.items).toHaveLength(2);
     }
   });
 });

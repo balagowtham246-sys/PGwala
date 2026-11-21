@@ -270,7 +270,10 @@ export function PaymentProofModal({
               )}
             </Pressable>
 
-            <Pressable style={styles.cancelModalBtn} onPress={onClose}>
+            <Pressable
+              disabled={submitting}
+              style={[styles.cancelModalBtn, submitting && styles.disabledBtn]}
+              onPress={onClose}>
               <Text style={styles.cancelModalBtnText}>Cancel</Text>
             </Pressable>
           </View>

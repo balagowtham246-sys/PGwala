@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -30,14 +30,20 @@ import {
 import { useAuth } from '@/context/auth-context';
 import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
+import {
+  PhotoUploadError,
+  useStudentComplaintsQuery,
+  useStudentCreateComplaintMutation,
+} from '@/hooks/use-complaints';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { compressPickedImage } from '@/lib/image-upload';
 import {
   enqueueOfflineMutation,
   flushOfflineQueue,
   getPendingCount,
 } from '@/lib/offline-queue';
 import { isLikelyNetworkError } from '@/lib/service-result';
-import { supabase, decodeBase64ToBytes, getSignedComplaintPhotoUrl } from '@/lib/supabase';
+import { getSignedComplaintPhotoUrl } from '@/lib/supabase';
 import { formatRoomLabel } from '@/lib/ux-utils';
 import {
   ComplaintOfflinePayload,
@@ -63,11 +69,10 @@ export default function StudentComplaintsScreen() {
   const { showToast } = useToast();
   const userId = user?.id;
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [resident, setResident] = useState<StudentResident | null>(null);
-  const [complaints, setComplaints] = useState<ComplaintRecord[]>([]);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [fallbackResident, setFallbackResident] = useState<StudentResident | null>(null);
   const [pendingOfflineCount, setPendingOfflineCount] = useState(0);
+  const lastErrorAtRef = useRef(0);
 
   // Filter: 'all' | 'active' | 'resolved'
   const [filter, setFilter] = useState<'all' | 'active' | 'resolved'>('active');
@@ -82,11 +87,70 @@ export default function StudentComplaintsScreen() {
     uri: string;
     base64?: string | null;
   } | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const submittingRef = useRef(false);
 
   // Full Screen Image Viewer Modal
   const [fullImageUrl, setFullImageUrl] = useState<string | null>(null);
   const [loadingFullImage, setLoadingFullImage] = useState(false);
+
+  const resident = useMemo<StudentResident | null>(() => {
+    if (sharedResident) {
+      return {
+        id: sharedResident.residentId,
+        property_id: sharedResident.propertyId,
+        full_name: sharedResident.fullName,
+        room_number: sharedResident.roomNumber,
+        property: { name: sharedResident.propertyName },
+      };
+    }
+    return fallbackResident;
+  }, [sharedResident, fallbackResident]);
+
+  const complaintsQuery = useStudentComplaintsQuery(resident?.id);
+  const createComplaintMutation = useStudentCreateComplaintMutation();
+
+  const loading =
+    (!resident && Boolean(userId)) ||
+    (complaintsQuery.isPending && !complaintsQuery.data);
+  const refreshing = manualRefreshing;
+  const loadingMore = complaintsQuery.isFetchingNextPage;
+  const hasMore = Boolean(complaintsQuery.hasNextPage);
+  const submitting = createComplaintMutation.isPending;
+
+  const complaints = useMemo(() => {
+    const pages = complaintsQuery.data?.pages ?? [];
+    const seen = new Set<string>();
+    const combined: ComplaintRecord[] = [];
+    for (const page of pages) {
+      for (const item of page.complaints) {
+        if (!seen.has(item.id)) {
+          seen.add(item.id);
+          combined.push(item);
+        }
+      }
+    }
+    return combined;
+  }, [complaintsQuery.data?.pages]);
+
+  useEffect(() => {
+    if (
+      complaintsQuery.isError &&
+      complaintsQuery.errorUpdatedAt > lastErrorAtRef.current &&
+      (!complaintsQuery.data || manualRefreshing)
+    ) {
+      lastErrorAtRef.current = complaintsQuery.errorUpdatedAt;
+      Alert.alert(
+        'Load Error',
+        complaintsQuery.error.message || 'Could not load your complaints.'
+      );
+    }
+  }, [
+    complaintsQuery.isError,
+    complaintsQuery.error,
+    complaintsQuery.errorUpdatedAt,
+    complaintsQuery.data,
+    manualRefreshing,
+  ]);
 
   const handlePickImage = async () => {
     Alert.alert('Attach Issue Photo', 'Choose how you want to add a photo of the maintenance issue:', [
@@ -115,13 +179,18 @@ export default function StudentComplaintsScreen() {
       const res = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
         allowsEditing: true,
-        quality: 0.7,
-        base64: true,
+        quality: 0.85,
+        base64: false,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
+        const compressed = await compressPickedImage(res.assets[0]);
+        if (!compressed.ok) {
+          Alert.alert('Image Too Large', compressed.error);
+          return;
+        }
         setSelectedPhoto({
-          uri: res.assets[0].uri,
-          base64: res.assets[0].base64,
+          uri: compressed.data.uri,
+          base64: compressed.data.base64,
         });
       }
     } catch (err) {
@@ -140,13 +209,18 @@ export default function StudentComplaintsScreen() {
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
         allowsEditing: true,
-        quality: 0.7,
-        base64: true,
+        quality: 0.85,
+        base64: false,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
+        const compressed = await compressPickedImage(res.assets[0]);
+        if (!compressed.ok) {
+          Alert.alert('Image Too Large', compressed.error);
+          return;
+        }
         setSelectedPhoto({
-          uri: res.assets[0].uri,
-          base64: res.assets[0].base64,
+          uri: compressed.data.uri,
+          base64: compressed.data.base64,
         });
       }
     } catch (err) {
@@ -170,66 +244,52 @@ export default function StudentComplaintsScreen() {
 
   const loadData = useCallback(async () => {
     if (!userId) return;
-    try {
-      const activeRes = sharedResident ?? (await refreshResident(false));
-      if (!activeRes) {
-        setResident(null);
-        return;
+    if (!sharedResident) {
+      const activeRes = await refreshResident(false);
+      if (activeRes) {
+        setFallbackResident({
+          id: activeRes.residentId,
+          property_id: activeRes.propertyId,
+          full_name: activeRes.fullName,
+          room_number: activeRes.roomNumber,
+          property: { name: activeRes.propertyName },
+        });
       }
-
-      const resObj: StudentResident = {
-        id: activeRes.residentId,
-        property_id: activeRes.propertyId,
-        full_name: activeRes.fullName,
-        room_number: activeRes.roomNumber,
-        property: { name: activeRes.propertyName },
-      };
-      setResident(resObj);
-
-      // Fetch complaints for this resident
-      const { data: compData, error: compError } = await supabase
-        .from('complaints')
-        .select('*')
-        .eq('resident_id', resObj.id)
-        .order('created_at', { ascending: false });
-
-      if (compError) {
-        // Table not yet migrated or soft error
-        console.warn('[StudentComplaints] Complaints query warning:', compError.message);
-        setComplaints([]);
-      } else {
-        setComplaints(compData || []);
-      }
-    } catch (err: unknown) {
-      const msg = extractErrorMessage(err, 'Could not load your complaints.');
-      console.error('[StudentComplaints] Load error:', err);
-      Alert.alert('Load Error', msg || 'Could not load your complaints.');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
+      return;
     }
-  }, [userId, sharedResident, refreshResident]);
+    await complaintsQuery.refetch();
+  }, [userId, sharedResident, refreshResident, complaintsQuery]);
+
+  const loadMoreComplaints = () => {
+    if (!hasMore || loadingMore) return;
+    void complaintsQuery.fetchNextPage();
+  };
 
   useFocusEffect(
     useCallback(() => {
       let active = true;
-      void (async () => {
-        await flushOfflineQueue(defaultOfflineExecutors);
-        const pending = await getPendingCount();
-        if (active) {
-          setPendingOfflineCount(pending);
-          await loadData();
+      if (!sharedResident && userId) {
+        void loadData();
+      }
+      void getPendingCount().then((pending) => {
+        if (active) setPendingOfflineCount(pending);
+      });
+      void flushOfflineQueue(defaultOfflineExecutors).then(async (summary) => {
+        if (!active) return;
+        setPendingOfflineCount(await getPendingCount());
+        if (summary.succeeded > 0) {
+          await complaintsQuery.refetch();
         }
-      })();
+      });
       return () => {
         active = false;
       };
-    }, [loadData])
+    }, [sharedResident, userId, loadData, complaintsQuery])
   );
 
-  // Submit new complaint
+  // Submit new complaint (optimistic update + rollback on error + server-row replacement on success)
   const handleSubmitComplaint = async () => {
-    if (!resident || submitting) return;
+    if (!resident || submitting || submittingRef.current) return;
 
     const trimmedTitle = title.trim();
     const trimmedDesc = description.trim();
@@ -246,52 +306,23 @@ export default function StudentComplaintsScreen() {
       return;
     }
 
-    setSubmitting(true);
+    const photoToUpload = selectedPhoto;
+    const chosenCategory = category;
+    const chosenPriority = priority;
+
+    submittingRef.current = true;
     try {
-      let uploadedPhotoPath: string | null = null;
-
-      // 1. Upload photo if selected (requires live connection — never queued offline)
-      if (selectedPhoto?.base64) {
-        try {
-          const fileExt =
-            selectedPhoto.uri.split('.').pop()?.toLowerCase() || 'jpg';
-          const fileName = `${resident.id}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${fileExt}`;
-          const bytes = decodeBase64ToBytes(selectedPhoto.base64);
-
-          const { error: uploadError } = await supabase.storage
-            .from('complaint-photos')
-            .upload(fileName, bytes, {
-              contentType: `image/${fileExt === 'png' ? 'png' : 'jpeg'}`,
-              upsert: false,
-            });
-
-          if (uploadError) {
-            throw new Error(`Photo upload failed: ${uploadError.message}`);
-          }
-          uploadedPhotoPath = fileName;
-        } catch (photoErr: unknown) {
-          const pMsg = extractErrorMessage(photoErr, 'Could not upload attachment.');
-          Alert.alert('Photo Upload Error', pMsg || 'Could not upload attachment.');
-          setSubmitting(false);
-          return;
-        }
-      }
-
-      // 2. Insert complaint record
-      const { error } = await supabase.from('complaints').insert({
-        property_id: resident.property_id,
-        resident_id: resident.id,
-        category,
-        priority,
+      await createComplaintMutation.mutateAsync({
+        propertyId: resident.property_id,
+        residentId: resident.id,
+        category: chosenCategory,
+        priority: chosenPriority,
         title: trimmedTitle,
         description: trimmedDesc,
-        photo_url: uploadedPhotoPath,
+        selectedPhoto: photoToUpload,
       });
 
-      if (error) throw error;
-
       showToast('Complaint submitted to PG owner');
-
       setShowModal(false);
       setTitle('');
       setDescription('');
@@ -299,15 +330,20 @@ export default function StudentComplaintsScreen() {
       setCategory('plumbing');
       setPriority('medium');
       setFilter('active');
-      await loadData();
     } catch (err: unknown) {
+      if (err instanceof PhotoUploadError) {
+        const pMsg = extractErrorMessage(err, 'Could not upload attachment.');
+        Alert.alert('Photo Upload Error', pMsg || 'Could not upload attachment.');
+        return;
+      }
+
       // Offline queuing is strictly restricted to complaints WITHOUT an attached local photo
-      if (!selectedPhoto && isLikelyNetworkError(err)) {
+      if (!photoToUpload && isLikelyNetworkError(err)) {
         const offlinePayload: ComplaintOfflinePayload & Record<string, unknown> = {
           property_id: resident.property_id,
           resident_id: resident.id,
-          category,
-          priority,
+          category: chosenCategory,
+          priority: chosenPriority,
           title: trimmedTitle,
           description: trimmedDesc,
           photo_url: null,
@@ -332,7 +368,7 @@ export default function StudentComplaintsScreen() {
       console.error('[StudentComplaints] Submit error:', err);
       Alert.alert('Submission Failed', msg || 'Could not submit your complaint.');
     } finally {
-      setSubmitting(false);
+      submittingRef.current = false;
     }
   };
 
@@ -373,11 +409,15 @@ export default function StudentComplaintsScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => {
-              setRefreshing(true);
+              setManualRefreshing(true);
               void (async () => {
-                await flushOfflineQueue(defaultOfflineExecutors);
-                setPendingOfflineCount(await getPendingCount());
-                await loadData();
+                try {
+                  await flushOfflineQueue(defaultOfflineExecutors);
+                  setPendingOfflineCount(await getPendingCount());
+                  await loadData();
+                } finally {
+                  setManualRefreshing(false);
+                }
               })();
             }}
             colors={['#0284C7']}
@@ -481,13 +521,27 @@ export default function StudentComplaintsScreen() {
                 </Text>
               </View>
             ) : (
-              filteredComplaints.map((item) => (
-                <StudentComplaintCard
-                  key={item.id}
-                  item={item}
-                  onViewPhoto={(url) => void handleViewPhoto(url)}
-                />
-              ))
+              <>
+                {filteredComplaints.map((item) => (
+                  <StudentComplaintCard
+                    key={item.id}
+                    item={item}
+                    onViewPhoto={(url) => void handleViewPhoto(url)}
+                  />
+                ))}
+                {hasMore && (
+                  <Pressable
+                    style={styles.loadMoreBtn}
+                    disabled={loadingMore}
+                    onPress={() => void loadMoreComplaints()}>
+                    {loadingMore ? (
+                      <ActivityIndicator size="small" color="#0284C7" />
+                    ) : (
+                      <Text style={styles.loadMoreText}>Load older complaints</Text>
+                    )}
+                  </Pressable>
+                )}
+              </>
             )}
           </>
         )}
@@ -660,6 +714,20 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 4,
     lineHeight: 18,
+  },
+  loadMoreBtn: {
+    marginTop: 8,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    alignItems: 'center',
+  },
+  loadMoreText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0284C7',
   },
 });
 

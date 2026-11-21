@@ -2,7 +2,11 @@
  * Food Alerts: shared types and pure helpers (no React / Supabase imports so they are unit-testable).
  */
 
-import { formatHhMmTo12h, normalizeTimeMeridiemLowercase } from './ux-utils';
+import {
+  formatHhMmTo12h,
+  getIstCalendarParts,
+  normalizeTimeMeridiemLowercase,
+} from './ux-utils';
 
 export type FoodMealType = 'breakfast' | 'lunch' | 'dinner';
 export type FoodAlertStatus = 'ready' | 'delayed' | 'cancelled';
@@ -126,8 +130,7 @@ export function latestAlertPerMeal<
 
 /** Today's date in IST as YYYY-MM-DD (matches food_alerts.alert_date default). */
 export function istDateIso(now: Date = new Date()): string {
-  const ist = new Date(now.getTime() + (5 * 60 + 30) * 60 * 1000);
-  return ist.toISOString().slice(0, 10);
+  return getIstCalendarParts(now).isoDate;
 }
 
 export interface AlertSendSummary {
@@ -210,6 +213,28 @@ export function isFoodAlertExpired(
   if (createdDay > currentDay) return false;
 
   const nowMinutes = now.getHours() * 60 + now.getMinutes();
+  return nowMinutes >= MEAL_EXPIRY_CUTOFF_MINUTES[mealType];
+}
+
+/**
+ * Checks meal expiry strictly using IST (Asia/Kolkata, UTC+05:30) day and cutoff
+ * hours so UTC/foreign device clocks do not shift cutoff times or midnight boundaries.
+ */
+export function isFoodAlertExpiredAtIst(
+  mealType: FoodMealType,
+  createdAtIso: string,
+  now: Date = new Date()
+): boolean {
+  const created = new Date(createdAtIso);
+  if (Number.isNaN(created.getTime())) return true;
+
+  const createdIst = getIstCalendarParts(created);
+  const nowIst = getIstCalendarParts(now);
+
+  if (createdIst.isoDate < nowIst.isoDate) return true;
+  if (createdIst.isoDate > nowIst.isoDate) return false;
+
+  const nowMinutes = nowIst.hours * 60 + nowIst.minutes;
   return nowMinutes >= MEAL_EXPIRY_CUTOFF_MINUTES[mealType];
 }
 

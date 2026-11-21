@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Href, router } from 'expo-router';
+import Constants from 'expo-constants';
 import { Bell, ChevronRight, LogOut, Megaphone, ShieldCheck } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
@@ -18,6 +19,7 @@ import { useResident } from '@/context/resident-context';
 import { formatRoomLabel } from '@/lib/ux-utils';
 import { OwnerHeader } from '@/components/ui/owner';
 import { BiometricSettingsRow } from '@/components/biometric-settings-row';
+import { SettingsComplianceSection } from '@/components/settings-compliance-section';
 
 export default function ResidentSettingsScreen() {
   const { user, profile, signOut } = useAuth();
@@ -169,6 +171,8 @@ export default function ResidentSettingsScreen() {
           </View>
         </View>
 
+        <SettingsComplianceSection role="student" userEmail={user?.email} />
+
         {/* Log Out */}
         <View style={styles.section}>
           <View style={[styles.groupedCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
@@ -190,7 +194,7 @@ export default function ResidentSettingsScreen() {
         </View>
 
         <Text style={[styles.versionText, { color: colors.textMuted }]}>
-          PGwala v2.0 • Resident Edition
+          PGwala v{Constants.expoConfig?.version || '1.0.0'} • Resident Edition
         </Text>
       </ScrollView>
     </SafeAreaView>

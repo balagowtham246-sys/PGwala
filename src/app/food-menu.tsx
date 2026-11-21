@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Platform,
@@ -8,7 +8,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
 import { AlertTriangle, Check, Clock, X } from 'lucide-react-native';
 
 import {
@@ -21,6 +20,15 @@ import { OwnerHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import {
+  useDeleteFoodMenuMutation,
+  useOwnerActivePropertyQuery,
+  useOwnerFoodMenusQuery,
+  useSaveFoodMenuMutation,
+  useSaveWeeklyTemplateMutation,
+  useToggleFoodMenuPublishMutation,
+  useUpsertMealsForDateMutation,
+} from '@/hooks/use-food-menu';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSuccessHaptic } from '@/lib/haptics';
 import {
@@ -30,21 +38,12 @@ import {
 } from '@/lib/ux-utils';
 import {
   createEmptyMealMenuMap,
-  deleteFoodMenu,
-  fetchActiveOwnerProperty,
-  fetchFoodMenusForDate,
   FoodMenuRecord,
-  getCachedFoodMenus,
   loadWeeklyMenuTemplate,
   MEAL_CONFIG,
   MEAL_ORDER,
-  MealMenuMap,
   MealType,
   PropertyInfo,
-  saveFoodMenu,
-  saveWeeklyMenuTemplate,
-  toggleFoodMenuPublish,
-  upsertMealsForDate,
   WeeklyTemplateEntry,
 } from '@/services/food-menu.service';
 
@@ -107,28 +106,18 @@ export default function FoodMenuScreen() {
   const { selectedProperty } = useProperty();
   const ownerId = user?.id;
 
-  const [loadingProperty, setLoadingProperty] = useState(true);
-  const [property, setProperty] = useState<PropertyInfo | null>(null);
-  const propertyId = property?.id;
-
   // Date selection state
   const [selectedDate, setSelectedDate] = useState<Date>(() => new Date());
   const selectedDateStr = toIsoDate(selectedDate);
 
-  // Menu data for selected date
-  const [loadingMenus, setLoadingMenus] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [menus, setMenus] = useState<MealMenuMap>(createEmptyMealMenuMap);
-
-  // Bottom-sheet editor state
+  // Pull-to-refresh & Bottom-sheet editor state
+  const [manualRefreshing, setManualRefreshing] = useState(false);
   const [editingMeal, setEditingMeal] = useState<MealType | null>(null);
-  const [savingMeal, setSavingMeal] = useState(false);
-  const [applyingBulk, setApplyingBulk] = useState(false);
+  const [loadingTemplate, setLoadingTemplate] = useState(false);
 
   // Status feedback
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [errorDismissed, setErrorDismissed] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const [tableMissingNotice, setTableMissingNotice] = useState(false);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -149,132 +138,83 @@ export default function FoodMenuScreen() {
     }, 3500);
   }, []);
 
-  // 1. Fetch active property owned by authenticated user
-  const loadOwnerProperty = useCallback(async () => {
-    try {
-      setErrorMessage(null);
-      setLoadingProperty(true);
+  const selectedPropInfo = useMemo<PropertyInfo | null>(
+    () =>
+      selectedProperty
+        ? { id: selectedProperty.id, name: selectedProperty.name }
+        : null,
+    [selectedProperty]
+  );
 
-      if (selectedProperty) {
-        setProperty({ id: selectedProperty.id, name: selectedProperty.name });
-        return;
-      }
+  const ownerPropQuery = useOwnerActivePropertyQuery(ownerId, selectedPropInfo);
+  const property: PropertyInfo | null =
+    selectedPropInfo ?? ownerPropQuery.data ?? null;
+  const propertyId = property?.id;
+  const loadingProperty =
+    !selectedPropInfo && ownerPropQuery.isPending && !ownerPropQuery.data;
 
-      if (!ownerId) {
-        return;
-      }
+  const menusQuery = useOwnerFoodMenusQuery(propertyId, selectedDateStr);
+  const saveMenuMutation = useSaveFoodMenuMutation();
+  const togglePublishMutation = useToggleFoodMenuPublishMutation();
+  const deleteMenuMutation = useDeleteFoodMenuMutation();
+  const upsertMealsMutation = useUpsertMealsForDateMutation();
+  const saveTemplateMutation = useSaveWeeklyTemplateMutation();
 
-      const result = await fetchActiveOwnerProperty(ownerId);
-      if (!result.ok) {
-        throw new Error(result.error.message);
-      }
+  const loadingMenus =
+    Boolean(propertyId) && menusQuery.isPending && !menusQuery.data;
+  const refreshing = manualRefreshing;
+  const menus = useMemo(
+    () => menusQuery.data?.menus ?? createEmptyMealMenuMap(),
+    [menusQuery.data?.menus]
+  );
+  const tableMissingNotice = Boolean(menusQuery.data?.tableMissing);
+  const savingMeal = saveMenuMutation.isPending;
+  const applyingBulk =
+    loadingTemplate ||
+    upsertMealsMutation.isPending ||
+    saveTemplateMutation.isPending;
 
-      if (!result.data) {
-        setProperty(null);
-        setErrorMessage('No active PG property found. Please register a property first.');
-      } else {
-        setProperty(result.data);
+  const rawErrorMessage = useMemo(() => {
+    if (!selectedPropInfo) {
+      if (ownerPropQuery.isError) return ownerPropQuery.error.message;
+      if (!ownerPropQuery.isPending && !ownerPropQuery.data) {
+        return 'No active PG property found. Please register a property first.';
       }
-    } catch (err: unknown) {
-      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
-      console.error('[FoodMenu] Error loading property:', err);
-      setErrorMessage(msg);
-    } finally {
-      setLoadingProperty(false);
     }
-  }, [ownerId, selectedProperty]);
-
-  // 2. Fetch food menus for the selected property and date (with query-cache SWR)
-  const loadMenusForDate = useCallback(
-    async (propId: string, dateStr: string, forceNetwork = false) => {
-      try {
-        setErrorMessage(null);
-        setTableMissingNotice(false);
-
-        let hadCache = false;
-        if (!forceNetwork) {
-          const cached = await getCachedFoodMenus(propId, dateStr);
-          if (cached) {
-            hadCache = true;
-            setMenus(cached);
-            setLoadingMenus(false);
-          }
-        }
-
-        if (!hadCache && !forceNetwork) {
-          setLoadingMenus(true);
-        }
-
-        const result = await fetchFoodMenusForDate(propId, dateStr, { forceNetwork });
-        if (!result.ok) {
-          throw new Error(result.error.message);
-        }
-
-        if (result.data.tableMissing) {
-          setTableMissingNotice(true);
-          setMenus(createEmptyMealMenuMap());
-          return;
-        }
-
-        setMenus(result.data.menus);
-      } catch (err: unknown) {
-        const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
-        console.error('[FoodMenu] Error fetching menus:', err);
-        setErrorMessage(`Failed to load menus: ${msg}`);
-      } finally {
-        setLoadingMenus(false);
-        setRefreshing(false);
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (!cancelled) {
-        void loadOwnerProperty();
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [loadOwnerProperty]);
-
-  useEffect(() => {
-    if (!propertyId) return;
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (!cancelled) {
-        void loadMenusForDate(propertyId, selectedDateStr);
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [propertyId, selectedDateStr, loadMenusForDate]);
-
-  useFocusEffect(
-    useCallback(() => {
-      if (propertyId) {
-        void loadMenusForDate(propertyId, selectedDateStr);
-      }
-    }, [propertyId, selectedDateStr, loadMenusForDate])
-  );
+    if (menusQuery.isError) {
+      return `Failed to load menus: ${menusQuery.error.message}`;
+    }
+    if (saveMenuMutation.isError) {
+      return `Save Failed: ${saveMenuMutation.error.message}`;
+    }
+    return null;
+  }, [
+    selectedPropInfo,
+    ownerPropQuery.isError,
+    ownerPropQuery.error,
+    ownerPropQuery.isPending,
+    ownerPropQuery.data,
+    menusQuery.isError,
+    menusQuery.error,
+    saveMenuMutation.isError,
+    saveMenuMutation.error,
+  ]);
+  const errorMessage = errorDismissed ? null : rawErrorMessage;
 
   const handleRefresh = () => {
-    setRefreshing(true);
-    if (propertyId) {
-      void loadMenusForDate(propertyId, selectedDateStr, true);
-    } else {
-      void loadOwnerProperty();
-    }
+    setErrorDismissed(false);
+    setManualRefreshing(true);
+    const task = propertyId
+      ? menusQuery.refetch()
+      : ownerPropQuery.refetch();
+    void task.finally(() => {
+      setManualRefreshing(false);
+    });
   };
 
   // Date Navigation
   const changeDateByDays = (delta: number) => {
+    setErrorDismissed(false);
     setSelectedDate((prev) => {
       const next = new Date(prev);
       next.setDate(next.getDate() + delta);
@@ -284,7 +224,7 @@ export default function FoodMenuScreen() {
   };
 
   const openEditForm = (mealType: MealType) => {
-    setErrorMessage(null);
+    setErrorDismissed(false);
     setEditingMeal(mealType);
   };
 
@@ -292,7 +232,7 @@ export default function FoodMenuScreen() {
     setEditingMeal(null);
   };
 
-  // Save Menu from Bottom Sheet (Create or Update - strictly online)
+  // Save Menu from Bottom Sheet (Optimistic Create/Update - strictly online)
   const handleSaveMenu = async (payload: MealEditorSavePayload) => {
     if (!property?.id) {
       Alert.alert('Error', 'Property context missing.');
@@ -307,14 +247,12 @@ export default function FoodMenuScreen() {
       return;
     }
 
-    setSavingMeal(true);
-    setErrorMessage(null);
-
+    setErrorDismissed(false);
     const targetMeal = editingMeal;
     const existing = menus[targetMeal];
 
     try {
-      const result = await saveFoodMenu({
+      await saveMenuMutation.mutateAsync({
         propertyId: property.id,
         menuDate: selectedDateStr,
         mealType: targetMeal,
@@ -324,10 +262,6 @@ export default function FoodMenuScreen() {
         meal_time: payload.mealTime,
         existingId: existing?.id,
       });
-
-      if (!result.ok) {
-        throw new Error(result.error.message);
-      }
 
       const mealTitle = MEAL_CONFIG[targetMeal].title;
       const shortDate = formatDayMonth(selectedDate);
@@ -339,31 +273,25 @@ export default function FoodMenuScreen() {
       );
 
       setEditingMeal(null);
-      await loadMenusForDate(property.id, selectedDateStr, true);
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       console.error('[FoodMenu] Save error:', err);
       Alert.alert('Save Failed', msg);
-      setErrorMessage(`Save Failed: ${msg}`);
-    } finally {
-      setSavingMeal(false);
     }
   };
 
-  // Toggle Publish / Draft
+  // Toggle Publish / Draft (optimistic)
   const handleTogglePublish = async (menu: FoodMenuRecord) => {
     if (!property?.id) return;
     try {
       const nextStatus = !menu.is_published;
-      const result = await toggleFoodMenuPublish({
+      await togglePublishMutation.mutateAsync({
         id: menu.id,
         propertyId: property.id,
+        menuDate: selectedDateStr,
+        mealType: menu.meal_type,
         nextPublished: nextStatus,
       });
-
-      if (!result.ok) {
-        throw new Error(result.error.message);
-      }
 
       const mealTitle = MEAL_CONFIG[menu.meal_type].title;
       const shortDate = formatDayMonth(selectedDate);
@@ -373,15 +301,13 @@ export default function FoodMenuScreen() {
           ? `${mealTitle} published for ${shortDate}`
           : `${mealTitle} moved to draft (hidden from residents)`
       );
-
-      await loadMenusForDate(property.id, selectedDateStr, true);
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       Alert.alert('Status Update Failed', msg);
     }
   };
 
-  // Delete Menu with Confirmation
+  // Delete Menu with Confirmation (optimistic)
   const handleDeleteMenu = (menu: FoodMenuRecord) => {
     Alert.alert(
       `Delete ${MEAL_CONFIG[menu.meal_type].title} Menu?`,
@@ -394,21 +320,16 @@ export default function FoodMenuScreen() {
           onPress: async () => {
             if (!property?.id) return;
             try {
-              const result = await deleteFoodMenu({
+              await deleteMenuMutation.mutateAsync({
                 id: menu.id,
                 propertyId: property.id,
-                menuDate: menu.menu_date,
+                menuDate: selectedDateStr,
                 mealType: menu.meal_type,
               });
-
-              if (!result.ok) {
-                throw new Error(result.error.message);
-              }
 
               showToast(
                 `Deleted ${MEAL_CONFIG[menu.meal_type].title} menu for ${formatDayMonth(selectedDate)}`
               );
-              await loadMenusForDate(property.id, selectedDateStr, true);
             } catch (err: unknown) {
               const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
               Alert.alert('Delete Failed', msg);
@@ -417,20 +338,6 @@ export default function FoodMenuScreen() {
         },
       ]
     );
-  };
-
-  const upsertMealsForSelectedDate = async (entries: WeeklyTemplateEntry[]) => {
-    if (!property?.id) return;
-    const result = await upsertMealsForDate({
-      propertyId: property.id,
-      menuDate: selectedDateStr,
-      existingMenus: menus,
-      entries,
-    });
-    if (!result.ok) {
-      throw new Error(result.error.message);
-    }
-    await loadMenusForDate(property.id, selectedDateStr, true);
   };
 
   const handleSaveWeeklyTemplate = async () => {
@@ -444,7 +351,6 @@ export default function FoodMenuScreen() {
       return;
     }
     try {
-      setApplyingBulk(true);
       const weekday = String(selectedDate.getDay());
       const entries: WeeklyTemplateEntry[] = configured.map((m) => ({
         meal_type: m,
@@ -454,26 +360,25 @@ export default function FoodMenuScreen() {
         is_published: menus[m]!.is_published,
         meal_time: menus[m]!.meal_time ?? null,
       }));
-      const result = await saveWeeklyMenuTemplate(property.id, weekday, entries);
-      if (!result.ok) {
-        throw new Error(result.error.message);
-      }
+      await saveTemplateMutation.mutateAsync({
+        propertyId: property.id,
+        weekday,
+        entries,
+      });
       const dayName = WEEKDAYS_LONG[selectedDate.getDay()];
       triggerSuccessHaptic();
       showToast(`Saved ${dayName} menu as weekly template`);
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       Alert.alert('Template Save Failed', msg);
-    } finally {
-      setApplyingBulk(false);
     }
   };
 
   const handleApplyWeeklyTemplate = async () => {
     if (!property?.id) return;
     try {
-      setApplyingBulk(true);
-      setErrorMessage(null);
+      setLoadingTemplate(true);
+      setErrorDismissed(false);
       const weekday = String(selectedDate.getDay());
       const dayName = WEEKDAYS_LONG[selectedDate.getDay()];
 
@@ -490,14 +395,19 @@ export default function FoodMenuScreen() {
         return;
       }
 
-      await upsertMealsForSelectedDate(result.data);
+      await upsertMealsMutation.mutateAsync({
+        propertyId: property.id,
+        menuDate: selectedDateStr,
+        existingMenus: menus,
+        entries: result.data,
+      });
       triggerSuccessHaptic();
       showToast(`Applied ${dayName} template for ${formatDayMonth(selectedDate)}`);
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       Alert.alert('Apply Template Failed', msg);
     } finally {
-      setApplyingBulk(false);
+      setLoadingTemplate(false);
     }
   };
 
@@ -571,7 +481,7 @@ export default function FoodMenuScreen() {
         <View style={styles.errorBanner}>
           <AlertTriangle size={16} color="#DC2626" />
           <Text style={styles.errorText}>{errorMessage}</Text>
-          <Pressable hitSlop={8} onPress={() => setErrorMessage(null)}>
+          <Pressable hitSlop={8} onPress={() => setErrorDismissed(true)}>
             <X size={16} color="#DC2626" />
           </Pressable>
         </View>

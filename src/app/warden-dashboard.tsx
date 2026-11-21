@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -18,14 +18,14 @@ import { AlertTriangle, Check, Megaphone, Send, Settings } from 'lucide-react-na
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
-import { supabase } from '@/lib/supabase';
-import { invokeEdgeFunction } from '@/lib/edge-functions';
+import {
+  useSendWardenFoodAlertMutation,
+  useWardenDashboardQuery,
+} from '@/hooks/use-dashboards';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSelectionHaptic } from '@/lib/haptics';
 import {
   AlertSendSummary,
-  AudienceResident,
-  FoodAlertRecord,
   FoodAlertStatus,
   FoodAudienceType,
   FoodMealType,
@@ -61,12 +61,7 @@ export default function WardenDashboardScreen() {
   const userId = user?.id;
   const colors = OwnerTheme.colors;
 
-  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [property, setProperty] = useState<{ id: string; name: string } | null>(null);
-  const [audienceList, setAudienceList] = useState<AudienceResident[]>([]);
-  const [recent, setRecent] = useState<FoodAlertRecord[]>([]);
 
   const [meal, setMeal] = useState<FoodMealType>(defaultMealForNow());
   const [status, setStatus] = useState<FoodAlertStatus>('ready');
@@ -76,12 +71,29 @@ export default function WardenDashboardScreen() {
   const [message, setMessage] = useState('');
   const [search, setSearch] = useState('');
 
-  const [sending, setSending] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [result, setResult] = useState<AlertSendSummary | null>(null);
 
   const sendingRef = useRef(false);
   const keyRef = useRef<string | null>(null);
+
+  const wardenQuery = useWardenDashboardQuery(userId);
+  const sendAlertMutation = useSendWardenFoodAlertMutation();
+
+  const property = wardenQuery.data?.property ?? null;
+  const audienceList = useMemo(
+    () => wardenQuery.data?.audienceList ?? [],
+    [wardenQuery.data?.audienceList]
+  );
+  const recent = useMemo(
+    () => wardenQuery.data?.recent ?? [],
+    [wardenQuery.data?.recent]
+  );
+  const loading = Boolean(userId) && wardenQuery.isPending && !wardenQuery.data;
+  const loadError = wardenQuery.isError
+    ? extractErrorMessage(wardenQuery.error, 'Could not load your property.')
+    : null;
+  const sending = sendAlertMutation.isPending;
 
   // A different payload must use a different idempotency key; a retry of the same payload keeps it.
   useEffect(() => {
@@ -91,86 +103,6 @@ export default function WardenDashboardScreen() {
   const mustChangePassword = Boolean(
     profile?.must_change_password || user?.user_metadata?.must_change_password
   );
-
-  const fetchWardenState = useCallback(async () => {
-    if (!userId) return null;
-    const { data: assignment, error: assignmentError } = await supabase
-      .from('property_wardens')
-      .select('property_id, properties(name)')
-      .eq('warden_profile_id', userId)
-      .eq('is_active', true)
-      .maybeSingle();
-    if (assignmentError) throw assignmentError;
-
-    if (!assignment) {
-      return {
-        property: null as { id: string; name: string } | null,
-        audienceList: [] as AudienceResident[],
-        recent: [] as FoodAlertRecord[],
-      };
-    }
-
-    const propertyRel = (assignment as any).properties;
-    const propertyName: string =
-      (Array.isArray(propertyRel) ? propertyRel[0]?.name : propertyRel?.name) ?? 'Your PG';
-    const propertyId = (assignment as any).property_id as string;
-
-    const [audienceRes, recentRes] = await Promise.all([
-      supabase.rpc('get_alert_audience', { p_property_id: propertyId }),
-      supabase
-        .from('food_alerts')
-        .select(
-          'id, property_id, meal_type, status, message, audience_type, dispatch_status, recipients_count, push_sent, push_failed, no_token_count, alert_date, created_at'
-        )
-        .eq('property_id', propertyId)
-        .order('created_at', { ascending: false })
-        .limit(8),
-    ]);
-    if (audienceRes.error) throw audienceRes.error;
-    if (recentRes.error) throw recentRes.error;
-
-    return {
-      property: { id: propertyId, name: propertyName },
-      audienceList: (audienceRes.data ?? []) as AudienceResident[],
-      recent: (recentRes.data ?? []) as FoodAlertRecord[],
-    };
-  }, [userId]);
-
-  const load = useCallback(async () => {
-    setLoadError(null);
-    try {
-      const next = await fetchWardenState();
-      if (!next) return;
-      setProperty(next.property);
-      setAudienceList(next.audienceList);
-      setRecent(next.recent);
-    } catch (err) {
-      setLoadError(extractErrorMessage(err, 'Could not load your property.'));
-    }
-  }, [fetchWardenState]);
-
-  useEffect(() => {
-    let active = true;
-    void fetchWardenState()
-      .then((next) => {
-        if (!active) return;
-        setLoadError(null);
-        if (next) {
-          setProperty(next.property);
-          setAudienceList(next.audienceList);
-          setRecent(next.recent);
-        }
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (!active) return;
-        setLoadError(extractErrorMessage(err, 'Could not load your property.'));
-        setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [fetchWardenState]);
 
   const roomList = useMemo(() => uniqueRooms(audienceList), [audienceList]);
   const targeted = useMemo(
@@ -195,7 +127,7 @@ export default function WardenDashboardScreen() {
   };
 
   const doSend = async () => {
-    if (sendingRef.current || !property) return;
+    if (sendingRef.current || sendAlertMutation.isPending || !property) return;
     const validation = validateAlertForm({ meal, status, audience, rooms, residentIds, message });
     if (validation) {
       setFormError(validation);
@@ -207,13 +139,13 @@ export default function WardenDashboardScreen() {
     }
 
     sendingRef.current = true;
-    setSending(true);
     setFormError(null);
     setResult(null);
     if (!keyRef.current) keyRef.current = createIdempotencyKey();
 
     try {
-      const res = await invokeEdgeFunction<AlertSendSummary & { success: boolean }>('send-food-alert', {
+      const res = await sendAlertMutation.mutateAsync({
+        userId,
         meal_type: meal,
         status,
         audience_type: audience,
@@ -225,12 +157,10 @@ export default function WardenDashboardScreen() {
       setResult(res);
       keyRef.current = null;
       setMessage('');
-      await load();
     } catch (err) {
       setFormError(extractErrorMessage(err, 'Could not send the alert. Tap Send to retry safely.'));
     } finally {
       sendingRef.current = false;
-      setSending(false);
     }
   };
 
@@ -248,8 +178,11 @@ export default function WardenDashboardScreen() {
 
   const handleRefresh = async () => {
     setRefreshing(true);
-    await load();
-    setRefreshing(false);
+    try {
+      await wardenQuery.refetch();
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const headerActions = (

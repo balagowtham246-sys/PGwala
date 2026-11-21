@@ -6,7 +6,12 @@ import {
   X,
   Zap,
 } from 'lucide-react-native';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -34,6 +39,15 @@ import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
 import {
+  useAllocateEbBillMutation,
+  useConfirmMonthlyPaymentMutation,
+  useGenerateMonthlyBillsMutation,
+  useOwnerBillingQuery,
+  useRejectPaymentReportMutation,
+  useToggleWmBillingMutation,
+  useUpdateResidentRentMutation,
+} from '@/hooks/use-owner-billing';
+import {
   buildWhatsAppReminderUrl,
   formatDueStatus,
   formatPaiseToRupees,
@@ -41,23 +55,14 @@ import {
 import { isValidUpiId } from '@/lib/upi';
 import { findDuplicatePhones } from '@/lib/ux-utils';
 import {
-  allocateEbBill,
   BillingFilterTab,
   BillingMode,
   CombinedBillItem,
-  confirmMonthlyPayment,
-  generateMonthlyBills,
-  getOwnerBilling,
-  OwnerBillingSnapshot,
   PaymentMethod,
-  rejectStudentPaymentReport,
   ResidentEbBillItem,
   ResidentRentBillItem,
   resolvePaymentProofUrl,
   ReviewPaymentItem,
-  RoomResidentInfo,
-  toggleResidentWmBilling,
-  updateResidentRent,
 } from '@/services/billing.service';
 
 export default function SimplifiedBillingManagementScreen() {
@@ -107,10 +112,7 @@ export default function SimplifiedBillingManagementScreen() {
     } as Href);
   };
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [propertyId, setPropertyId] = useState<string | null>(null);
-  const [propertyName, setPropertyName] = useState('Shalom Residency');
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   // Top Section Mode: 'RENT' | 'EB' | 'COMBINED'
   const [billingMode, setBillingMode] = useState<BillingMode>('RENT');
@@ -121,28 +123,21 @@ export default function SimplifiedBillingManagementScreen() {
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
 
-  // Rent Bills State
-  const [rentBills, setRentBills] = useState<ResidentRentBillItem[]>([]);
+  // Rent Bills Modals State
   const [generateRentModalVisible, setGenerateRentModalVisible] =
     useState(false);
   const [rentInputRupees, setRentInputRupees] = useState('8000');
-  const [generatingRent, setGeneratingRent] = useState(false);
 
   // Edit Individual Resident Rent State
   const [editRentModalVisible, setEditRentModalVisible] = useState(false);
   const [selectedResidentForEdit, setSelectedResidentForEdit] =
     useState<ResidentRentBillItem | null>(null);
   const [editRentInputRupees, setEditRentInputRupees] = useState('8000');
-  const [updatingRent, setUpdatingRent] = useState(false);
 
-  // EB Bills State
-  const [ebBills, setEbBills] = useState<ResidentEbBillItem[]>([]);
-  const [allResidents, setAllResidents] = useState<RoomResidentInfo[]>([]);
-  const [availableRooms, setAvailableRooms] = useState<string[]>([]);
+  // EB Bills Modals State
   const [splitEbModalVisible, setSplitEbModalVisible] = useState(false);
-  const [selectedRoomForEb, setSelectedRoomForEb] = useState<string>('');
+  const [selectedRoomForEbState, setSelectedRoomForEb] = useState<string>('');
   const [ebTotalRupeesInput, setEbTotalRupeesInput] = useState('');
-  const [generatingEb, setGeneratingEb] = useState(false);
 
   // Filter tabs: 'ALL' | 'REVIEW' | 'UNPAID' | 'PAID'
   const [filterTab, setFilterTab] = useState<BillingFilterTab>('ALL');
@@ -160,15 +155,13 @@ export default function SimplifiedBillingManagementScreen() {
   const [selectedReviewItem, setSelectedReviewItem] =
     useState<ReviewPaymentItem | null>(null);
   const [reviewModalVisible, setReviewModalVisible] = useState(false);
-  const [confirmingPayment, setConfirmingPayment] = useState(false);
   const [reviewSignedUrl, setReviewSignedUrl] = useState<string | null>(null);
   const [loadingReviewUrl, setLoadingReviewUrl] = useState(false);
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
-  const [rejectingPayment, setRejectingPayment] = useState(false);
 
   const mountedRef = useRef(true);
-  const requestIdRef = useRef(0);
+  const lastErrorAtRef = useRef(0);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -223,84 +216,74 @@ export default function SimplifiedBillingManagementScreen() {
     );
   };
 
-  const applySnapshot = useCallback((snapshot: OwnerBillingSnapshot) => {
-    setPropertyId(snapshot.propertyId);
-    setPropertyName(snapshot.propertyName);
-    setRentBills(snapshot.rentBills);
-    setEbBills(snapshot.ebBills);
-    setAllResidents(snapshot.allResidents);
-    setAvailableRooms(snapshot.availableRooms);
-    if (snapshot.availableRooms.length > 0) {
-      setSelectedRoomForEb((prev) =>
-        prev && snapshot.availableRooms.includes(prev)
-          ? prev
-          : snapshot.availableRooms[0]
-      );
-    }
-  }, []);
+  const billingQuery = useOwnerBillingQuery({
+    userId: userId ?? '',
+    selectedPropertyId: activeSelectedPropertyId,
+    selectedPropertyName: activeSelectedPropertyName,
+    monthIsoStart,
+  });
 
-  // Load all billing data via SWR service
-  const loadBillingData = useCallback(
-    async (options?: { forceNetwork?: boolean }) => {
-      if (!userId) return;
+  const generateBillsMutation = useGenerateMonthlyBillsMutation();
+  const updateRentMutation = useUpdateResidentRentMutation();
+  const allocateEbMutation = useAllocateEbBillMutation();
+  const toggleWmMutation = useToggleWmBillingMutation();
+  const confirmPaymentMutation = useConfirmMonthlyPaymentMutation();
+  const rejectPaymentMutation = useRejectPaymentReportMutation();
 
-      const reqId = ++requestIdRef.current;
-      let hadCacheHit = false;
-
-      const result = await getOwnerBilling(
-        {
-          userId,
-          selectedPropertyId: activeSelectedPropertyId,
-          selectedPropertyName: activeSelectedPropertyName,
-          monthIsoStart,
-        },
-        {
-          forceNetwork: options?.forceNetwork,
-          onCachedData: (cached) => {
-            if (!mountedRef.current || requestIdRef.current !== reqId) return;
-            hadCacheHit = true;
-            applySnapshot(cached);
-            setLoading(false);
-          },
-        }
-      );
-
-      if (!mountedRef.current || requestIdRef.current !== reqId) return;
-
-      if (result.ok) {
-        applySnapshot(result.data);
-      } else if (!hadCacheHit || options?.forceNetwork) {
-        Alert.alert('Load Error', result.error.message);
-      }
-
-      setLoading(false);
-      setRefreshing(false);
-    },
-    [
-      userId,
-      activeSelectedPropertyId,
-      activeSelectedPropertyName,
-      monthIsoStart,
-      applySnapshot,
-    ]
+  const snapshot = billingQuery.data;
+  const loading = billingQuery.isPending && !snapshot;
+  const refreshing = manualRefreshing;
+  const propertyId = snapshot?.propertyId ?? activeSelectedPropertyId ?? null;
+  const propertyName =
+    snapshot?.propertyName ?? activeSelectedPropertyName ?? 'Shalom Residency';
+  const rentBills = useMemo(
+    () => snapshot?.rentBills ?? [],
+    [snapshot?.rentBills]
   );
+  const ebBills = useMemo(() => snapshot?.ebBills ?? [], [snapshot?.ebBills]);
+  const allResidents = useMemo(
+    () => snapshot?.allResidents ?? [],
+    [snapshot?.allResidents]
+  );
+  const availableRooms = useMemo(
+    () => snapshot?.availableRooms ?? [],
+    [snapshot?.availableRooms]
+  );
+  const selectedRoomForEb =
+    selectedRoomForEbState && availableRooms.includes(selectedRoomForEbState)
+      ? selectedRoomForEbState
+      : (availableRooms[0] ?? '');
+
+  const generatingRent = generateBillsMutation.isPending;
+  const updatingRent = updateRentMutation.isPending;
+  const generatingEb = allocateEbMutation.isPending;
+  const confirmingPayment = confirmPaymentMutation.isPending;
+  const rejectingPayment = rejectPaymentMutation.isPending;
 
   useEffect(() => {
-    let cancelled = false;
-    const timer = setTimeout(() => {
-      if (!cancelled) {
-        void loadBillingData();
-      }
-    }, 0);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-    };
-  }, [loadBillingData]);
+    if (
+      billingQuery.isError &&
+      billingQuery.errorUpdatedAt > lastErrorAtRef.current &&
+      (!snapshot || manualRefreshing)
+    ) {
+      lastErrorAtRef.current = billingQuery.errorUpdatedAt;
+      Alert.alert('Load Error', billingQuery.error.message);
+    }
+  }, [
+    billingQuery.isError,
+    billingQuery.error,
+    billingQuery.errorUpdatedAt,
+    snapshot,
+    manualRefreshing,
+  ]);
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    void loadBillingData({ forceNetwork: true });
+  const handleRefresh = async () => {
+    setManualRefreshing(true);
+    try {
+      await billingQuery.refetch();
+    } finally {
+      setManualRefreshing(false);
+    }
   };
 
   // Helper to open review modal and securely resolve signed screenshot URL
@@ -340,41 +323,40 @@ export default function SimplifiedBillingManagementScreen() {
     }
 
     const rentPaise = Math.round(parsedRupees * 100);
-    setGeneratingRent(true);
-    const result = await generateMonthlyBills({
-      propertyId,
-      monthIsoStart,
-      rentPaise,
-    });
-    setGeneratingRent(false);
+    try {
+      const data = await generateBillsMutation.mutateAsync({
+        propertyId,
+        monthIsoStart,
+        rentPaise,
+      });
 
-    if (!result.ok) {
-      Alert.alert('Generation Failed', result.error.message);
-      return;
-    }
+      setGenerateRentModalVisible(false);
+      const { created_count: created, updated_count: updated, skipped_count: skipped } =
+        data;
+      const parts: string[] = [];
+      if (created > 0) {
+        parts.push(`${created} new bill${created > 1 ? 's' : ''} created`);
+      }
+      if (updated > 0) {
+        parts.push(
+          `${updated} bill${updated > 1 ? 's' : ''
+          } updated to ₹${parsedRupees.toLocaleString('en-IN')}`
+        );
+      }
 
-    setGenerateRentModalVisible(false);
-    const { created_count: created, updated_count: updated, skipped_count: skipped } =
-      result.data;
-    const parts: string[] = [];
-    if (created > 0) {
-      parts.push(`${created} new bill${created > 1 ? 's' : ''} created`);
-    }
-    if (updated > 0) {
-      parts.push(
-        `${updated} bill${updated > 1 ? 's' : ''
-        } updated to ₹${parsedRupees.toLocaleString('en-IN')}`
+      showToast(
+        `${parts.join(', ') || 'Bills ready'} for ${monthLabel}.${
+          skipped > 0 ? ` (${skipped} paid bills preserved)` : ''
+        }`
       );
-    }
-
-    showToast(
-      `${parts.join(', ') || 'Bills ready'} for ${monthLabel}.${
-        skipped > 0 ? ` (${skipped} paid bills preserved)` : ''
-      }`
-    );
-    await loadBillingData({ forceNetwork: true });
-    if (mountedRef.current) {
-      setShowBillsGeneratedBanner(true);
+      if (mountedRef.current) {
+        setShowBillsGeneratedBanner(true);
+      }
+    } catch (err) {
+      Alert.alert(
+        'Generation Failed',
+        err instanceof Error ? err.message : 'Could not generate bills.'
+      );
     }
   };
 
@@ -385,7 +367,7 @@ export default function SimplifiedBillingManagementScreen() {
     setEditRentModalVisible(true);
   };
 
-  // Confirm Individual Rent Update
+  // Confirm Individual Rent Update (optimistic + rollback on error)
   const handleConfirmEditRent = async () => {
     if (!propertyId || !selectedResidentForEdit || updatingRent) return;
 
@@ -399,29 +381,30 @@ export default function SimplifiedBillingManagementScreen() {
     }
 
     const rentPaise = Math.round(parsedRupees * 100);
-    setUpdatingRent(true);
-    const result = await updateResidentRent({
-      propertyId,
-      residentId: selectedResidentForEdit.resident_id,
-      rentPaise,
-      monthIsoStart,
-    });
-    setUpdatingRent(false);
-
-    if (!result.ok) {
-      Alert.alert('Update Failed', result.error.message);
-      return;
-    }
-
     const residentName = selectedResidentForEdit.full_name;
+    const residentId = selectedResidentForEdit.resident_id;
     setEditRentModalVisible(false);
     setSelectedResidentForEdit(null);
-    showToast(
-      `Monthly rent for ${residentName} set to ₹${parsedRupees.toLocaleString(
-        'en-IN'
-      )}.`
-    );
-    await loadBillingData({ forceNetwork: true });
+
+    try {
+      await updateRentMutation.mutateAsync({
+        propertyId,
+        residentId,
+        rentPaise,
+        monthIsoStart,
+      });
+
+      showToast(
+        `Monthly rent for ${residentName} set to ₹${parsedRupees.toLocaleString(
+          'en-IN'
+        )}.`
+      );
+    } catch (err) {
+      Alert.alert(
+        'Update Failed',
+        err instanceof Error ? err.message : 'Could not update rent.'
+      );
+    }
   };
 
   // Split Room EB Bill
@@ -450,54 +433,54 @@ export default function SimplifiedBillingManagementScreen() {
 
     const residentIds = roomResidents.map((r) => r.id);
     const totalPaise = Math.round(parsedRupees * 100);
-
-    setGeneratingEb(true);
-    const result = await allocateEbBill({
-      propertyId,
-      roomNumber: selectedRoomForEb,
-      monthIsoStart,
-      monthIsoEnd,
-      dueIsoDate,
-      totalPaise,
-      residentIds,
-      notes: `${monthLabel} Room ${selectedRoomForEb} Electricity Bill`,
-    });
-    setGeneratingEb(false);
-
-    if (!result.ok) {
-      Alert.alert('EB Split Failed', result.error.message);
-      return;
-    }
-
     const targetRoom = selectedRoomForEb;
-    setSplitEbModalVisible(false);
-    setEbTotalRupeesInput('');
-    showToast(
-      `Split ₹${parsedRupees.toLocaleString('en-IN')} EB across ${roomResidents.length
-      } resident${roomResidents.length > 1 ? 's' : ''} in Room ${targetRoom}.`
-    );
-    await loadBillingData({ forceNetwork: true });
+
+    try {
+      await allocateEbMutation.mutateAsync({
+        propertyId,
+        roomNumber: targetRoom,
+        monthIsoStart,
+        monthIsoEnd,
+        dueIsoDate,
+        totalPaise,
+        residentIds,
+        notes: `${monthLabel} Room ${targetRoom} Electricity Bill`,
+      });
+
+      setSplitEbModalVisible(false);
+      setEbTotalRupeesInput('');
+      showToast(
+        `Split ₹${parsedRupees.toLocaleString('en-IN')} EB across ${roomResidents.length
+        } resident${roomResidents.length > 1 ? 's' : ''} in Room ${targetRoom}.`
+      );
+    } catch (err) {
+      Alert.alert(
+        'EB Split Failed',
+        err instanceof Error ? err.message : 'Could not allocate EB bill.'
+      );
+    }
   };
 
-  // Toggle Washing Machine opt-in
+  // Toggle Washing Machine opt-in (optimistic + rollback on error)
   const handleToggleWashingMachine = async (resident: ResidentRentBillItem) => {
     if (!propertyId) return;
     const nextVal = !resident.opt_in_wm;
-    const result = await toggleResidentWmBilling({
-      propertyId,
-      residentId: resident.resident_id,
-      isEnabled: nextVal,
-      monthIsoStart,
-    });
-
-    if (!result.ok) {
-      Alert.alert('Update Error', result.error.message);
-      return;
+    try {
+      await toggleWmMutation.mutateAsync({
+        propertyId,
+        residentId: resident.resident_id,
+        isEnabled: nextVal,
+        monthIsoStart,
+      });
+    } catch (err) {
+      Alert.alert(
+        'Update Error',
+        err instanceof Error ? err.message : 'Could not update washing machine billing.'
+      );
     }
-    await loadBillingData({ forceNetwork: true });
   };
 
-  // Confirm payment
+  // Confirm payment (pending state, no optimistic Paid)
   const handleConfirmPayment = async (
     chargeId: string,
     reportId?: string | null,
@@ -505,26 +488,25 @@ export default function SimplifiedBillingManagementScreen() {
   ) => {
     if (confirmingPayment) return;
 
-    setConfirmingPayment(true);
-    const result = await confirmMonthlyPayment({
-      chargeId,
-      reportId,
-      method,
-    });
-    setConfirmingPayment(false);
+    try {
+      const data = await confirmPaymentMutation.mutateAsync({
+        chargeId,
+        reportId,
+        method,
+      });
 
-    if (!result.ok) {
-      Alert.alert('Confirmation Failed', result.error.message);
-      return;
+      setReviewModalVisible(false);
+      setSelectedReviewItem(null);
+      showToast(`Payment confirmed · Receipt ${data.receipt_number}`);
+    } catch (err) {
+      Alert.alert(
+        'Confirmation Failed',
+        err instanceof Error ? err.message : 'Could not confirm payment.'
+      );
     }
-
-    setReviewModalVisible(false);
-    setSelectedReviewItem(null);
-    showToast(`Payment confirmed · Receipt ${result.data.receipt_number}`);
-    await loadBillingData({ forceNetwork: true });
   };
 
-  // Reject payment proof with reason
+  // Reject payment proof with reason (pending state)
   const handleRejectPayment = async () => {
     if (!selectedReviewItem?.report?.id || rejectingPayment) return;
     const trimmedReason = rejectionReason.trim();
@@ -536,24 +518,23 @@ export default function SimplifiedBillingManagementScreen() {
       return;
     }
 
-    setRejectingPayment(true);
-    const result = await rejectStudentPaymentReport({
-      reportId: selectedReviewItem.report.id,
-      rejectionReason: trimmedReason,
-    });
-    setRejectingPayment(false);
+    try {
+      await rejectPaymentMutation.mutateAsync({
+        reportId: selectedReviewItem.report.id,
+        rejectionReason: trimmedReason,
+      });
 
-    if (!result.ok) {
-      Alert.alert('Rejection Failed', result.error.message);
-      return;
+      setReviewModalVisible(false);
+      setSelectedReviewItem(null);
+      setShowRejectForm(false);
+      setRejectionReason('');
+      showToast('Payment proof rejected · Resident can resubmit.');
+    } catch (err) {
+      Alert.alert(
+        'Rejection Failed',
+        err instanceof Error ? err.message : 'Could not reject payment proof.'
+      );
     }
-
-    setReviewModalVisible(false);
-    setSelectedReviewItem(null);
-    setShowRejectForm(false);
-    setRejectionReason('');
-    showToast('Payment proof rejected · Resident can resubmit.');
-    await loadBillingData({ forceNetwork: true });
   };
 
   // RENT Metrics & Filtering
@@ -710,28 +691,27 @@ export default function SimplifiedBillingManagementScreen() {
   const handleConfirmCombinedCashPayment = async (chargeIds: string[]) => {
     if (confirmingPayment || chargeIds.length === 0) return;
 
-    setConfirmingPayment(true);
     const receipts: string[] = [];
     for (const chargeId of chargeIds) {
-      const result = await confirmMonthlyPayment({
-        chargeId,
-        reportId: null,
-        method: 'cash',
-      });
-      if (!result.ok) {
-        setConfirmingPayment(false);
-        Alert.alert('Confirmation Failed', result.error.message);
-        await loadBillingData({ forceNetwork: true });
+      try {
+        const data = await confirmPaymentMutation.mutateAsync({
+          chargeId,
+          reportId: null,
+          method: 'cash',
+        });
+        receipts.push(data.receipt_number);
+      } catch (err) {
+        Alert.alert(
+          'Confirmation Failed',
+          err instanceof Error ? err.message : 'Could not confirm payment.'
+        );
         return;
       }
-      receipts.push(result.data.receipt_number);
     }
-    setConfirmingPayment(false);
 
     showToast(
       `Payment confirmed · Receipt${receipts.length > 1 ? 's' : ''}: ${receipts.join(', ')}`
     );
-    await loadBillingData({ forceNetwork: true });
   };
 
   // Active counts for current mode
@@ -942,6 +922,16 @@ export default function SimplifiedBillingManagementScreen() {
     | { mode: 'EB'; item: ResidentEbBillItem }
     | { mode: 'COMBINED'; item: CombinedBillItem };
 
+  const BILLING_PAGE_SIZE = 30;
+  const [visibleCount, setVisibleCount] = useState(BILLING_PAGE_SIZE);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setVisibleCount(BILLING_PAGE_SIZE);
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [billingMode, filterTab, selectedDate, activeResidentFilterId]);
+
   const activeBillingRows: ActiveBillingRow[] = loading
     ? []
     : billingMode === 'RENT'
@@ -949,6 +939,9 @@ export default function SimplifiedBillingManagementScreen() {
       : billingMode === 'EB'
         ? filteredEbList.map((item) => ({ mode: 'EB', item }))
         : filteredCombinedList.map((item) => ({ mode: 'COMBINED', item }));
+
+  const pagedBillingRows = activeBillingRows.slice(0, visibleCount);
+  const hasMoreBillingRows = pagedBillingRows.length < activeBillingRows.length;
 
   const renderBillingHeader = () => (
     <>
@@ -1153,7 +1146,7 @@ export default function SimplifiedBillingManagementScreen() {
       />
 
       <FlatList
-        data={activeBillingRows}
+        data={pagedBillingRows}
         keyExtractor={(row) => `${row.mode}:${row.item.resident_id}`}
         renderItem={({ item: row }) => {
           if (row.mode === 'RENT') {
@@ -1230,7 +1223,21 @@ export default function SimplifiedBillingManagementScreen() {
         ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
         ListHeaderComponent={renderBillingHeader}
         ListEmptyComponent={renderBillingEmpty}
-        ListFooterComponent={<View style={{ height: 40 }} />}
+        ListFooterComponent={
+          hasMoreBillingRows ? (
+            <View style={{ paddingVertical: 16, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+            </View>
+          ) : (
+            <View style={{ height: 40 }} />
+          )
+        }
+        onEndReached={() => {
+          if (hasMoreBillingRows) {
+            setVisibleCount((prev) => prev + BILLING_PAGE_SIZE);
+          }
+        }}
+        onEndReachedThreshold={0.4}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         initialNumToRender={12}

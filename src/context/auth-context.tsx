@@ -1,6 +1,8 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
+import { clearUserSessionState } from '@/lib/session-cleanup';
+import { isLikelyNetworkError } from '@/lib/service-result';
 import { unregisterPushToken } from '@/lib/push-notifications';
 
 export interface UserProfile {
@@ -34,6 +36,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const lastUserIdRef = useRef<string | null>(null);
 
   // Fetch the role and profile from public.profiles for the authenticated user
   const fetchProfile = async (userId: string) => {
@@ -46,7 +49,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (error) {
         console.warn('[AuthContext] Error fetching profile:', error.message);
-        setProfile(null);
+        if (!isLikelyNetworkError(error)) {
+          setProfile(null);
+        }
         return null;
       }
 
@@ -54,7 +59,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       return data as UserProfile;
     } catch (err) {
       console.error('[AuthContext] Unexpected error fetching profile:', err);
-      setProfile(null);
+      if (!isLikelyNetworkError(err)) {
+        setProfile(null);
+      }
       return null;
     }
   };
@@ -83,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         setSession(initialSession);
         setUser(initialSession?.user ?? null);
+        lastUserIdRef.current = initialSession?.user?.id ?? null;
         if (initialSession?.user) {
           await fetchProfile(initialSession.user.id);
         }
@@ -96,15 +104,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       data: { subscription },
     } = supabase.auth.onAuthStateChange(async (event, newSession) => {
       if (newSession?.user) {
-        setIsLoading(true);
+        const prevUid = lastUserIdRef.current;
+        const nextUid = newSession.user.id;
+        const userChanged = prevUid !== nextUid;
+        lastUserIdRef.current = nextUid;
+        if (prevUid && prevUid !== nextUid) {
+          await clearUserSessionState();
+        }
+        // Only show loading spinner when switching/signing in a different user;
+        // silent TOKEN_REFRESHED events must not unmount the navigation Stack.
+        if (userChanged) {
+          setIsLoading(true);
+        }
         setSession(newSession);
         setUser(newSession.user);
-        await fetchProfile(newSession.user.id);
-        setIsLoading(false);
-      } else {
+        if (userChanged || event === 'USER_UPDATED') {
+          await fetchProfile(newSession.user.id);
+        }
+        if (userChanged) {
+          setIsLoading(false);
+        }
+      } else if (event === 'SIGNED_OUT') {
+        lastUserIdRef.current = null;
         setSession(null);
         setUser(null);
         setProfile(null);
+        await clearUserSessionState();
+        setIsLoading(false);
+      } else {
         setIsLoading(false);
       }
     });
@@ -121,6 +148,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       console.error('[AuthContext] Error during signOut:', err);
     } finally {
+      lastUserIdRef.current = null;
+      await clearUserSessionState();
       setSession(null);
       setUser(null);
       setProfile(null);

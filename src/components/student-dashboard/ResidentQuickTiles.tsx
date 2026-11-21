@@ -14,6 +14,7 @@ import type {
 
 interface ResidentQuickTilesProps {
   pendingDuesPaise: number | null;
+  pendingReviewPaise?: number | null;
   menus?: Record<MealType, ResidentFoodMenu | null>;
   latestMovement: ResidentMovementRecord | null;
   savingMovement: boolean;
@@ -26,6 +27,7 @@ interface ResidentQuickTilesProps {
 
 export function ResidentQuickTiles({
   pendingDuesPaise,
+  pendingReviewPaise = null,
   latestMovement,
   savingMovement,
   washingMachineSlot,
@@ -59,6 +61,26 @@ export function ResidentQuickTiles({
             <Text style={styles.heroFocusSub}>Tap to view breakdown & pay ›</Text>
           </View>
           <Receipt size={24} color={OwnerTheme.colors.danger} />
+        </Pressable>
+      ) : pendingReviewPaise !== null && pendingReviewPaise > 0 ? (
+        <Pressable
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.heroFocusCard,
+            styles.heroFocusCardReview,
+            pressed && styles.btnPressed,
+          ]}
+          onPress={onPressRentDue}>
+          <View style={styles.heroFocusLeft}>
+            <Text style={styles.heroFocusLabelReview}>Under review</Text>
+            <Text style={styles.heroFocusTitle}>
+              ₹{(pendingReviewPaise / 100).toLocaleString('en-IN')} under review
+            </Text>
+            <Text style={styles.heroFocusSub}>
+              Payment proof submitted • Awaiting owner approval ›
+            </Text>
+          </View>
+          <Receipt size={24} color={OwnerTheme.colors.warning} />
         </Pressable>
       ) : (
         <Pressable
@@ -227,6 +249,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: OwnerTheme.colors.danger,
+    letterSpacing: 0.1,
+  },
+  heroFocusCardReview: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  heroFocusLabelReview: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B45309',
     letterSpacing: 0.1,
   },
   heroFocusTitle: {

@@ -49,14 +49,27 @@ export function StudentChargeList({
   const unpaidBills = [currentRentBill, currentEbBill].filter(
     (b): b is StudentBillCardItem => Boolean(b && b.status !== 'paid')
   );
+  const pendingReviewBills = unpaidBills.filter(
+    (b) => b.pending_report?.status === 'pending'
+  );
+  const actionableDueBills = unpaidBills.filter(
+    (b) => b.pending_report?.status !== 'pending'
+  );
+  const actionableDuePaise = actionableDueBills.reduce(
+    (s, b) => s + b.total_paise,
+    0
+  );
+  const pendingReviewPaise = pendingReviewBills.reduce(
+    (s, b) => s + b.total_paise,
+    0
+  );
   const totalDuePaise = unpaidBills.reduce((s, b) => s + b.total_paise, 0);
   const totalBilledPaise =
     (currentRentBill?.total_paise || 0) + (currentEbBill?.total_paise || 0);
   const hasAnyCurrentBill = Boolean(currentRentBill || currentEbBill);
   const allCurrentPaid = hasAnyCurrentBill && unpaidBills.length === 0;
-  const anyPendingReview = unpaidBills.some(
-    (b) => b.pending_report?.status === 'pending'
-  );
+  const isAllUnderReview =
+    actionableDuePaise === 0 && pendingReviewPaise > 0;
   const anyRejected = unpaidBills.some(
     (b) => b.pending_report?.status === 'rejected'
   );
@@ -81,30 +94,36 @@ export function StudentChargeList({
           : `${labelPrefix} unpaid`}
       </Text>
       <View style={styles.itemActionLinks}>
-        {canDirectPay && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Pay ${labelPrefix} now via UPI`}
-            onPress={() => onPayNow?.(bill)}>
-            <Text style={styles.itemPayMiniLink}>Pay now</Text>
-          </Pressable>
+        {bill.pending_report?.status === 'pending' ? (
+          <Text style={styles.itemStatusMini}>Awaiting approval</Text>
+        ) : (
+          <>
+            {canDirectPay && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Pay ${labelPrefix} now via UPI`}
+                onPress={() => onPayNow?.(bill)}>
+                <Text style={styles.itemPayMiniLink}>Pay now</Text>
+              </Pressable>
+            )}
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => onOpenPaymentModal(bill)}>
+              <Text
+                style={
+                  canDirectPay
+                    ? styles.itemUploadMiniLink
+                    : styles.itemPayMiniLink
+                }>
+                {bill.pending_report?.status === 'rejected'
+                  ? 'Resubmit ›'
+                  : canDirectPay
+                  ? 'Upload proof ›'
+                  : 'Upload Payment Proof ›'}
+              </Text>
+            </Pressable>
+          </>
         )}
-        <Pressable
-          accessibilityRole="button"
-          onPress={() => onOpenPaymentModal(bill)}>
-          <Text
-            style={
-              canDirectPay
-                ? styles.itemUploadMiniLink
-                : styles.itemPayMiniLink
-            }>
-            {bill.pending_report?.status === 'rejected'
-              ? 'Resubmit ›'
-              : canDirectPay
-              ? 'Upload proof ›'
-              : 'Upload Payment Proof ›'}
-          </Text>
-        </Pressable>
       </View>
     </View>
   );
@@ -126,18 +145,22 @@ export function StudentChargeList({
           ]}>
           {totalDuePaise === 0
             ? 'All dues settled'
-            : `${formatPaiseToRupees(totalDuePaise)} due`}
+            : isAllUnderReview
+            ? `${formatPaiseToRupees(pendingReviewPaise)} under review`
+            : `${formatPaiseToRupees(actionableDuePaise)} due`}
         </Text>
         <Text style={styles.heroStatusSub}>
           {totalDuePaise === 0
             ? 'No pending dues for this month'
-            : anyPendingReview
+            : isAllUnderReview
             ? 'Payment proof submitted • Awaiting owner review'
+            : pendingReviewPaise > 0
+            ? `${formatPaiseToRupees(pendingReviewPaise)} already under review`
             : earliestDueDate
             ? `Pay before ${formatDate(earliestDueDate)}`
             : 'Pending payment for this month'}
         </Text>
-        {unpaidBills.length > 0 &&
+        {actionableDueBills.length > 0 &&
           (canDirectPay ? (
             <View style={styles.heroPayActions}>
               <Text style={styles.upiPayeeHint} numberOfLines={1}>
@@ -151,7 +174,7 @@ export function StudentChargeList({
                   styles.heroPayBtn,
                   pressed && styles.pressed,
                 ]}
-                onPress={() => onPayNow?.(unpaidBills[0])}>
+                onPress={() => onPayNow?.(actionableDueBills[0])}>
                 <Text style={styles.heroPayBtnText}>Pay now</Text>
               </Pressable>
               <Pressable
@@ -161,7 +184,7 @@ export function StudentChargeList({
                   styles.heroSecondaryLinkWrap,
                   pressed && styles.pressed,
                 ]}
-                onPress={() => onOpenPaymentModal(unpaidBills[0])}>
+                onPress={() => onOpenPaymentModal(actionableDueBills[0])}>
                 <Text style={styles.heroSecondaryLinkText}>
                   Already paid? Upload proof
                 </Text>
@@ -179,7 +202,7 @@ export function StudentChargeList({
                   styles.heroPayBtn,
                   pressed && styles.pressed,
                 ]}
-                onPress={() => onOpenPaymentModal(unpaidBills[0])}>
+                onPress={() => onOpenPaymentModal(actionableDueBills[0])}>
                 <Text style={styles.heroPayBtnText}>Upload Payment Proof</Text>
               </Pressable>
             </View>
@@ -215,7 +238,7 @@ export function StudentChargeList({
                 <View style={[styles.statusBadge, styles.badgePaid]}>
                   <Text style={styles.badgePaidText}>{toSentenceCaseStatus('paid')}</Text>
                 </View>
-              ) : anyPendingReview ? (
+              ) : isAllUnderReview ? (
                 <View style={[styles.statusBadge, styles.badgeReview]}>
                   <Text style={styles.badgeReviewText}>
                     {toSentenceCaseStatus('under_review')}

@@ -419,10 +419,15 @@ export function ResidentProvider({ children }: { children: React.ReactNode }) {
     const timer = setTimeout(() => {
       if (cancelled) return;
       if (!userId || !isStudent) {
+        inFlightRef.current = null;
         setResident(null);
         setResidentError(null);
         setLoadingResident(false);
         return;
+      }
+      if (inFlightRef.current && inFlightRef.current.userId !== userId) {
+        inFlightRef.current = null;
+        setResident(null);
       }
       void refreshResident(false);
     }, 0);

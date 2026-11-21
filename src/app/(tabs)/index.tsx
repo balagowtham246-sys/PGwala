@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { Href, router, useFocusEffect } from 'expo-router';
 import {
   Bell,
@@ -7,7 +8,7 @@ import {
   User,
   Utensils,
 } from 'lucide-react-native';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -35,25 +36,24 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useResidentTabs } from '@/context/resident-tabs-context';
+import {
+  useOwnerDashboardQuery,
+  useOwnerReleaseWmMutation,
+  useOwnerSetWmOutOfOrderMutation,
+  useOwnerUnreadInboxQuery,
+} from '@/hooks/use-dashboards';
 import { invalidatePrefix } from '@/lib/query-cache';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { queryKeys } from '@/lib/query-keys';
 import { supabase } from '@/lib/supabase';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import {
   createEmptyOwnerMenus,
   DashboardWmUnit,
-  fetchOwnerDashboard,
-  getCachedOwnerDashboard,
   MealType,
-  OwnerActivityItem,
-  OwnerDashboardStats,
   OwnerFoodMenuRecord,
-  OwnerWmSummary,
-  releaseWashingMachineUnit,
-  setWashingMachineOutOfOrder,
   toLocalIsoDate,
 } from '@/services/dashboard.service';
-import { getUnreadInboxCount } from '@/services/notification-center.service';
 
 export type { DashboardWmUnit, MealType, OwnerFoodMenuRecord };
 
@@ -78,6 +78,7 @@ function getFeaturedMealKey(
 }
 
 export default function OwnerDashboard() {
+  const qc = useQueryClient();
   const { user, session, profile, isLoading: authLoading } = useAuth();
   const {
     properties,
@@ -91,9 +92,7 @@ export default function OwnerDashboard() {
   const userId = user?.id;
   const profileRole = profile?.role;
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   // Property Switcher Modal State
   const [switcherVisible, setSwitcherVisible] = useState(false);
@@ -102,171 +101,106 @@ export default function OwnerDashboard() {
   const [newPropAddress, setNewPropAddress] = useState('');
   const [creatingProperty, setCreatingProperty] = useState(false);
 
-  // Key Operational State (Gate, Menu, Complaints, Rent Collections)
-  const [stats, setStats] = useState<OwnerDashboardStats>({
-    totalResidents: 0,
-    studentsInside: 0,
-    studentsOutside: 0,
-    openComplaintsCount: 0,
-    rentCollectedPaise: 0,
-    rentTotalPaise: 0,
-    pendingProofsCount: 0,
-    unpaidResidentsCount: 0,
-  });
-
-  const [todayMenus, setTodayMenus] = useState<Record<MealType, OwnerFoodMenuRecord | null>>(() =>
-    createEmptyOwnerMenus()
-  );
-
-  // Live Washing Machine Status State
-  const [wmSummary, setWmSummary] = useState<OwnerWmSummary>({
-    totalCount: 0,
-    inUseCount: 0,
-    freeCount: 0,
-    outOfOrderCount: 0,
-  });
-  const [wmUnits, setWmUnits] = useState<DashboardWmUnit[]>([]);
+  // Live Washing Machine Status Modal State
   const [wmModalVisible, setWmModalVisible] = useState(false);
-  const [busyMachineId, setBusyMachineId] = useState<string | null>(null);
-
-  const [recentActivities, setRecentActivities] = useState<OwnerActivityItem[]>([]);
-  const [unreadInboxCount, setUnreadInboxCount] = useState(0);
 
   const hasFocusedOnceRef = useRef(false);
 
-  // Instant render from unified query cache (stale-while-revalidate for slow networks)
-  useEffect(() => {
-    if (!selectedPropertyId) return;
-    let cancelled = false;
-    void getCachedOwnerDashboard(selectedPropertyId).then((cached) => {
-      if (cancelled || !cached) return;
-      setStats(cached.stats);
-      setRecentActivities(cached.recentActivities);
-      setTodayMenus(cached.todayMenus);
-      setWmSummary(cached.wmSummary);
-      setWmUnits(cached.wmUnits);
-      setLoading(false);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [selectedPropertyId]);
+  const canQueryOwner = !authLoading && Boolean(userId) && profileRole === 'owner';
+  const dashboardQuery = useOwnerDashboardQuery(selectedPropertyId, canQueryOwner);
+  const inboxQuery = useOwnerUnreadInboxQuery(userId, selectedPropertyId, canQueryOwner);
+  const releaseWmMutation = useOwnerReleaseWmMutation();
+  const outOfOrderWmMutation = useOwnerSetWmOutOfOrderMutation();
 
-  // Fetch operational dashboard data scoped to the active selected property
-  const applyDashboardResult = useCallback(
-    (result: Awaited<ReturnType<typeof fetchOwnerDashboard>>) => {
-      if (result.ok) {
-        setErrorMessage(null);
-        setStats(result.data.stats);
-        setRecentActivities(result.data.recentActivities);
-        setTodayMenus(result.data.todayMenus);
-        setWmSummary(result.data.wmSummary);
-        setWmUnits(result.data.wmUnits);
-      } else {
-        console.error('[OwnerDashboard] Error loading data:', result.error);
-        setErrorMessage(`Failed to load dashboard: ${result.error.message}`);
-      }
-      setLoading(false);
-      setRefreshing(false);
-    },
-    []
+  const dash = dashboardQuery.data;
+  const loading =
+    authLoading ||
+    (canQueryOwner && Boolean(selectedPropertyId) && dashboardQuery.isPending && !dash);
+  const refreshing = manualRefreshing;
+  const errorMessage = dashboardQuery.isError
+    ? `Failed to load dashboard: ${dashboardQuery.error.message}`
+    : null;
+
+  const stats = useMemo(
+    () =>
+      dash?.stats ?? {
+        totalResidents: 0,
+        studentsInside: 0,
+        studentsOutside: 0,
+        openComplaintsCount: 0,
+        rentCollectedPaise: 0,
+        rentTotalPaise: 0,
+        pendingProofsCount: 0,
+        unpaidResidentsCount: 0,
+      },
+    [dash?.stats]
   );
+  const todayMenus = useMemo(
+    () => dash?.todayMenus ?? createEmptyOwnerMenus(),
+    [dash?.todayMenus]
+  );
+  const wmSummary = useMemo(
+    () =>
+      dash?.wmSummary ?? {
+        totalCount: 0,
+        inUseCount: 0,
+        freeCount: 0,
+        outOfOrderCount: 0,
+      },
+    [dash?.wmSummary]
+  );
+  const wmUnits = useMemo(() => dash?.wmUnits ?? [], [dash?.wmUnits]);
+  const recentActivities = useMemo(
+    () => dash?.recentActivities ?? [],
+    [dash?.recentActivities]
+  );
+  const unreadInboxCount = canQueryOwner && selectedPropertyId ? (inboxQuery.data ?? 0) : 0;
+  const busyMachineId = releaseWmMutation.isPending
+    ? releaseWmMutation.variables.machineId
+    : outOfOrderWmMutation.isPending
+      ? outOfOrderWmMutation.variables.machineId
+      : null;
 
   const loadDashboardData = useCallback(async () => {
-    if (!userId || profileRole !== 'owner' || !selectedPropertyId) {
-      return;
-    }
-
-    const todayIsoDate = toLocalIsoDate();
-    const currentMonthStartIso = `${todayIsoDate.slice(0, 7)}-01`;
-
-    const result = await fetchOwnerDashboard(selectedPropertyId, {
-      dateIso: todayIsoDate,
-      monthStartIso: currentMonthStartIso,
-    });
-    applyDashboardResult(result);
-  }, [userId, profileRole, selectedPropertyId, applyDashboardResult]);
+    if (!canQueryOwner || !selectedPropertyId) return;
+    await dashboardQuery.refetch();
+  }, [canQueryOwner, selectedPropertyId, dashboardQuery]);
 
   useEffect(() => {
     if (authLoading) return;
     if (!session || !userId) {
       router.replace('/login');
-      return;
     }
-    if (profileRole === 'owner' && selectedPropertyId) {
-      let cancelled = false;
-      const todayIsoDate = toLocalIsoDate();
-      const currentMonthStartIso = `${todayIsoDate.slice(0, 7)}-01`;
-      void fetchOwnerDashboard(selectedPropertyId, {
-        dateIso: todayIsoDate,
-        monthStartIso: currentMonthStartIso,
-      }).then((result) => {
-        if (!cancelled) {
-          applyDashboardResult(result);
-        }
-      });
-      return () => {
-        cancelled = true;
-      };
-    }
-    const timer = setTimeout(() => {
-      setLoading(false);
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [authLoading, session, userId, profileRole, selectedPropertyId, applyDashboardResult]);
+  }, [authLoading, session, userId]);
 
   const refreshUnreadInboxCount = useCallback(
     async (forceInvalidate = false) => {
-      if (!userId || profileRole !== 'owner' || !selectedPropertyId) {
-        setUnreadInboxCount(0);
+      if (!canQueryOwner || !selectedPropertyId) {
         return;
       }
       if (forceInvalidate) {
         await invalidatePrefix('inbox:');
       }
-      const count = await getUnreadInboxCount(userId, selectedPropertyId);
-      setUnreadInboxCount(count);
+      await inboxQuery.refetch();
     },
-    [userId, profileRole, selectedPropertyId]
+    [canQueryOwner, selectedPropertyId, inboxQuery]
   );
 
-  useEffect(() => {
-    if (!userId || profileRole !== 'owner' || !selectedPropertyId) {
-      const timer = setTimeout(() => {
-        setUnreadInboxCount(0);
-      }, 0);
-      return () => clearTimeout(timer);
-    }
-    let cancelled = false;
-    void getUnreadInboxCount(userId, selectedPropertyId).then((count) => {
-      if (!cancelled) {
-        setUnreadInboxCount(count);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [userId, profileRole, selectedPropertyId]);
-
-  // Refetch latest operational status, menu, and unread notifications whenever returning to dashboard
+  // Refetch stale operational status, menu, and unread notifications on return
   useFocusEffect(
     useCallback(() => {
       if (!hasFocusedOnceRef.current) {
         hasFocusedOnceRef.current = true;
         return;
       }
-      if (!authLoading && userId && profileRole === 'owner' && selectedPropertyId) {
-        void loadDashboardData();
+      if (canQueryOwner && selectedPropertyId) {
+        const todayIso = toLocalIsoDate();
+        void qc.invalidateQueries({
+          queryKey: queryKeys.dashboard.owner(selectedPropertyId, todayIso),
+        });
         void refreshUnreadInboxCount(true);
       }
-    }, [
-      authLoading,
-      userId,
-      profileRole,
-      selectedPropertyId,
-      loadDashboardData,
-      refreshUnreadInboxCount,
-    ])
+    }, [canQueryOwner, selectedPropertyId, qc, refreshUnreadInboxCount])
   );
 
   const handleOpenFoodMenu = () => {
@@ -288,17 +222,17 @@ export default function OwnerDashboard() {
           text: 'Free Up',
           style: 'destructive',
           onPress: async () => {
-            setBusyMachineId(machineId);
-            const result = await releaseWashingMachineUnit(selectedPropertyId, machineId);
-            setBusyMachineId(null);
-            if (!result.ok) {
+            try {
+              await releaseWmMutation.mutateAsync({
+                propertyId: selectedPropertyId,
+                machineId,
+              });
+            } catch (err) {
               Alert.alert(
                 'Error',
-                result.error.message || 'Failed to release washing machine.'
+                err instanceof Error ? err.message : 'Failed to release washing machine.'
               );
-              return;
             }
-            await loadDashboardData();
           },
         },
       ]
@@ -314,21 +248,20 @@ export default function OwnerDashboard() {
     if (!selectedPropertyId) return;
 
     const applyChange = async () => {
-      setBusyMachineId(machineId);
-      const result = await setWashingMachineOutOfOrder(
-        selectedPropertyId,
-        machineId,
-        outOfOrder
-      );
-      setBusyMachineId(null);
-      if (!result.ok) {
+      try {
+        await outOfOrderWmMutation.mutateAsync({
+          propertyId: selectedPropertyId,
+          machineId,
+          outOfOrder,
+        });
+      } catch (err) {
         Alert.alert(
           'Error',
-          result.error.message || 'Failed to update washing machine status.'
+          err instanceof Error
+            ? err.message
+            : 'Failed to update washing machine status.'
         );
-        return;
       }
-      await loadDashboardData();
     };
 
     if (outOfOrder) {
@@ -380,10 +313,18 @@ export default function OwnerDashboard() {
       debounceTimer = setTimeout(() => {
         debounceTimer = null;
         if (!active) return;
+        const todayIso = toLocalIsoDate();
         void (async () => {
           await invalidatePrefix('inbox:');
           if (!active) return;
-          await Promise.all([loadDashboardData(), refreshUnreadInboxCount()]);
+          await Promise.all([
+            qc.invalidateQueries({
+              queryKey: queryKeys.dashboard.owner(selectedPropertyId, todayIso),
+            }),
+            qc.invalidateQueries({
+              queryKey: queryKeys.dashboard.ownerInbox(userId, selectedPropertyId),
+            }),
+          ]);
         })();
       }, 300);
     };
@@ -423,14 +364,17 @@ export default function OwnerDashboard() {
     selectedPropertyId,
     isScreenFocused,
     isAppActive,
-    loadDashboardData,
-    refreshUnreadInboxCount,
+    qc,
   ]);
 
   const handleRefresh = () => {
-    setRefreshing(true);
-    void loadDashboardData();
-    void refreshUnreadInboxCount(true);
+    setManualRefreshing(true);
+    void Promise.all([
+      loadDashboardData(),
+      refreshUnreadInboxCount(true),
+    ]).finally(() => {
+      setManualRefreshing(false);
+    });
   };
 
   // Add new PG property from modal
@@ -448,6 +392,7 @@ export default function OwnerDashboard() {
       setSwitcherVisible(false);
       setNewPropName('');
       setNewPropAddress('');
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
       Alert.alert('Property Added', `Switched to "${trimmed}".`);
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Could not add property.');

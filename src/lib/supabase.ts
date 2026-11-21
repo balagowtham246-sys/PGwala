@@ -5,9 +5,9 @@ import { AppState, Platform } from 'react-native';
 
 import { extractErrorMessage } from '@/lib/error-utils';
 
-const supabaseUrl =
+export const supabaseUrl =
   process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
-const supabasePublishableKey =
+export const supabasePublishableKey =
   process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY || 'placeholder-publishable-key';
 
 if (

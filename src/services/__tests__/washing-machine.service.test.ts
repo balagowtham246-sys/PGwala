@@ -3,6 +3,7 @@ import { resetPerfMonitor } from '@/lib/perf-monitor';
 import {
   fetchWashingMachineStatus,
   formatCountdown,
+  isWashingMachineConflictError,
   releaseWashingMachineUnit,
   requestWashingMachineAccess,
   startWashingMachineUnit,
@@ -169,6 +170,46 @@ describe('washing-machine.service', () => {
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.error.message).toBe('Already requested');
+    }
+  });
+
+  it('coalesces concurrent double-taps on startWashingMachineUnit and tags slot race conflicts', async () => {
+    let resolveRpc: (value: unknown) => void = () => {};
+    mockedRpc.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRpc = resolve;
+        })
+    );
+
+    const p1 = startWashingMachineUnit('prop-1', 'm-1');
+    const p2 = startWashingMachineUnit('prop-1', 'm-1');
+    resolveRpc({
+      data: { success: true, machine_name: 'Washing Machine 1' },
+      error: null,
+    });
+
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(mockedRpc).toHaveBeenCalledTimes(1);
+    expect(r1).toEqual({
+      ok: true,
+      data: { status: 'started', machineName: 'Washing Machine 1', usedLegacyFallback: false },
+    });
+    expect(r2).toEqual(r1);
+
+    mockedRpc.mockResolvedValueOnce({
+      data: {
+        success: false,
+        error: 'This washing machine is currently in use.',
+      },
+      error: null,
+    });
+
+    const raceConflict = await startWashingMachineUnit('prop-1', 'm-1');
+    expect(raceConflict.ok).toBe(false);
+    if (!raceConflict.ok) {
+      expect(isWashingMachineConflictError(raceConflict.error)).toBe(true);
+      expect(raceConflict.error.code).toBe('WM_CONFLICT');
     }
   });
 });

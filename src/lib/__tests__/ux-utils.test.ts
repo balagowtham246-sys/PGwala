@@ -1,4 +1,5 @@
 import {
+  addDaysToIsoDate,
   calculateProRataFinalBillPaise,
   findDuplicatePhones,
   formatGateEventTimestamp,
@@ -6,6 +7,8 @@ import {
   formatIsoDateDisplay,
   formatPropertyGenderLabel,
   formatRoomLabel,
+  getIstCalendarParts,
+  getIstMonthStartIso,
   inferPropertyGender,
   isPropertyCompatibleWithGender,
   isReturnAfterCurfew,
@@ -142,6 +145,30 @@ describe('ux-utils', () => {
     expect(isReturnAfterCurfew('Night (~10:00 pm)', null)).toBe(false);
     expect(isReturnAfterCurfew('Evening (~8:00 pm)', '22:00')).toBe(false);
     expect(isReturnAfterCurfew('Late Night (~11:30 pm)', '22:00')).toBe(true);
+    expect(isReturnAfterCurfew('Midnight (~12:00 am)', '22:00')).toBe(true);
+    expect(isReturnAfterCurfew('12:30 am', '22:00')).toBe(true);
+    expect(isReturnAfterCurfew('1:15 am', '22:00')).toBe(true);
     expect(isReturnAfterCurfew('Tomorrow morning', '22:00')).toBe(true);
+  });
+
+  it('computes IST calendar dates and billing month boundaries without UTC midnight drift', () => {
+    // 2026-11-30T19:00:00Z === 2026-12-01T00:30:00 IST (already December 1 in India!)
+    const dec1EarlyIst = new Date('2026-11-30T19:00:00.000Z');
+    const parts = getIstCalendarParts(dec1EarlyIst);
+    expect(parts.isoDate).toBe('2026-12-01');
+    expect(parts.monthStartIso).toBe('2026-12-01');
+    expect(parts.hours).toBe(0);
+    expect(parts.minutes).toBe(30);
+    expect(getIstMonthStartIso(dec1EarlyIst)).toBe('2026-12-01');
+
+    // 2026-11-30T18:29:00Z === 2026-11-30T23:59:00 IST (still November in India)
+    const nov30LateIst = new Date('2026-11-30T18:29:00.000Z');
+    expect(getIstCalendarParts(nov30LateIst).isoDate).toBe('2026-11-30');
+    expect(getIstMonthStartIso(nov30LateIst)).toBe('2026-11-01');
+
+    // Month-end & leap-year ISO calendar arithmetic
+    expect(addDaysToIsoDate('2024-02-28', 1)).toBe('2024-02-29');
+    expect(addDaysToIsoDate('2026-02-28', 1)).toBe('2026-03-01');
+    expect(addDaysToIsoDate('2026-11-30', 1)).toBe('2026-12-01');
   });
 });

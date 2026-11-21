@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useQueryClient } from '@tanstack/react-query';
 import { Href, router, useFocusEffect } from 'expo-router';
 import { Bell, Megaphone, Utensils } from 'lucide-react-native';
 
@@ -26,18 +27,16 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
+import { useStudentMultiDayMenusQuery } from '@/hooks/use-food-menu';
 import { useOfflineMutation } from '@/hooks/use-offline-mutation';
-import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSelectionHaptic } from '@/lib/haptics';
 import { flushOfflineQueue } from '@/lib/offline-queue';
+import { queryKeys } from '@/lib/query-keys';
 import { supabase } from '@/lib/supabase';
-import { formatHhMmTo12h } from '@/lib/ux-utils';
+import { addDaysToIsoDate, formatHhMmTo12h, getIstCalendarParts } from '@/lib/ux-utils';
 import type { MealType } from '@/services/dashboard.service';
 import { defaultOfflineExecutors } from '@/services/offline-executors';
-import {
-  DayMenuMap,
-  fetchResidentMultiDayMenus,
-} from '@/services/resident-portal.service';
+import { DayMenuMap } from '@/services/resident-portal.service';
 
 const MEAL_ORDER: MealType[] = ['breakfast', 'lunch', 'dinner'];
 
@@ -71,23 +70,19 @@ interface RollingDayOption {
 }
 
 function toLocalIsoDate(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  return getIstCalendarParts(date).isoDate;
 }
 
 function buildRollingSevenDays(anchorIso: string): RollingDayOption[] {
-  const [yStr, mStr, dStr] = anchorIso.split('-');
-  const base = new Date(Number(yStr), Number(mStr) - 1, Number(dStr));
   const result: RollingDayOption[] = [];
 
   for (let offset = 0; offset < 7; offset += 1) {
-    const day = new Date(base.getFullYear(), base.getMonth(), base.getDate() + offset);
-    const iso = toLocalIsoDate(day);
-    const weekday = WEEKDAYS_SHORT[day.getDay()];
-    const month = MONTHS_SHORT[day.getMonth()];
-    const dayNumber = String(day.getDate());
+    const iso = addDaysToIsoDate(anchorIso, offset);
+    const [yStr, mStr, dStr] = iso.split('-');
+    const day = new Date(Date.UTC(Number(yStr), Number(mStr) - 1, Number(dStr)));
+    const weekday = WEEKDAYS_SHORT[day.getUTCDay()];
+    const month = MONTHS_SHORT[day.getUTCMonth()];
+    const dayNumber = String(day.getUTCDate());
     const topLabel = offset === 0 ? 'Today' : offset === 1 ? 'Tomorrow' : weekday;
     const emptyDayLabel =
       offset === 0
@@ -114,6 +109,7 @@ const EMPTY_DAY_MENU: DayMenuMap = {
 };
 
 export default function StudentMenuScreen() {
+  const qc = useQueryClient();
   const { user } = useAuth();
   const { resident: sharedResident, refreshResident, patchResident } = useResident();
   const { showToast } = useToast();
@@ -121,18 +117,37 @@ export default function StudentMenuScreen() {
 
   const [anchorIso, setAnchorIso] = useState(() => toLocalIsoDate(new Date()));
   const [selectedIso, setSelectedIso] = useState(() => toLocalIsoDate(new Date()));
-
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [hasAssignedProperty, setHasAssignedProperty] = useState(true);
-  const [propertyName, setPropertyName] = useState(sharedResident?.propertyName || 'Assigned PG');
-  const [menusByDate, setMenusByDate] = useState<Record<string, DayMenuMap>>({});
-  const [publishedDates, setPublishedDates] = useState<string[]>([]);
-  const [mealOptIn, setMealOptIn] = useState(sharedResident?.mealOptIn ?? true);
+  const [manualRefreshing, setManualRefreshing] = useState(false);
 
   const dateStrip = useMemo(() => buildRollingSevenDays(anchorIso), [anchorIso]);
-  const publishedSet = useMemo(() => new Set(publishedDates), [publishedDates]);
+  const stripDates = useMemo(() => dateStrip.map((d) => d.iso), [dateStrip]);
+
+  const activePropertyId = sharedResident?.propertyId ?? null;
+  const hasAssignedProperty = !userId || sharedResident === null ? true : Boolean(activePropertyId);
+  const propertyName = sharedResident?.propertyName || 'Assigned PG';
+  const [optInOverride, setOptInOverride] = useState<boolean | null>(null);
+  const mealOptIn = optInOverride ?? sharedResident?.mealOptIn ?? true;
+
+  const menusQuery = useStudentMultiDayMenusQuery(
+    activePropertyId,
+    anchorIso,
+    stripDates
+  );
+
+  const loading =
+    Boolean(userId) &&
+    ((!sharedResident && menusQuery.isPending) ||
+      (Boolean(activePropertyId) && menusQuery.isPending && !menusQuery.data));
+  const refreshing = manualRefreshing;
+  const errorMessage = menusQuery.isError ? menusQuery.error.message : null;
+  const menusByDate = useMemo(
+    () => menusQuery.data?.byDate ?? {},
+    [menusQuery.data?.byDate]
+  );
+  const publishedSet = useMemo(
+    () => new Set(menusQuery.data?.publishedDates ?? []),
+    [menusQuery.data?.publishedDates]
+  );
 
   const executeFoodOptIn = useCallback(async (payload: { value: boolean }) => {
     const { error } = await supabase.rpc('set_my_meal_opt_in', {
@@ -156,79 +171,53 @@ export default function StudentMenuScreen() {
       const strip = buildRollingSevenDays(todayIso);
       setSelectedIso((prev) => (strip.some((d) => d.iso === prev) ? prev : strip[0].iso));
 
-      if (!userId) {
-        setLoading(false);
-        setRefreshing(false);
-        return;
+      if (!userId) return;
+      if (forceResident || !sharedResident) {
+        await refreshResident(forceResident);
       }
-
-      try {
-        setErrorMessage(null);
-        const activeRes =
-          !forceResident && sharedResident ? sharedResident : await refreshResident(forceResident);
-
-        if (!activeRes?.propertyId) {
-          setHasAssignedProperty(false);
-          setMenusByDate({});
-          setPublishedDates([]);
-          return;
-        }
-
-        setHasAssignedProperty(true);
-        setPropertyName(activeRes.propertyName || 'Assigned PG');
-        setMealOptIn(activeRes.mealOptIn);
-
-        const menusRes = await fetchResidentMultiDayMenus(
-          activeRes.propertyId,
-          strip.map((d) => d.iso)
-        );
-
-        if (!menusRes.ok) {
-          setErrorMessage(menusRes.error.message || 'Could not load meal schedules.');
-          return;
-        }
-
-        setMenusByDate(menusRes.data.byDate);
-        setPublishedDates(menusRes.data.publishedDates);
-      } catch (err) {
-        setErrorMessage(extractErrorMessage(err, 'Could not load meal schedules.'));
-      } finally {
-        setLoading(false);
-        setRefreshing(false);
+      if (activePropertyId) {
+        await menusQuery.refetch();
       }
     },
-    [userId, sharedResident, refreshResident]
+    [userId, sharedResident, refreshResident, activePropertyId, menusQuery]
   );
 
   useFocusEffect(
     useCallback(() => {
       let active = true;
       const timer = setTimeout(() => {
-        void (async () => {
-          await flushOfflineQueue(defaultOfflineExecutors);
-          if (active) {
-            await loadMenu(false);
+        if (!active) return;
+        if (!sharedResident && userId) {
+          void refreshResident(false);
+        }
+        void flushOfflineQueue(defaultOfflineExecutors).then((summary) => {
+          if (active && summary.succeeded > 0) {
+            void qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all });
           }
-        })();
+        });
       }, 0);
       return () => {
         active = false;
         clearTimeout(timer);
       };
-    }, [loadMenu])
+    }, [sharedResident, userId, refreshResident, qc])
   );
 
   const handleRefresh = () => {
-    setRefreshing(true);
+    setManualRefreshing(true);
     void (async () => {
-      await flushOfflineQueue(defaultOfflineExecutors);
-      await loadMenu(true);
+      try {
+        await flushOfflineQueue(defaultOfflineExecutors);
+        await loadMenu(true);
+      } finally {
+        setManualRefreshing(false);
+      }
     })();
   };
 
   const handleToggleMealAlerts = async (nextValue: boolean) => {
     if (savingOptIn) return;
-    setMealOptIn(nextValue);
+    setOptInOverride(nextValue);
     patchResident({ mealOptIn: nextValue });
     triggerSelectionHaptic();
 
@@ -238,7 +227,7 @@ export default function StudentMenuScreen() {
     );
 
     if (!outcome.ok) {
-      setMealOptIn(!nextValue);
+      setOptInOverride(null);
       patchResident({ mealOptIn: !nextValue });
       Alert.alert(
         'Update Failed',
@@ -247,6 +236,7 @@ export default function StudentMenuScreen() {
       return;
     }
 
+    setOptInOverride(null);
     if (outcome.queued) {
       showToast('Meal alert preference queued offline');
       return;
@@ -379,8 +369,7 @@ export default function StudentMenuScreen() {
           <ErrorState
             message={errorMessage}
             onRetry={() => {
-              setLoading(true);
-              void loadMenu();
+              void loadMenu(true);
             }}
           />
         )}

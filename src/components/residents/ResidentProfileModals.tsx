@@ -282,10 +282,20 @@ export function ResidentCheckoutModal({
             <View style={styles.checkoutNoticeBox}>
               <Text style={styles.checkoutNoticeText}>
                 Bills, gate history, and complaints are preserved for your records,
-                while {profile.bedLabel || 'the bed'} in Room {profile.roomNumber} is
+                any active washing machine session is released, and{' '}
+                {profile.bedLabel || 'the bed'} in Room {profile.roomNumber} is
                 freed immediately for new admissions.
               </Text>
             </View>
+
+            {profile.pendingDuesPaise > 0 && (
+              <View style={styles.unpaidDuesWarningBox}>
+                <Text style={styles.unpaidDuesWarningText}>
+                  Unpaid Balance: {formatPaiseToRupees(profile.pendingDuesPaise)} pending.
+                  Outstanding bills remain in records after checkout.
+                </Text>
+              </View>
+            )}
 
             <Text style={styles.modalFieldLabel}>Leaving Date</Text>
             <Pressable
@@ -472,6 +482,20 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     color: '#92400E',
     fontWeight: '500',
+  },
+  unpaidDuesWarningBox: {
+    backgroundColor: OwnerTheme.colors.dangerLight,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 12,
+    marginBottom: 14,
+  },
+  unpaidDuesWarningText: {
+    fontSize: 12,
+    lineHeight: 18,
+    color: '#991B1B',
+    fontWeight: '600',
   },
   datePickerTrigger: {
     flexDirection: 'row',
