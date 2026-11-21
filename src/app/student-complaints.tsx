@@ -32,6 +32,7 @@ import {
 } from 'lucide-react-native';
 
 import { useAuth } from '@/context/auth-context';
+import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
 import { extractErrorMessage } from '@/lib/error-utils';
 import {
@@ -120,6 +121,7 @@ const STATUS_CONFIG: Record<
 
 export default function StudentComplaintsScreen() {
   const { user } = useAuth();
+  const { resident: sharedResident, refreshResident } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
 
@@ -231,38 +233,22 @@ export default function StudentComplaintsScreen() {
   const loadData = useCallback(async () => {
     if (!userId) return;
     try {
-      // 1. Fetch linked resident
-      const { data: resData, error: resError } = await supabase
-        .from('residents')
-        .select(`
-          id,
-          property_id,
-          full_name,
-          room_number,
-          property:properties (
-            name
-          )
-        `)
-        .eq('profile_id', userId)
-        .eq('is_active', true)
-        .maybeSingle();
-
-      if (resError) throw resError;
-      if (!resData) {
+      const activeRes = sharedResident ?? (await refreshResident(false));
+      if (!activeRes) {
         setResident(null);
         return;
       }
 
       const resObj: StudentResident = {
-        id: resData.id,
-        property_id: resData.property_id,
-        full_name: resData.full_name,
-        room_number: resData.room_number,
-        property: Array.isArray(resData.property) ? resData.property[0] : resData.property,
+        id: activeRes.residentId,
+        property_id: activeRes.propertyId,
+        full_name: activeRes.fullName,
+        room_number: activeRes.roomNumber,
+        property: { name: activeRes.propertyName },
       };
       setResident(resObj);
 
-      // 2. Fetch complaints for this resident
+      // Fetch complaints for this resident
       const { data: compData, error: compError } = await supabase
         .from('complaints')
         .select('*')
@@ -284,7 +270,7 @@ export default function StudentComplaintsScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [userId]);
+  }, [userId, sharedResident, refreshResident]);
 
   useFocusEffect(
     useCallback(() => {

@@ -22,6 +22,7 @@ import { StudentChargeList } from '@/components/student-billing/StudentChargeLis
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { OwnerHeader } from '@/components/ui/owner';
 import { useAuth } from '@/context/auth-context';
+import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
 import { buildUpiPaymentUrl } from '@/lib/upi';
 import { formatRoomLabel } from '@/lib/ux-utils';
@@ -35,17 +36,18 @@ import {
 
 export default function SimplifiedStudentBillingScreen() {
   const { user } = useAuth();
+  const { resident: sharedResident } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [residentId, setResidentId] = useState<string | null>(null);
-  const [roomNumber, setRoomNumber] = useState('');
-  const [propertyName, setPropertyName] = useState('My PG');
-  const [ownerUpiId, setOwnerUpiId] = useState<string | null>(null);
+  const [residentId, setResidentId] = useState<string | null>(sharedResident?.residentId ?? null);
+  const [roomNumber, setRoomNumber] = useState(sharedResident?.roomNumber ?? '');
+  const [propertyName, setPropertyName] = useState(sharedResident?.propertyName ?? 'My PG');
+  const [ownerUpiId, setOwnerUpiId] = useState<string | null>(sharedResident?.ownerUpiId ?? null);
   const [ownerUpiPayeeName, setOwnerUpiPayeeName] = useState<string | null>(
-    null
+    sharedResident?.ownerUpiPayeeName ?? null
   );
 
   // Current Month Bills
@@ -100,6 +102,17 @@ export default function SimplifiedStudentBillingScreen() {
 
       const result = await getStudentBilling(userId, {
         forceNetwork: options?.forceNetwork,
+        residentContext: sharedResident
+          ? {
+              residentId: sharedResident.residentId,
+              residentName: sharedResident.fullName,
+              roomNumber: sharedResident.roomNumber,
+              propertyId: sharedResident.propertyId,
+              propertyName: sharedResident.propertyName,
+              ownerUpiId: sharedResident.ownerUpiId,
+              ownerUpiPayeeName: sharedResident.ownerUpiPayeeName,
+            }
+          : null,
         onCachedData: (cached) => {
           if (!mountedRef.current || requestIdRef.current !== reqId) return;
           hadCacheHit = true;
@@ -119,7 +132,7 @@ export default function SimplifiedStudentBillingScreen() {
       setLoading(false);
       setRefreshing(false);
     },
-    [userId, applySnapshot]
+    [userId, sharedResident, applySnapshot]
   );
 
   useEffect(() => {

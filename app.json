@@ -8,7 +8,8 @@
     "scheme": "pgwala",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pgwala.app"
     },
     "android": {
       "package": "com.pgwala.app",
@@ -19,10 +20,7 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "softwareKeyboardLayoutMode": "resize",
-      "permissions": [
-        "android.permission.RECORD_AUDIO"
-      ]
+      "softwareKeyboardLayoutMode": "resize"
     },
     "web": {
       "output": "static",
@@ -48,6 +46,12 @@
       "expo-web-browser",
       "@sentry/react-native",
       "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow PGwala to use Face ID for faster, secure sign-in."
+        }
+      ],
       [
         "expo-notifications",
         {

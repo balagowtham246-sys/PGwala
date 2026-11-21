@@ -948,13 +948,25 @@ async function fetchPropertyUpiMeta(
   return { ownerUpiId, ownerUpiPayeeName };
 }
 
+export interface PreResolvedStudentContext {
+  residentId: string;
+  residentName: string;
+  roomNumber: string;
+  propertyId: string;
+  propertyName: string;
+  ownerUpiId?: string | null;
+  ownerUpiPayeeName?: string | null;
+}
+
 /**
  * Fetches student billing snapshot (current & past charges, payment reports, receipts)
  * using SWR caching and parallelized Supabase queries.
  */
 export async function getStudentBilling(
   userId: string,
-  options?: SwrReadOptions<StudentBillingSnapshot>
+  options?: SwrReadOptions<StudentBillingSnapshot> & {
+    residentContext?: PreResolvedStudentContext | null;
+  }
 ): Promise<ServiceResult<StudentBillingSnapshot>> {
   const cacheKey = getStudentBillingCacheKey(userId);
   const traceLabel = cacheKey;
@@ -968,10 +980,31 @@ export async function getStudentBilling(
       }
     }
 
-    const { data: resData, error: resErr } = await supabase
-      .from('residents')
-      .select(
-        `
+    let resolvedResidentId: string;
+    let resolvedResidentName: string;
+    let resolvedRoomNumber: string;
+    let propertyName: string;
+    let propId: string | null;
+    let preResolvedUpi: {
+      ownerUpiId: string | null;
+      ownerUpiPayeeName: string | null;
+    } | null = null;
+
+    if (options?.residentContext) {
+      resolvedResidentId = options.residentContext.residentId;
+      resolvedResidentName = options.residentContext.residentName;
+      resolvedRoomNumber = options.residentContext.roomNumber;
+      propertyName = options.residentContext.propertyName;
+      propId = options.residentContext.propertyId;
+      preResolvedUpi = {
+        ownerUpiId: options.residentContext.ownerUpiId ?? null,
+        ownerUpiPayeeName: options.residentContext.ownerUpiPayeeName ?? null,
+      };
+    } else {
+      const { data: resData, error: resErr } = await supabase
+        .from('residents')
+        .select(
+          `
           id,
           property_id,
           full_name,
@@ -981,35 +1014,39 @@ export async function getStudentBilling(
             name
           )
         `
-      )
-      .eq('profile_id', userId)
-      .eq('is_active', true)
-      .maybeSingle();
-    recordRoundTrip(traceLabel, 1);
+        )
+        .eq('profile_id', userId)
+        .eq('is_active', true)
+        .maybeSingle();
+      recordRoundTrip(traceLabel, 1);
 
-    if (resErr) throw resErr;
-    if (!resData) {
-      return ok({
-        residentId: null,
-        residentName: 'Resident',
-        roomNumber: '',
-        propertyName: 'My PG',
-        ownerUpiId: null,
-        ownerUpiPayeeName: null,
-        currentRentBill: null,
-        currentEbBill: null,
-        pastBills: [],
-      });
+      if (resErr) throw resErr;
+      if (!resData) {
+        return ok({
+          residentId: null,
+          residentName: 'Resident',
+          roomNumber: '',
+          propertyName: 'My PG',
+          ownerUpiId: null,
+          ownerUpiPayeeName: null,
+          currentRentBill: null,
+          currentEbBill: null,
+          pastBills: [],
+        });
+      }
+
+      const propObj = Array.isArray(resData.property)
+        ? resData.property[0]
+        : resData.property;
+      propertyName = propObj?.name || 'My PG';
+      propId =
+        (resData as { property_id?: string | null }).property_id ||
+        (propObj as { id?: string | null } | null)?.id ||
+        null;
+      resolvedResidentId = resData.id;
+      resolvedResidentName = resData.full_name;
+      resolvedRoomNumber = resData.room_number;
     }
-
-    const propObj = Array.isArray(resData.property)
-      ? resData.property[0]
-      : resData.property;
-    const propertyName = propObj?.name || 'My PG';
-    const propId: string | null =
-      (resData as { property_id?: string | null }).property_id ||
-      (propObj as { id?: string | null } | null)?.id ||
-      null;
 
     // Parallelize charges, payment reports, and owner UPI metadata after resolving resident
     const [chargesRes, reportsRes, upiMeta] = await Promise.all([
@@ -1018,7 +1055,7 @@ export async function getStudentBilling(
         .select(
           'id, category, amount_paise, rent_amount_paise, wm_amount_paise, status, billing_period_start, due_date'
         )
-        .eq('resident_id', resData.id)
+        .eq('resident_id', resolvedResidentId)
         .in('category', ['rent', 'electricity'])
         .order('billing_period_start', { ascending: false }),
       supabase
@@ -1026,10 +1063,10 @@ export async function getStudentBilling(
         .select(
           'id, charge_id, amount_paise, claimed_method, reference_number, screenshot_url, notes, status, rejection_reason, created_at'
         )
-        .eq('resident_id', resData.id)
+        .eq('resident_id', resolvedResidentId)
         .in('status', ['pending', 'rejected'])
         .order('created_at', { ascending: false }),
-      fetchPropertyUpiMeta(propId),
+      preResolvedUpi ? Promise.resolve(preResolvedUpi) : fetchPropertyUpiMeta(propId),
     ]);
     recordRoundTrip(traceLabel, 1);
 
@@ -1107,9 +1144,9 @@ export async function getStudentBilling(
     );
 
     const snapshot: StudentBillingSnapshot = {
-      residentId: resData.id,
-      residentName: resData.full_name,
-      roomNumber: resData.room_number,
+      residentId: resolvedResidentId,
+      residentName: resolvedResidentName,
+      roomNumber: resolvedRoomNumber,
       propertyName,
       ownerUpiId: upiMeta.ownerUpiId,
       ownerUpiPayeeName: upiMeta.ownerUpiPayeeName,

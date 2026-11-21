@@ -12,6 +12,45 @@ interface PgliteSuiteResult {
   owner2ChargeIds: string[];
   res1Allocations: { receipt_number: string; charge_id: string }[];
   res2ReportIds: string[];
+  rls: {
+    user1AnnouncementIds: string[];
+    user2AnnouncementIds: string[];
+    expectedAnnouncements: {
+      user1: string[];
+      user2: string[];
+    };
+    residentCannotInsertAnnouncement: boolean;
+    residentCannotUpdateAnnouncement: boolean;
+    residentCannotDeleteAnnouncement: boolean;
+    ownerCannotSpoofAnnouncementOwner: boolean;
+    user1WardenIds: string[];
+    expectedWarden1Id: string;
+    user1VisibleProfileIds: string[];
+    expectedUser1Profiles: string[];
+    inactiveResidentPropCount: number;
+    inactiveResidentWardenCount: number;
+    residentCannotUpdateUpi: boolean;
+    residentCannotUpdateWifi: boolean;
+    residentCannotUpdateCurfew: boolean;
+    residentCannotUpdateMealTime: boolean;
+    residentCannotUpdateRent: boolean;
+    res1EmergencyContact: string | null;
+    res1RentUnchanged: boolean;
+    res2EmergencyContact: string | null;
+    tooLongEmergencyRejected: boolean;
+    wm: {
+      startM1Success: boolean;
+      startM2RejectedCode: string | null;
+      startM2Success: boolean;
+      startLegacyRejectedCode: string | null;
+      startLegacySuccess: boolean;
+      otherResidentReleaseSuccess: boolean;
+      outsiderReleaseSuccess: boolean;
+      ownerReleaseM1Success: boolean;
+      startM2AfterReleaseSuccess: boolean;
+      ownReleaseM2Success: boolean;
+    };
+  };
 }
 
 describe('Postgres ledger & RLS scoping invariants (PGlite)', () => {
@@ -41,5 +80,57 @@ describe('Postgres ledger & RLS scoping invariants (PGlite)', () => {
       { receipt_number: 'RCPT-001', charge_id: 'chg-1' },
     ]);
     expect(result.res2ReportIds).toEqual(['rep-1']);
+  });
+
+  it('scopes announcements SELECT by property and normalized room, and blocks resident writes', () => {
+    expect(result.rls.user1AnnouncementIds).toEqual(
+      result.rls.expectedAnnouncements.user1
+    );
+    expect(result.rls.user2AnnouncementIds).toEqual(
+      result.rls.expectedAnnouncements.user2
+    );
+    expect(result.rls.residentCannotInsertAnnouncement).toBe(true);
+    expect(result.rls.residentCannotUpdateAnnouncement).toBe(true);
+    expect(result.rls.residentCannotDeleteAnnouncement).toBe(true);
+    expect(result.rls.ownerCannotSpoofAnnouncementOwner).toBe(true);
+  });
+
+  it('scopes property_wardens, profiles, and properties exclusively to active residents', () => {
+    expect(result.rls.user1WardenIds).toEqual([result.rls.expectedWarden1Id]);
+    expect(result.rls.user1VisibleProfileIds).toEqual(
+      result.rls.expectedUser1Profiles
+    );
+    expect(result.rls.inactiveResidentPropCount).toBe(0);
+    expect(result.rls.inactiveResidentWardenCount).toBe(0);
+  });
+
+  it('blocks residents from mutating properties.upi_id, wifi_password, curfew_time, food_menus.meal_time, or rent', () => {
+    expect(result.rls.residentCannotUpdateUpi).toBe(true);
+    expect(result.rls.residentCannotUpdateWifi).toBe(true);
+    expect(result.rls.residentCannotUpdateCurfew).toBe(true);
+    expect(result.rls.residentCannotUpdateMealTime).toBe(true);
+    expect(result.rls.residentCannotUpdateRent).toBe(true);
+  });
+
+  it('updates only caller active emergency_contact via set_my_emergency_contact RPC', () => {
+    expect(result.rls.res1EmergencyContact).toBe('Parent 9123456789');
+    expect(result.rls.res1RentUnchanged).toBe(true);
+    expect(result.rls.res2EmergencyContact).toBeNull();
+    expect(result.rls.tooLongEmergencyRejected).toBe(true);
+  });
+
+  it('enforces single active washing machine per resident and strict release authorization', () => {
+    expect(result.rls.wm).toEqual({
+      startM1Success: true,
+      startM2RejectedCode: 'WM_RESIDENT_ACTIVE_SESSION',
+      startM2Success: false,
+      startLegacyRejectedCode: 'WM_RESIDENT_ACTIVE_SESSION',
+      startLegacySuccess: false,
+      otherResidentReleaseSuccess: false,
+      outsiderReleaseSuccess: false,
+      ownerReleaseM1Success: true,
+      startM2AfterReleaseSuccess: true,
+      ownReleaseM2Success: true,
+    });
   });
 });

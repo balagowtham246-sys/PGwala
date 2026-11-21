@@ -1,7 +1,24 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { Href, router, useLocalSearchParams } from 'expo-router';
+import {
+  Armchair,
+  Camera,
+  Check,
+  CheckCircle2,
+  Droplets,
+  SlidersHorizontal,
+  Sparkles,
+  Utensils,
+  Wifi,
+  Wrench,
+  X,
+  Zap,
+} from 'lucide-react-native';
+import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -15,32 +32,16 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Href, router, useLocalSearchParams } from 'expo-router';
-import { RoleBottomNav } from '@/components/ui/bottom-nav';
-import {
-  Check,
-  CheckCircle2,
-  Camera,
-  SlidersHorizontal,
-  X,
-  Droplets,
-  Zap,
-  Wifi,
-  Sparkles,
-  Utensils,
-  Armchair,
-  Wrench,
-} from 'lucide-react-native';
 
+import { OwnerHeader } from '@/components/ui/owner';
+import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
-import { supabase, getSignedComplaintPhotoUrl } from '@/lib/supabase';
 import { sortComplaintsByUrgencyThenDate } from '@/lib/complaint-utils';
+import { getSignedComplaintPhotoUrl, supabase } from '@/lib/supabase';
 import { sortRoomCodes, toSentenceCaseStatus } from '@/lib/ux-utils';
 import { ownerCreateComplaint } from '@/services/residents.service';
-import { OwnerHeader } from '@/components/ui/owner';
-import { OwnerTheme } from '@/constants/theme';
 
 export type ComplaintCategory =
   | 'plumbing'
@@ -113,6 +114,118 @@ const STATUS_CONFIG: Record<
   resolved: { label: toSentenceCaseStatus('resolved'), color: '#16A34A', bgColor: '#DCFCE7' },
   rejected: { label: toSentenceCaseStatus('rejected'), color: '#DC2626', bgColor: '#FEE2E2' },
 };
+
+const OwnerComplaintRow = memo(function OwnerComplaintRow({
+  item,
+  onViewPhoto,
+  onOpenActionModal,
+}: {
+  item: OwnerComplaintItem;
+  onViewPhoto: (photoUrl: string) => void;
+  onOpenActionModal: (complaint: OwnerComplaintItem) => void;
+}) {
+  const catInfo = CATEGORY_CONFIG[item.category] || CATEGORY_CONFIG.other;
+  const prioInfo = PRIORITY_CONFIG[item.priority] || PRIORITY_CONFIG.medium;
+  const statusInfo = STATUS_CONFIG[item.status] || STATUS_CONFIG.open;
+
+  const formattedDate = new Date(item.created_at).toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  return (
+    <View style={styles.complaintCard}>
+      {/* Header: Resident & Room info */}
+      <View style={styles.cardTopRow}>
+        <View style={{ flex: 1, paddingRight: 8 }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`View profile for ${item.resident?.full_name || 'Resident'}`}
+            hitSlop={6}
+            style={({ pressed }) => [
+              styles.residentNameBtn,
+              pressed && { opacity: 0.7 },
+            ]}
+            onPress={() => {
+              if (!item.resident_id) return;
+              router.push({
+                pathname: '/resident-profile',
+                params: { id: item.resident_id },
+              } as Href);
+            }}>
+            <Text style={styles.residentName}>
+              {item.resident?.full_name || 'Resident'}
+            </Text>
+          </Pressable>
+          <Text style={styles.roomMeta}>
+            Room {item.resident?.room_number || 'N/A'}{' '}
+            {item.resident?.phone_number ? `• ${item.resident.phone_number}` : ''}
+          </Text>
+        </View>
+
+        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+          <View
+            style={[
+              styles.prioBadge,
+              { backgroundColor: prioInfo.bgColor },
+            ]}>
+            <Text style={[styles.prioText, { color: prioInfo.color }]}>
+              {prioInfo.label}
+            </Text>
+          </View>
+          <View
+            style={[
+              styles.statusBadge,
+              { backgroundColor: statusInfo.bgColor },
+            ]}>
+            <Text style={[styles.statusText, { color: statusInfo.color }]}>
+              {statusInfo.label}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.catRow}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+          <catInfo.Icon size={14} color="#475569" />
+          <Text style={styles.catText}>{catInfo.label}</Text>
+        </View>
+        <Text style={styles.dateMeta}>{formattedDate}</Text>
+      </View>
+
+      <Text style={styles.complaintTitle}>{item.title}</Text>
+      <Text style={styles.complaintDesc}>{item.description}</Text>
+
+      {item.photo_url && (
+        <Pressable
+          style={[
+            styles.photoViewBtn,
+            { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+          ]}
+          onPress={() => onViewPhoto(item.photo_url!)}>
+          <Camera size={14} color="#0284C7" />
+          <Text style={styles.photoViewBtnText}>View Resident Photo Attachment</Text>
+        </Pressable>
+      )}
+
+      {item.owner_notes && (
+        <View style={styles.ownerNotesBox}>
+          <Text style={styles.ownerNotesTitle}>Management Note:</Text>
+          <Text style={styles.ownerNotesText}>{item.owner_notes}</Text>
+        </View>
+      )}
+
+      <Pressable
+        style={styles.actionBtn}
+        onPress={() => onOpenActionModal(item)}>
+        <Text style={styles.actionBtnText}>Update Status & Add Notes ›</Text>
+      </Pressable>
+    </View>
+  );
+});
 
 export default function OwnerComplaintsScreen() {
   const { user } = useAuth();
@@ -309,7 +422,7 @@ export default function OwnerComplaintsScreen() {
   const handleOpenCreateModal = () => {
     const defaultResidentId =
       activeResidentFilterId &&
-      activeResidents.some((r) => r.id === activeResidentFilterId)
+        activeResidents.some((r) => r.id === activeResidentFilterId)
         ? activeResidentFilterId
         : activeResidents[0]?.id || '';
     setCreateResidentId(defaultResidentId);
@@ -466,8 +579,22 @@ export default function OwnerComplaintsScreen() {
           ) : undefined
         }
       />
-      <ScrollView
+      <FlatList
+        data={loading || !propertyId ? [] : filteredComplaints}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <OwnerComplaintRow
+            item={item}
+            onViewPhoto={(url) => void handleViewPhoto(url)}
+            onOpenActionModal={handleOpenActionModal}
+          />
+        )}
         contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -477,274 +604,171 @@ export default function OwnerComplaintsScreen() {
             }}
             colors={[OwnerTheme.colors.primary]}
           />
-        }>
-
-        {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
-            <Text style={styles.loadingText}>Loading complaints board...</Text>
-          </View>
-        ) : !propertyId ? (
-          <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>No Property Found</Text>
-            <Text style={styles.emptySub}>Please set up a property first.</Text>
-          </View>
-        ) : (
-          <>
-            {/* Resident Filter Banner */}
-            {activeResidentFilterId && (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Filtered to ${filteredResidentName}. Show all`}
-                style={({ pressed }) => [
-                  styles.residentFilterBanner,
-                  pressed && { opacity: 0.85 },
-                ]}
-                onPress={handleClearResidentFilter}>
-                <Text style={styles.residentFilterBannerText} numberOfLines={1}>
-                  Filtered to {filteredResidentName} ·{' '}
-                  <Text style={styles.residentFilterBannerAction}>Show all</Text>
-                </Text>
-                <X size={15} color={OwnerTheme.colors.primary} />
-              </Pressable>
-            )}
-
-            {/* Unified Sentence-case Status Filter Bar */}
-            <View style={styles.statusFilterRow}>
-              {(['all', 'open', 'in_progress', 'resolved'] as const).map((s) => {
-                const label =
-                  s === 'all'
-                    ? `All (${residentScopedComplaints.length})`
-                    : s === 'open'
-                    ? `Open (${openCount})`
-                    : s === 'in_progress'
-                    ? `In progress (${inProgressCount})`
-                    : `Resolved (${resolvedCount})`;
-                const isActive = statusFilter === s;
-                return (
-                  <Pressable
-                    key={s}
-                    accessibilityRole="tab"
-                    accessibilityState={{ selected: isActive }}
-                    style={[
-                      styles.statusFilterBtn,
-                      s === 'in_progress' && styles.statusFilterBtnWide,
-                      isActive && styles.statusFilterBtnActive,
-                    ]}
-                    onPress={() => setStatusFilter(s)}>
-                    <Text
-                      numberOfLines={1}
-                      adjustsFontSizeToFit
-                      minimumFontScale={0.8}
-                      style={[
-                        styles.statusFilterBtnText,
-                        isActive && styles.statusFilterBtnTextActive,
-                      ]}>
-                      {label}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-
-            {/* Compact Filter Trigger Row */}
-            <View style={styles.filterToolbarRow}>
-              <View style={styles.filterToolbarLeft}>
+        }
+        ListHeaderComponent={
+          loading || !propertyId ? undefined : (
+            <>
+              {/* Resident Filter Banner */}
+              {activeResidentFilterId && (
                 <Pressable
                   accessibilityRole="button"
-                  style={[
-                    styles.filtersBtn,
-                    activeFilterCount > 0 && styles.filtersBtnActive,
+                  accessibilityLabel={`Filtered to ${filteredResidentName}. Show all`}
+                  style={({ pressed }) => [
+                    styles.residentFilterBanner,
+                    pressed && { opacity: 0.85 },
                   ]}
-                  onPress={() => setFilterSheetVisible(true)}>
-                  <SlidersHorizontal
-                    size={14}
-                    color={
-                      activeFilterCount > 0
-                        ? OwnerTheme.colors.primary
-                        : '#475569'
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.filtersBtnText,
-                      activeFilterCount > 0 && styles.filtersBtnTextActive,
-                    ]}>
-                    Filters
+                  onPress={handleClearResidentFilter}>
+                  <Text style={styles.residentFilterBannerText} numberOfLines={1}>
+                    Filtered to {filteredResidentName} ·{' '}
+                    <Text style={styles.residentFilterBannerAction}>Show all</Text>
                   </Text>
-                  {activeFilterCount > 0 && (
-                    <View style={styles.filterCountBadge}>
-                      <Text style={styles.filterCountBadgeText}>
-                        {activeFilterCount}
-                      </Text>
-                    </View>
-                  )}
+                  <X size={15} color={OwnerTheme.colors.primary} />
                 </Pressable>
+              )}
 
-                {activeFilterCount > 0 && (
+              {/* Unified Sentence-case Status Filter Bar */}
+              <View style={styles.statusFilterRow}>
+                {(['all', 'open', 'in_progress', 'resolved'] as const).map((s) => {
+                  const label =
+                    s === 'all'
+                      ? `All (${residentScopedComplaints.length})`
+                      : s === 'open'
+                        ? `Open (${openCount})`
+                        : s === 'in_progress'
+                          ? `In progress (${inProgressCount})`
+                          : `Resolved (${resolvedCount})`;
+                  const isActive = statusFilter === s;
+                  return (
+                    <Pressable
+                      key={s}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected: isActive }}
+                      style={[
+                        styles.statusFilterBtn,
+                        s === 'in_progress' && styles.statusFilterBtnWide,
+                        isActive && styles.statusFilterBtnActive,
+                      ]}
+                      onPress={() => setStatusFilter(s)}>
+                      <Text
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.8}
+                        style={[
+                          styles.statusFilterBtnText,
+                          isActive && styles.statusFilterBtnTextActive,
+                        ]}>
+                        {label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {/* Compact Filter Trigger Row */}
+              <View style={styles.filterToolbarRow}>
+                <View style={styles.filterToolbarLeft}>
                   <Pressable
                     accessibilityRole="button"
-                    hitSlop={8}
-                    style={styles.resetFiltersBtn}
-                    onPress={resetSecondaryFilters}>
-                    <Text style={styles.resetFiltersText}>Reset</Text>
-                  </Pressable>
-                )}
-              </View>
-
-              <Text style={styles.issueCountMeta}>
-                {filteredComplaints.length} issue
-                {filteredComplaints.length === 1 ? '' : 's'}
-              </Text>
-            </View>
-
-            {/* Complaints List */}
-            {filteredComplaints.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <View style={styles.emptyIconCircle}>
-                  <CheckCircle2 size={26} color="#16A34A" />
-                </View>
-                <Text style={styles.emptyTitle}>
-                  {activeFilterCount === 0 &&
-                  (residentScopedComplaints.length === 0 || statusFilter === 'open')
-                    ? 'All clear'
-                    : 'No matching requests'}
-                </Text>
-                <Text style={styles.emptySub}>
-                  {activeFilterCount === 0 &&
-                  (residentScopedComplaints.length === 0 || statusFilter === 'open')
-                    ? 'Everything at the property is running smoothly.'
-                    : 'Try clearing a filter to see other maintenance tickets.'}
-                </Text>
-                {(activeFilterCount > 0 || activeResidentFilterId) && (
-                  <View style={{ flexDirection: 'row', gap: 8 }}>
+                    style={[
+                      styles.filtersBtn,
+                      activeFilterCount > 0 && styles.filtersBtnActive,
+                    ]}
+                    onPress={() => setFilterSheetVisible(true)}>
+                    <SlidersHorizontal
+                      size={14}
+                      color={
+                        activeFilterCount > 0
+                          ? OwnerTheme.colors.primary
+                          : '#475569'
+                      }
+                    />
+                    <Text
+                      style={[
+                        styles.filtersBtnText,
+                        activeFilterCount > 0 && styles.filtersBtnTextActive,
+                      ]}>
+                      Filters
+                    </Text>
                     {activeFilterCount > 0 && (
-                      <Pressable
-                        accessibilityRole="button"
-                        style={styles.emptyResetBtn}
-                        onPress={resetSecondaryFilters}>
-                        <Text style={styles.emptyResetBtnText}>Reset filters</Text>
-                      </Pressable>
-                    )}
-                    {activeResidentFilterId && (
-                      <Pressable
-                        accessibilityRole="button"
-                        style={styles.emptyResetBtn}
-                        onPress={handleClearResidentFilter}>
-                        <Text style={styles.emptyResetBtnText}>Show all</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                )}
-              </View>
-            ) : (
-              filteredComplaints.map((item) => {
-                const catInfo = CATEGORY_CONFIG[item.category] || CATEGORY_CONFIG.other;
-                const prioInfo = PRIORITY_CONFIG[item.priority] || PRIORITY_CONFIG.medium;
-                const statusInfo = STATUS_CONFIG[item.status] || STATUS_CONFIG.open;
-
-                const formattedDate = new Date(item.created_at).toLocaleDateString('en-IN', {
-                  day: 'numeric',
-                  month: 'short',
-                  year: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                });
-
-                return (
-                  <View key={item.id} style={styles.complaintCard}>
-                    {/* Header: Resident & Room info */}
-                    <View style={styles.cardTopRow}>
-                      <View style={{ flex: 1, paddingRight: 8 }}>
-                        <Pressable
-                          accessibilityRole="button"
-                          accessibilityLabel={`View profile for ${item.resident?.full_name || 'Resident'}`}
-                          hitSlop={6}
-                          style={({ pressed }) => [
-                            styles.residentNameBtn,
-                            pressed && { opacity: 0.7 },
-                          ]}
-                          onPress={() => {
-                            if (!item.resident_id) return;
-                            router.push({
-                              pathname: '/resident-profile',
-                              params: { id: item.resident_id },
-                            } as Href);
-                          }}>
-                          <Text style={styles.residentName}>
-                            {item.resident?.full_name || 'Resident'}
-                          </Text>
-                        </Pressable>
-                        <Text style={styles.roomMeta}>
-                          Room {item.resident?.room_number || 'N/A'}{' '}
-                          {item.resident?.phone_number ? `• ${item.resident.phone_number}` : ''}
+                      <View style={styles.filterCountBadge}>
+                        <Text style={styles.filterCountBadgeText}>
+                          {activeFilterCount}
                         </Text>
                       </View>
-
-                      <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-                        <View
-                          style={[
-                            styles.prioBadge,
-                            { backgroundColor: prioInfo.bgColor },
-                          ]}>
-                          <Text style={[styles.prioText, { color: prioInfo.color }]}>
-                            {prioInfo.label}
-                          </Text>
-                        </View>
-                        <View
-                          style={[
-                            styles.statusBadge,
-                            { backgroundColor: statusInfo.bgColor },
-                          ]}>
-                          <Text style={[styles.statusText, { color: statusInfo.color }]}>
-                            {statusInfo.label}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-
-                    <View style={styles.catRow}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        <catInfo.Icon size={14} color="#475569" />
-                        <Text style={styles.catText}>{catInfo.label}</Text>
-                      </View>
-                      <Text style={styles.dateMeta}>{formattedDate}</Text>
-                    </View>
-
-                    <Text style={styles.complaintTitle}>{item.title}</Text>
-                    <Text style={styles.complaintDesc}>{item.description}</Text>
-
-                    {/* Resident Photo Attachment */}
-                    {item.photo_url && (
-                      <Pressable
-                        style={[styles.photoViewBtn, { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }]}
-                        onPress={() => handleViewPhoto(item.photo_url!)}>
-                        <Camera size={14} color="#0284C7" />
-                        <Text style={styles.photoViewBtnText}>View Resident Photo Attachment</Text>
-                      </Pressable>
                     )}
+                  </Pressable>
 
-                    {/* Owner Resolution Box */}
-                    {item.owner_notes && (
-                      <View style={styles.ownerNotesBox}>
-                        <Text style={styles.ownerNotesTitle}>Management Note:</Text>
-                        <Text style={styles.ownerNotesText}>{item.owner_notes}</Text>
-                      </View>
-                    )}
-
-                    {/* Action Button */}
+                  {activeFilterCount > 0 && (
                     <Pressable
-                      style={styles.actionBtn}
-                      onPress={() => handleOpenActionModal(item)}>
-                      <Text style={styles.actionBtnText}>Update Status & Add Notes ›</Text>
+                      accessibilityRole="button"
+                      hitSlop={8}
+                      style={styles.resetFiltersBtn}
+                      onPress={resetSecondaryFilters}>
+                      <Text style={styles.resetFiltersText}>Reset</Text>
                     </Pressable>
-                  </View>
-                );
-              })
-            )}
-          </>
-        )}
-      </ScrollView>
+                  )}
+                </View>
+
+                <Text style={styles.issueCountMeta}>
+                  {filteredComplaints.length} issue
+                  {filteredComplaints.length === 1 ? '' : 's'}
+                </Text>
+              </View>
+            </>
+          )
+        }
+        ListEmptyComponent={
+          loading ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="small" color="#0284C7" />
+              <Text style={styles.loadingText}>Loading complaints board...</Text>
+            </View>
+          ) : !propertyId ? (
+            <View style={styles.emptyCard}>
+              <Text style={styles.emptyTitle}>No Property Found</Text>
+              <Text style={styles.emptySub}>Please set up a property first.</Text>
+            </View>
+          ) : (
+            <View style={styles.emptyCard}>
+              <View style={styles.emptyIconCircle}>
+                <CheckCircle2 size={26} color="#16A34A" />
+              </View>
+              <Text style={styles.emptyTitle}>
+                {activeFilterCount === 0 &&
+                  (residentScopedComplaints.length === 0 || statusFilter === 'open')
+                  ? 'All clear'
+                  : 'No matching requests'}
+              </Text>
+              <Text style={styles.emptySub}>
+                {activeFilterCount === 0 &&
+                  (residentScopedComplaints.length === 0 || statusFilter === 'open')
+                  ? 'Everything at the property is running smoothly.'
+                  : 'Try clearing a filter to see other maintenance tickets.'}
+              </Text>
+              {(activeFilterCount > 0 || activeResidentFilterId) && (
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {activeFilterCount > 0 && (
+                    <Pressable
+                      accessibilityRole="button"
+                      style={styles.emptyResetBtn}
+                      onPress={resetSecondaryFilters}>
+                      <Text style={styles.emptyResetBtnText}>Reset filters</Text>
+                    </Pressable>
+                  )}
+                  {activeResidentFilterId && (
+                    <Pressable
+                      accessibilityRole="button"
+                      style={styles.emptyResetBtn}
+                      onPress={handleClearResidentFilter}>
+                      <Text style={styles.emptyResetBtnText}>Show all</Text>
+                    </Pressable>
+                  )}
+                </View>
+              )}
+            </View>
+          )
+        }
+      />
 
       {/* Filter Bottom Sheet Modal */}
       <Modal
@@ -1175,7 +1199,7 @@ export default function OwnerComplaintsScreen() {
                 style={[
                   styles.modalSaveBtn,
                   (creatingComplaint || activeResidents.length === 0) &&
-                    styles.btnDisabled,
+                  styles.btnDisabled,
                 ]}
                 onPress={() => void handleCreateComplaint()}>
                 {creatingComplaint ? (

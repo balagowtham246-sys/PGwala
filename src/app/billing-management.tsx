@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Linking,
   Modal,
   Platform,
@@ -930,6 +931,191 @@ export default function SimplifiedBillingManagementScreen() {
     !isValidUpiId(selectedProperty?.upi_id) &&
     dismissedUpiBannerPropertyId !== selectedProperty?.id;
 
+  const rentByResidentId = useMemo(
+    () => new Map(rentBills.map((r) => [r.resident_id, r])),
+    [rentBills]
+  );
+
+  const ebByResidentId = useMemo(
+    () => new Map(ebBills.map((e) => [e.resident_id, e])),
+    [ebBills]
+  );
+
+  type ActiveBillingRow =
+    | { mode: 'RENT'; item: ResidentRentBillItem }
+    | { mode: 'EB'; item: ResidentEbBillItem }
+    | { mode: 'COMBINED'; item: CombinedBillItem };
+
+  const activeBillingRows: ActiveBillingRow[] = loading
+    ? []
+    : billingMode === 'RENT'
+      ? filteredRentList.map((item) => ({ mode: 'RENT', item }))
+      : billingMode === 'EB'
+        ? filteredEbList.map((item) => ({ mode: 'EB', item }))
+        : filteredCombinedList.map((item) => ({ mode: 'COMBINED', item }));
+
+  const renderBillingHeader = () => (
+    <>
+      {showMissingUpiBanner && selectedProperty && (
+        <View style={styles.upiPromptBanner}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Add your UPI ID so residents can pay in one tap"
+            style={({ pressed }) => [
+              styles.upiPromptMain,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => router.push('/owner-properties')}>
+            <View style={styles.upiPromptIconCircle}>
+              <Info size={15} color={OwnerTheme.colors.primary} />
+            </View>
+            <Text style={styles.upiPromptText}>
+              Add your UPI ID so residents can pay in one tap.{' '}
+              <Text style={styles.upiPromptAction}>Set up ›</Text>
+            </Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss UPI setup banner"
+            hitSlop={8}
+            style={styles.upiPromptDismissBtn}
+            onPress={() => setDismissedUpiBannerPropertyId(selectedProperty.id)}>
+            <X size={15} color={OwnerTheme.colors.textSecondary} />
+          </Pressable>
+        </View>
+      )}
+
+      <BillingSummaryHeader
+        billingMode={billingMode}
+        onSelectBillingMode={setBillingMode}
+        monthLabel={monthLabel}
+        onPrevMonth={handlePrevMonth}
+        onNextMonth={handleNextMonth}
+        totalBilledPaise={currentTotalBilled}
+        totalCollectedPaise={currentTotalCollected}
+        unpaidAmountPaise={currentUnpaidAmount}
+        totalCount={currentTotalCount}
+        paidCount={currentPaidCount}
+        unpaidCount={currentUnpaidCount}
+        reviewCount={currentReviewCount}
+        rentUngeneratedCount={rentUngeneratedCount}
+        filterTab={filterTab}
+        onSelectFilterTab={setFilterTab}
+        onOpenGenerateRent={() => setGenerateRentModalVisible(true)}
+        showGeneratedBanner={showBillsGeneratedBanner}
+        onDismissGeneratedBanner={() => setShowBillsGeneratedBanner(false)}
+      />
+
+      {/* Resident Filter Banner */}
+      {activeResidentFilterId && (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Filtered to ${filteredResidentName}. Show all`}
+          style={({ pressed }) => [
+            styles.residentFilterBanner,
+            pressed && styles.cardPressed,
+          ]}
+          onPress={handleClearResidentFilter}>
+          <Text style={styles.residentFilterBannerText} numberOfLines={1}>
+            Filtered to {filteredResidentName} ·{' '}
+            <Text style={styles.residentFilterBannerAction}>Show all</Text>
+          </Text>
+          <X size={15} color={OwnerTheme.colors.primary} />
+        </Pressable>
+      )}
+
+      {/* Bulk Remind All Unpaid Button */}
+      {!loading &&
+        unpaidReminderTargets.length > 0 &&
+        (filterTab === 'ALL' || filterTab === 'UNPAID') && (
+          <Pressable
+            accessibilityRole="button"
+            style={({ pressed }) => [
+              styles.bulkRemindBar,
+              pressed && styles.cardPressed,
+            ]}
+            onPress={() => {
+              setSentReminderIds([]);
+              setBulkReminderModalVisible(true);
+            }}>
+            <View style={styles.bulkRemindLeft}>
+              <View style={styles.bulkRemindIconCircle}>
+                <MessageCircle size={16} color={OwnerTheme.colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.bulkRemindTitle}>
+                  Remind all unpaid ({unpaidReminderTargets.length})
+                </Text>
+                <Text style={styles.bulkRemindSub}>
+                  {bulkContactIssueCount > 0
+                    ? `${bulkContactIssueCount} contact issue${
+                        bulkContactIssueCount > 1 ? 's' : ''
+                      } flagged · tap to review & send`
+                    : 'Send WhatsApp reminders or copy summary'}
+                </Text>
+              </View>
+            </View>
+            <Text style={styles.bulkRemindAction}>Open ›</Text>
+          </Pressable>
+        )}
+    </>
+  );
+
+  const renderBillingEmpty = () => {
+    if (loading) {
+      return (
+        <View style={styles.loadingBox}>
+          <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+          <Text style={styles.loadingText}>Loading bills...</Text>
+        </View>
+      );
+    }
+    if (billingMode === 'RENT') {
+      return (
+        <EmptyState
+          title="No bills in this filter"
+          description={
+            filterTab === 'REVIEW'
+              ? 'No rent payment proofs pending review.'
+              : filterTab === 'UNPAID'
+                ? 'All residents have paid their rent for this month!'
+                : 'No resident rent records found for this period.'
+          }
+          actionLabel={activeResidentFilterId ? 'Show all' : undefined}
+          onAction={
+            activeResidentFilterId ? handleClearResidentFilter : undefined
+          }
+        />
+      );
+    }
+    if (billingMode === 'EB') {
+      return (
+        <EmptyState
+          title="No electricity bills"
+          description={
+            filterTab === 'ALL'
+              ? 'No electricity bills split for this month yet. Tap "Split Room EB" above to allocate meter bills.'
+              : 'No matching electricity bill records found.'
+          }
+          actionLabel={activeResidentFilterId ? 'Show all' : undefined}
+          onAction={
+            activeResidentFilterId ? handleClearResidentFilter : undefined
+          }
+        />
+      );
+    }
+    return (
+      <EmptyState
+        title="No combined bills"
+        description="No matching resident billing records found for this filter."
+        actionLabel={activeResidentFilterId ? 'Show all' : undefined}
+        onAction={
+          activeResidentFilterId ? handleClearResidentFilter : undefined
+        }
+      />
+    );
+  };
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       {/* Standardized Header */}
@@ -970,254 +1156,99 @@ export default function SimplifiedBillingManagementScreen() {
         }
       />
 
-      <ScrollView
+      <FlatList
+        data={activeBillingRows}
+        keyExtractor={(row) => `${row.mode}:${row.item.resident_id}`}
+        renderItem={({ item: row }) => {
+          if (row.mode === 'RENT') {
+            return (
+              <ResidentLedgerCard
+                mode="RENT"
+                item={row.item}
+                monthLabel={monthLabel}
+                isDuplicatePhone={duplicatePhoneResidentIds.has(
+                  row.item.resident_id
+                )}
+                onOpenProfile={handleOpenResidentProfile}
+                onEditRent={handleOpenEditRent}
+                onToggleWashingMachine={(item) =>
+                  void handleToggleWashingMachine(item)
+                }
+                onReviewProof={(item) => void openReviewModal(item)}
+                onConfirmCashPayment={(chargeId) =>
+                  void handleConfirmPayment(chargeId, null, 'cash')
+                }
+                onSendReminder={(name, phone, amount, label, due) =>
+                  void handleSendReminder(name, phone, amount, label, due)
+                }
+              />
+            );
+          }
+          if (row.mode === 'EB') {
+            return (
+              <ResidentLedgerCard
+                mode="EB"
+                item={row.item}
+                monthLabel={monthLabel}
+                isDuplicatePhone={duplicatePhoneResidentIds.has(
+                  row.item.resident_id
+                )}
+                onOpenProfile={handleOpenResidentProfile}
+                onReviewProof={(item) => void openReviewModal(item)}
+                onConfirmCashPayment={(chargeId) =>
+                  void handleConfirmPayment(chargeId, null, 'cash')
+                }
+                onSendReminder={(name, phone, amount, label, due) =>
+                  void handleSendReminder(name, phone, amount, label, due)
+                }
+              />
+            );
+          }
+          const rentMatch = rentByResidentId.get(row.item.resident_id);
+          const ebMatch = ebByResidentId.get(row.item.resident_id);
+          const unpaidChargeIds: string[] = [];
+          if (rentMatch?.charge_id && rentMatch.status === 'unpaid') {
+            unpaidChargeIds.push(rentMatch.charge_id);
+          }
+          if (ebMatch?.charge_id && ebMatch.status === 'unpaid') {
+            unpaidChargeIds.push(ebMatch.charge_id);
+          }
+          return (
+            <ResidentLedgerCard
+              mode="COMBINED"
+              item={row.item}
+              isDuplicatePhone={duplicatePhoneResidentIds.has(
+                row.item.resident_id
+              )}
+              unpaidChargeIds={unpaidChargeIds}
+              onOpenProfile={handleOpenResidentProfile}
+              onConfirmCashPayment={(chargeIds) =>
+                void handleConfirmCombinedCashPayment(chargeIds)
+              }
+              onSendReminder={(name, phone, amount, label, due) =>
+                void handleSendReminder(name, phone, amount, label, due)
+              }
+            />
+          );
+        }}
+        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
+        ListHeaderComponent={renderBillingHeader}
+        ListEmptyComponent={renderBillingEmpty}
+        ListFooterComponent={<View style={{ height: 40 }} />}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
             colors={[OwnerTheme.colors.primary]}
           />
-        }>
-        {showMissingUpiBanner && selectedProperty && (
-          <View style={styles.upiPromptBanner}>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Add your UPI ID so residents can pay in one tap"
-              style={({ pressed }) => [
-                styles.upiPromptMain,
-                pressed && styles.cardPressed,
-              ]}
-              onPress={() => router.push('/owner-properties')}>
-              <View style={styles.upiPromptIconCircle}>
-                <Info size={15} color={OwnerTheme.colors.primary} />
-              </View>
-              <Text style={styles.upiPromptText}>
-                Add your UPI ID so residents can pay in one tap.{' '}
-                <Text style={styles.upiPromptAction}>Set up ›</Text>
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Dismiss UPI setup banner"
-              hitSlop={8}
-              style={styles.upiPromptDismissBtn}
-              onPress={() => setDismissedUpiBannerPropertyId(selectedProperty.id)}>
-              <X size={15} color={OwnerTheme.colors.textSecondary} />
-            </Pressable>
-          </View>
-        )}
-
-        <BillingSummaryHeader
-          billingMode={billingMode}
-          onSelectBillingMode={setBillingMode}
-          monthLabel={monthLabel}
-          onPrevMonth={handlePrevMonth}
-          onNextMonth={handleNextMonth}
-          totalBilledPaise={currentTotalBilled}
-          totalCollectedPaise={currentTotalCollected}
-          unpaidAmountPaise={currentUnpaidAmount}
-          totalCount={currentTotalCount}
-          paidCount={currentPaidCount}
-          unpaidCount={currentUnpaidCount}
-          reviewCount={currentReviewCount}
-          rentUngeneratedCount={rentUngeneratedCount}
-          filterTab={filterTab}
-          onSelectFilterTab={setFilterTab}
-          onOpenGenerateRent={() => setGenerateRentModalVisible(true)}
-          showGeneratedBanner={showBillsGeneratedBanner}
-          onDismissGeneratedBanner={() => setShowBillsGeneratedBanner(false)}
-        />
-
-        {/* Resident Filter Banner */}
-        {activeResidentFilterId && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Filtered to ${filteredResidentName}. Show all`}
-            style={({ pressed }) => [
-              styles.residentFilterBanner,
-              pressed && styles.cardPressed,
-            ]}
-            onPress={handleClearResidentFilter}>
-            <Text style={styles.residentFilterBannerText} numberOfLines={1}>
-              Filtered to {filteredResidentName} ·{' '}
-              <Text style={styles.residentFilterBannerAction}>Show all</Text>
-            </Text>
-            <X size={15} color={OwnerTheme.colors.primary} />
-          </Pressable>
-        )}
-
-        {/* Bulk Remind All Unpaid Button */}
-        {!loading &&
-          unpaidReminderTargets.length > 0 &&
-          (filterTab === 'ALL' || filterTab === 'UNPAID') && (
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.bulkRemindBar,
-                pressed && styles.cardPressed,
-              ]}
-              onPress={() => {
-                setSentReminderIds([]);
-                setBulkReminderModalVisible(true);
-              }}>
-              <View style={styles.bulkRemindLeft}>
-                <View style={styles.bulkRemindIconCircle}>
-                  <MessageCircle size={16} color={OwnerTheme.colors.primary} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.bulkRemindTitle}>
-                    Remind all unpaid ({unpaidReminderTargets.length})
-                  </Text>
-                  <Text style={styles.bulkRemindSub}>
-                    {bulkContactIssueCount > 0
-                      ? `${bulkContactIssueCount} contact issue${
-                          bulkContactIssueCount > 1 ? 's' : ''
-                        } flagged · tap to review & send`
-                      : 'Send WhatsApp reminders or copy summary'}
-                  </Text>
-                </View>
-              </View>
-              <Text style={styles.bulkRemindAction}>Open ›</Text>
-            </Pressable>
-          )}
-
-        {/* Bills Roster Display */}
-        {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
-            <Text style={styles.loadingText}>Loading bills...</Text>
-          </View>
-        ) : billingMode === 'RENT' ? (
-          filteredRentList.length === 0 ? (
-            <EmptyState
-              title="No bills in this filter"
-              description={
-                filterTab === 'REVIEW'
-                  ? 'No rent payment proofs pending review.'
-                  : filterTab === 'UNPAID'
-                    ? 'All residents have paid their rent for this month!'
-                    : 'No resident rent records found for this period.'
-              }
-              actionLabel={activeResidentFilterId ? 'Show all' : undefined}
-              onAction={
-                activeResidentFilterId ? handleClearResidentFilter : undefined
-              }
-            />
-          ) : (
-            <View style={styles.cardsList}>
-              {filteredRentList.map((res) => (
-                <ResidentLedgerCard
-                  key={res.resident_id}
-                  mode="RENT"
-                  item={res}
-                  monthLabel={monthLabel}
-                  isDuplicatePhone={duplicatePhoneResidentIds.has(
-                    res.resident_id
-                  )}
-                  onOpenProfile={handleOpenResidentProfile}
-                  onEditRent={handleOpenEditRent}
-                  onToggleWashingMachine={(item) =>
-                    void handleToggleWashingMachine(item)
-                  }
-                  onReviewProof={(item) => void openReviewModal(item)}
-                  onConfirmCashPayment={(chargeId) =>
-                    void handleConfirmPayment(chargeId, null, 'cash')
-                  }
-                  onSendReminder={(name, phone, amount, label, due) =>
-                    void handleSendReminder(name, phone, amount, label, due)
-                  }
-                />
-              ))}
-            </View>
-          )
-        ) : billingMode === 'EB' ? (
-          filteredEbList.length === 0 ? (
-            <EmptyState
-              title="No electricity bills"
-              description={
-                filterTab === 'ALL'
-                  ? 'No electricity bills split for this month yet. Tap "Split Room EB" above to allocate meter bills.'
-                  : 'No matching electricity bill records found.'
-              }
-              actionLabel={activeResidentFilterId ? 'Show all' : undefined}
-              onAction={
-                activeResidentFilterId ? handleClearResidentFilter : undefined
-              }
-            />
-          ) : (
-            <View style={styles.cardsList}>
-              {filteredEbList.map((res) => (
-                <ResidentLedgerCard
-                  key={res.resident_id}
-                  mode="EB"
-                  item={res}
-                  monthLabel={monthLabel}
-                  isDuplicatePhone={duplicatePhoneResidentIds.has(
-                    res.resident_id
-                  )}
-                  onOpenProfile={handleOpenResidentProfile}
-                  onReviewProof={(item) => void openReviewModal(item)}
-                  onConfirmCashPayment={(chargeId) =>
-                    void handleConfirmPayment(chargeId, null, 'cash')
-                  }
-                  onSendReminder={(name, phone, amount, label, due) =>
-                    void handleSendReminder(name, phone, amount, label, due)
-                  }
-                />
-              ))}
-            </View>
-          )
-        ) : filteredCombinedList.length === 0 ? (
-          <EmptyState
-            title="No combined bills"
-            description="No matching resident billing records found for this filter."
-            actionLabel={activeResidentFilterId ? 'Show all' : undefined}
-            onAction={
-              activeResidentFilterId ? handleClearResidentFilter : undefined
-            }
-          />
-        ) : (
-          <View style={styles.cardsList}>
-            {filteredCombinedList.map((res) => {
-              const rentMatch = rentBills.find(
-                (r) => r.resident_id === res.resident_id
-              );
-              const ebMatch = ebBills.find(
-                (e) => e.resident_id === res.resident_id
-              );
-              const unpaidChargeIds: string[] = [];
-              if (rentMatch?.charge_id && rentMatch.status === 'unpaid') {
-                unpaidChargeIds.push(rentMatch.charge_id);
-              }
-              if (ebMatch?.charge_id && ebMatch.status === 'unpaid') {
-                unpaidChargeIds.push(ebMatch.charge_id);
-              }
-              return (
-                <ResidentLedgerCard
-                  key={res.resident_id}
-                  mode="COMBINED"
-                  item={res}
-                  isDuplicatePhone={duplicatePhoneResidentIds.has(
-                    res.resident_id
-                  )}
-                  unpaidChargeIds={unpaidChargeIds}
-                  onOpenProfile={handleOpenResidentProfile}
-                  onConfirmCashPayment={(chargeIds) =>
-                    void handleConfirmCombinedCashPayment(chargeIds)
-                  }
-                  onSendReminder={(name, phone, amount, label, due) =>
-                    void handleSendReminder(name, phone, amount, label, due)
-                  }
-                />
-              );
-            })}
-          </View>
-        )}
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
+        }
+      />
 
       {/* Modal 1: Generate / Update Rent Amount */}
       <ChargeFormModal

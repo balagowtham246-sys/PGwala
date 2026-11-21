@@ -180,6 +180,19 @@ export async function requestWashingMachineAccess(
   }
 }
 
+function isMissingRpcError(err: { code?: string; message?: string } | null | undefined): boolean {
+  if (!err) return false;
+  if (err.code === 'PGRST202' || err.code === '42883') return true;
+  const msg = (err.message || '').toLowerCase();
+  return (
+    msg.includes('does not exist') ||
+    msg.includes('could not find the function') ||
+    msg.includes('schema cache') ||
+    msg.includes('missing unit') ||
+    msg.includes('function not found')
+  );
+}
+
 export async function startWashingMachineUnit(
   propertyId: string,
   targetMachineId?: string
@@ -194,22 +207,32 @@ export async function startWashingMachineUnit(
     });
     recordRoundTrip(traceLabel);
 
-    if (!error && rpcRes && rpcRes.success) {
-      return ok({
-        status: 'started',
-        machineName: rpcRes.machine?.machine_name,
-        usedLegacyFallback: false,
-      });
+    if (!error && rpcRes) {
+      if (rpcRes.success) {
+        return ok({
+          status: 'started',
+          machineName: rpcRes.machine_name ?? rpcRes.machine?.machine_name,
+          usedLegacyFallback: false,
+        });
+      }
+
+      if (rpcRes.not_enabled) {
+        return ok({
+          status: 'not_enabled',
+          errorMessage: rpcRes.error || 'Please request access from owner.',
+        });
+      }
+
+      // Domain rejections (machine busy, out of order, active wash on another machine)
+      // must fail directly instead of falling back to legacy single-machine RPC.
+      return fail(new Error(rpcRes.error || 'Could not start washing machine.'));
     }
 
-    if (rpcRes?.not_enabled) {
-      return ok({
-        status: 'not_enabled',
-        errorMessage: rpcRes.error || 'Please request access from owner.',
-      });
+    if (error && !isMissingRpcError(error)) {
+      return fail(error, error.message || 'Could not start washing machine.');
     }
 
-    // Legacy fallback
+    // Legacy fallback only when multi-unit RPC is not yet deployed
     const { data: legacyRes, error: legacyErr } = await supabase.rpc(
       'start_washing_machine',
       {
@@ -249,11 +272,18 @@ export async function releaseWashingMachineUnit(
     });
     recordRoundTrip(traceLabel);
 
-    if (!error && rpcRes && rpcRes.success) {
-      return ok({ usedLegacyFallback: false });
+    if (!error && rpcRes) {
+      if (rpcRes.success) {
+        return ok({ usedLegacyFallback: false });
+      }
+      return fail(new Error(rpcRes.error || 'Could not mark machine free.'));
     }
 
-    // Legacy fallback
+    if (error && !isMissingRpcError(error)) {
+      return fail(error, error.message || 'Could not mark machine free.');
+    }
+
+    // Legacy fallback only when multi-unit RPC is not yet deployed
     const { data: legacyRes, error: legacyErr } = await supabase.rpc(
       'release_washing_machine',
       {

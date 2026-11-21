@@ -36,6 +36,7 @@ import {
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
 import { useOfflineMutation } from '@/hooks/use-offline-mutation';
 import { triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
@@ -83,6 +84,7 @@ function prefsStorageKey(userId?: string): string {
 
 export default function StudentNotificationsScreen() {
   const { user } = useAuth();
+  const { resident: sharedResident, patchResident } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
   const storageKey = prefsStorageKey(userId);
@@ -124,16 +126,7 @@ export default function StudentNotificationsScreen() {
 
   const loadPreferences = useCallback(async () => {
     try {
-      const [savedRaw, residentRes] = await Promise.all([
-        AsyncStorage.getItem(storageKey),
-        userId
-          ? supabase
-              .from('residents')
-              .select('meal_opt_in')
-              .eq('profile_id', userId)
-              .maybeSingle()
-          : Promise.resolve({ data: null, error: null }),
-      ]);
+      const savedRaw = await AsyncStorage.getItem(storageKey);
 
       let nextPrefs: ResidentNotifPrefs = { ...DEFAULT_PREFS };
       if (savedRaw) {
@@ -163,23 +156,16 @@ export default function StudentNotificationsScreen() {
         };
       }
 
-      if (
-        !residentRes.error &&
-        residentRes.data &&
-        typeof (residentRes.data as { meal_opt_in?: unknown }).meal_opt_in === 'boolean'
-      ) {
-        const serverMealOptIn = (residentRes.data as { meal_opt_in: boolean }).meal_opt_in;
-        if (nextPrefs.foodMealUpdates !== serverMealOptIn) {
-          nextPrefs = { ...nextPrefs, foodMealUpdates: serverMealOptIn };
-          await AsyncStorage.setItem(storageKey, JSON.stringify(nextPrefs));
-        }
+      if (sharedResident && nextPrefs.foodMealUpdates !== sharedResident.mealOptIn) {
+        nextPrefs = { ...nextPrefs, foodMealUpdates: sharedResident.mealOptIn };
+        await AsyncStorage.setItem(storageKey, JSON.stringify(nextPrefs));
       }
 
       setPrefs(nextPrefs);
     } catch (err) {
       console.warn('[StudentNotifications] Failed to load preferences:', err);
     }
-  }, [storageKey, userId]);
+  }, [storageKey, sharedResident]);
 
   useFocusEffect(
     useCallback(() => {
@@ -234,6 +220,7 @@ export default function StudentNotificationsScreen() {
       foodMealUpdates: nextValue,
     };
     setPrefs(next);
+    patchResident({ mealOptIn: nextValue });
     triggerSelectionHaptic();
     await persistLocalPrefs(next);
 
@@ -244,6 +231,7 @@ export default function StudentNotificationsScreen() {
 
     if (!outcome.ok) {
       setPrefs(previous);
+      patchResident({ mealOptIn: previous.foodMealUpdates });
       await persistLocalPrefs(previous);
       Alert.alert(
         'Update Failed',

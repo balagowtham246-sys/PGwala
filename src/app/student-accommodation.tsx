@@ -32,6 +32,7 @@ import {
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { ResidentContextData, useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
 import {
   buildWhatsAppReminderUrl,
@@ -53,52 +54,90 @@ import {
   SecondaryButton,
 } from '@/components/ui/owner';
 import {
-  fetchResidentAccommodation,
   ResidentAccommodationDetails,
   updateResidentEmergencyContact,
 } from '@/services/resident-portal.service';
 
+function toAccommodationDetails(
+  r: ResidentContextData
+): ResidentAccommodationDetails {
+  return {
+    residentId: r.residentId,
+    propertyId: r.propertyId,
+    propertyName: r.propertyName,
+    propertyAddress: r.propertyAddress,
+    roomNumber: r.roomNumber,
+    bedLabel: r.bedLabel,
+    joiningDate: r.joiningDate,
+    monthlyRentPaise: r.monthlyRentPaise,
+    depositPaise: r.depositPaise,
+    emergencyContact: r.emergencyContact,
+    ownerName: r.ownerName,
+    ownerPhone: r.ownerPhone,
+    wifiSsid: r.wifiSsid,
+    wifiPassword: r.wifiPassword,
+    curfewTime: r.curfewTime,
+    wardenName: r.wardenName,
+    wardenPhone: r.wardenPhone,
+  };
+}
+
 export default function ResidentAccommodationScreen() {
   const { user, profile } = useAuth();
+  const {
+    resident: sharedResident,
+    residentError,
+    refreshResident,
+    patchResident,
+  } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
 
-  const [loading, setLoading] = useState(true);
-  const [accommodation, setAccommodation] = useState<ResidentAccommodationDetails | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [loading, setLoading] = useState(!sharedResident);
+  const [accommodationOverride, setAccommodationOverride] =
+    useState<ResidentAccommodationDetails | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(residentError);
+
+  const accommodation =
+    accommodationOverride ??
+    (sharedResident ? toAccommodationDetails(sharedResident) : null);
 
   const [isEditingEmergency, setIsEditingEmergency] = useState(false);
   const [emergencyDraft, setEmergencyDraft] = useState('');
   const [savingEmergency, setSavingEmergency] = useState(false);
 
-  const loadAccommodation = useCallback(async () => {
-    if (!userId) {
-      setLoading(false);
-      return;
-    }
-    setErrorMessage(null);
-    const res = await fetchResidentAccommodation(userId);
-    if (res.ok) {
-      setAccommodation(res.data);
+  const loadAccommodation = useCallback(
+    async (force = false) => {
+      if (!userId) {
+        setLoading(false);
+        return;
+      }
       setErrorMessage(null);
-    } else {
-      setErrorMessage(res.error.message || 'Could not load accommodation details.');
-    }
-    setLoading(false);
-  }, [userId]);
+      const data =
+        !force && sharedResident ? sharedResident : await refreshResident(force);
+      if (data) {
+        setAccommodationOverride(toAccommodationDetails(data));
+      } else {
+        setAccommodationOverride(null);
+      }
+      setLoading(false);
+    },
+    [userId, sharedResident, refreshResident]
+  );
 
   useEffect(() => {
+    if (sharedResident) return;
     let active = true;
     const timer = setTimeout(() => {
       if (active) {
-        void loadAccommodation();
+        void loadAccommodation(false);
       }
     }, 0);
     return () => {
       active = false;
       clearTimeout(timer);
     };
-  }, [loadAccommodation]);
+  }, [sharedResident, loadAccommodation]);
 
   const handleStartEditEmergency = () => {
     triggerSelectionHaptic();
@@ -126,9 +165,10 @@ export default function ResidentAccommodationScreen() {
         );
         return;
       }
-      setAccommodation((prev) =>
+      setAccommodationOverride((prev) =>
         prev ? { ...prev, emergencyContact: res.data.emergencyContact } : prev
       );
+      patchResident({ emergencyContact: res.data.emergencyContact });
       setIsEditingEmergency(false);
       triggerSuccessHaptic();
       showToast('Emergency contact updated');
@@ -208,7 +248,7 @@ export default function ResidentAccommodationScreen() {
               message={errorMessage}
               onRetry={() => {
                 setLoading(true);
-                void loadAccommodation();
+                void loadAccommodation(true);
               }}
             />
           ) : !accommodation ? (

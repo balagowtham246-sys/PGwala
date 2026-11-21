@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import {
   ArrowLeft,
   Ban,
@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   FlatList,
   Keyboard,
   KeyboardAvoidingView,
@@ -25,6 +26,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '@/context/auth-context';
+import { useResident } from '@/context/resident-context';
 import { getChatLastSeenStorageKey } from '@/lib/resident-home-utils';
 import { formatMovementDayLabel, getLocalDateKey } from '@/lib/movement-utils';
 import {
@@ -58,53 +60,35 @@ interface CurrentResident {
 
 export default function StudentChatScreen() {
   const { user } = useAuth();
+  const { resident: sharedResident, refreshResident } = useResident();
   const [loading, setLoading] = useState(true);
   const [resident, setResident] = useState<CurrentResident | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [sending, setSending] = useState(false);
+  const [isScreenFocused, setIsScreenFocused] = useState(true);
+  const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
 
   const flatListRef = useRef<FlatList<ChatMessage>>(null);
 
-  // Load active resident profile & initial chat messages
+  // Load active resident profile (from shared ResidentContext) & initial chat messages
   const initChat = useCallback(async () => {
     if (!user?.id) return;
     try {
       setLoading(true);
 
-      // 1. Fetch current active resident info
-      const { data: resData, error: resError } = await supabase
-        .from('residents')
-        .select(`
-          id,
-          property_id,
-          full_name,
-          room_number,
-          property:properties (
-            name
-          )
-        `)
-        .eq('profile_id', user.id)
-        .eq('is_active', true)
-        .maybeSingle();
-
-      if (resError) throw resError;
-      if (!resData) {
+      const activeRes = sharedResident ?? (await refreshResident(false));
+      if (!activeRes) {
         setResident(null);
-        setLoading(false);
         return;
       }
 
-      const propName = Array.isArray(resData.property)
-        ? resData.property[0]?.name || 'PG'
-        : (resData.property as { name?: string } | null)?.name || 'PG';
-
       const curResident: CurrentResident = {
-        id: resData.id,
-        property_id: resData.property_id,
-        full_name: resData.full_name,
-        room_number: resData.room_number,
-        propertyName: propName,
+        id: activeRes.residentId,
+        property_id: activeRes.propertyId,
+        full_name: activeRes.fullName,
+        room_number: activeRes.roomNumber,
+        propertyName: activeRes.propertyName || 'PG',
       };
       setResident(curResident);
       AsyncStorage.setItem(
@@ -112,7 +96,7 @@ export default function StudentChatScreen() {
         new Date().toISOString()
       ).catch(() => {});
 
-      // 2. Fetch recent chat history
+      // Fetch recent chat history
       const { data: msgData, error: msgError } = await supabase
         .from('property_chat_messages')
         .select(`
@@ -165,15 +149,91 @@ export default function StudentChatScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, sharedResident, refreshResident]);
 
   useEffect(() => {
-    initChat();
+    let active = true;
+    const timer = setTimeout(() => {
+      if (active) {
+        void initChat();
+      }
+    }, 0);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [initChat]);
 
-  // Realtime channel subscription for instant incoming messages
+  useFocusEffect(
+    useCallback(() => {
+      setIsScreenFocused(true);
+      return () => {
+        setIsScreenFocused(false);
+      };
+    }, [])
+  );
+
   useEffect(() => {
-    if (!resident?.property_id) return;
+    const sub = AppState.addEventListener('change', (nextState) => {
+      setIsAppActive(nextState === 'active');
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Realtime channel subscription scoped to focused + foregrounded app state,
+  // coalescing burst inserts/updates with a 300ms flush buffer.
+  useEffect(() => {
+    if (!resident?.property_id || !isScreenFocused || !isAppActive) return;
+
+    let active = true;
+    let pendingInserts: ChatMessage[] = [];
+    let pendingUpdates = new Map<string, { is_deleted: boolean; message: string }>();
+    let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const flushBatch = () => {
+      flushTimer = null;
+      if (!active) return;
+
+      const insertsToApply = pendingInserts;
+      const updatesToApply = pendingUpdates;
+      pendingInserts = [];
+      pendingUpdates = new Map();
+
+      if (insertsToApply.length === 0 && updatesToApply.size === 0) return;
+
+      setMessages((prev) => {
+        let next = prev;
+        if (updatesToApply.size > 0) {
+          next = next.map((m) => {
+            const patch = updatesToApply.get(m.id);
+            return patch ? { ...m, ...patch } : m;
+          });
+        }
+        if (insertsToApply.length > 0) {
+          const seen = new Set(next.map((m) => m.id));
+          const uniqueNew = insertsToApply.filter((m) => {
+            if (seen.has(m.id)) return false;
+            seen.add(m.id);
+            return true;
+          });
+          if (uniqueNew.length > 0) {
+            next = [...next, ...uniqueNew];
+          }
+        }
+        return next;
+      });
+
+      if (insertsToApply.length > 0) {
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 80);
+      }
+    };
+
+    const scheduleFlush = () => {
+      if (flushTimer) return;
+      flushTimer = setTimeout(flushBatch, 120);
+    };
 
     const channel = supabase
       .channel(`property-chat:${resident.property_id}`)
@@ -185,11 +245,10 @@ export default function StudentChatScreen() {
           table: 'property_chat_messages',
           filter: `property_id=eq.${resident.property_id}`,
         },
-        async (payload) => {
+        (payload) => {
+          if (!active) return;
           if (payload.eventType === 'INSERT') {
             const newRow = payload.new as any;
-
-            // Sender attribution directly from message payload (safe from RLS recursion)
             let sName = newRow.sender_name;
             let sRoom = newRow.sender_room;
 
@@ -201,7 +260,7 @@ export default function StudentChatScreen() {
               sRoom = '';
             }
 
-            const incoming: ChatMessage = {
+            pendingInserts.push({
               id: newRow.id,
               property_id: newRow.property_id,
               resident_id: newRow.resident_id,
@@ -214,35 +273,26 @@ export default function StudentChatScreen() {
                 full_name: sName,
                 room_number: sRoom || '',
               },
-            };
-
-            setMessages((prev) => {
-              if (prev.some((m) => m.id === incoming.id)) return prev;
-              return [...prev, incoming];
             });
-
-            // Scroll to bottom
-            setTimeout(() => {
-              flatListRef.current?.scrollToEnd({ animated: true });
-            }, 100);
+            scheduleFlush();
           } else if (payload.eventType === 'UPDATE') {
             const updatedRow = payload.new as any;
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === updatedRow.id
-                  ? { ...m, is_deleted: updatedRow.is_deleted, message: updatedRow.message }
-                  : m
-              )
-            );
+            pendingUpdates.set(updatedRow.id, {
+              is_deleted: updatedRow.is_deleted,
+              message: updatedRow.message,
+            });
+            scheduleFlush();
           }
         }
       )
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      active = false;
+      if (flushTimer) clearTimeout(flushTimer);
+      void supabase.removeChannel(channel);
     };
-  }, [resident]);
+  }, [resident, isScreenFocused, isAppActive]);
 
   // Handle Send Message
   const handleSendMessage = async () => {

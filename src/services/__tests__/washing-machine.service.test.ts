@@ -126,6 +126,40 @@ describe('washing-machine.service', () => {
     });
   });
 
+  it('rejects domain errors directly without falling back to legacy RPC', async () => {
+    mockedRpc.mockResolvedValueOnce({
+      data: {
+        success: false,
+        code: 'WM_RESIDENT_ACTIVE_SESSION',
+        error: 'You are already using Washing Machine 1. Mark it free before starting another machine.',
+      },
+      error: null,
+    });
+
+    const activeConflict = await startWashingMachineUnit('prop-1', 'm-2');
+    expect(mockedRpc).toHaveBeenCalledTimes(1);
+    expect(activeConflict.ok).toBe(false);
+    if (!activeConflict.ok) {
+      expect(activeConflict.error.message).toContain('Washing Machine 1');
+    }
+
+    mockedRpc.mockClear();
+    mockedRpc.mockResolvedValueOnce({
+      data: {
+        success: false,
+        error: 'You can only release your own washing machine session.',
+      },
+      error: null,
+    });
+
+    const releaseDenied = await releaseWashingMachineUnit('prop-1', 'm-1');
+    expect(mockedRpc).toHaveBeenCalledTimes(1);
+    expect(releaseDenied.ok).toBe(false);
+    if (!releaseDenied.ok) {
+      expect(releaseDenied.error.message).toContain('release your own');
+    }
+  });
+
   it('normalizes errors for requestWashingMachineAccess', async () => {
     mockedRpc.mockResolvedValueOnce({
       data: { success: false, error: 'Already requested' },

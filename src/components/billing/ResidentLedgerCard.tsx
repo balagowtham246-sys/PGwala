@@ -172,7 +172,7 @@ function RejectedBanner({
   );
 }
 
-export function ResidentLedgerCard(props: ResidentLedgerCardProps) {
+function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
   if (props.mode === 'RENT') {
     const {
       item: res,
@@ -649,6 +649,8 @@ export function ResidentLedgerCard(props: ResidentLedgerCardProps) {
     </View>
   );
 }
+
+export const ResidentLedgerCard = React.memo(ResidentLedgerCardInner);
 
 const styles = StyleSheet.create({
   billCard: {

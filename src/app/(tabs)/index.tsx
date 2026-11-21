@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Modal,
   Pressable,
   RefreshControl,
@@ -397,15 +398,42 @@ export default function OwnerDashboard() {
     void applyChange();
   };
 
-  // Realtime listener for gate movements & complaints (updates dashboard & Notification Center badge)
+  const [isScreenFocused, setIsScreenFocused] = useState(true);
+  const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
+
+  useFocusEffect(
+    useCallback(() => {
+      setIsScreenFocused(true);
+      return () => setIsScreenFocused(false);
+    }, [])
+  );
+
   useEffect(() => {
-    if (!userId || profileRole !== 'owner' || !selectedPropertyId) return;
+    const sub = AppState.addEventListener('change', (nextState) => {
+      setIsAppActive(nextState === 'active');
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Realtime listener for gate movements & complaints (300ms debounced, active/focused only)
+  useEffect(() => {
+    if (!userId || profileRole !== 'owner' || !selectedPropertyId || !isScreenFocused || !isAppActive) {
+      return;
+    }
 
     let active = true;
-    const handleRealtimeEvent = async () => {
-      await invalidatePrefix('inbox:');
-      if (!active) return;
-      await Promise.all([loadDashboardData(), refreshUnreadInboxCount()]);
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRealtimeRefresh = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (!active) return;
+        void (async () => {
+          await invalidatePrefix('inbox:');
+          if (!active) return;
+          await Promise.all([loadDashboardData(), refreshUnreadInboxCount()]);
+        })();
+      }, 300);
     };
 
     const channel = supabase
@@ -418,9 +446,7 @@ export default function OwnerDashboard() {
           table: 'movement_logs',
           filter: `property_id=eq.${selectedPropertyId}`,
         },
-        () => {
-          void handleRealtimeEvent();
-        }
+        scheduleRealtimeRefresh
       )
       .on(
         'postgres_changes',
@@ -430,20 +456,21 @@ export default function OwnerDashboard() {
           table: 'complaints',
           filter: `property_id=eq.${selectedPropertyId}`,
         },
-        () => {
-          void handleRealtimeEvent();
-        }
+        scheduleRealtimeRefresh
       )
       .subscribe();
 
     return () => {
       active = false;
+      if (debounceTimer) clearTimeout(debounceTimer);
       void supabase.removeChannel(channel);
     };
   }, [
     userId,
     profileRole,
     selectedPropertyId,
+    isScreenFocused,
+    isAppActive,
     loadDashboardData,
     refreshUnreadInboxCount,
   ]);

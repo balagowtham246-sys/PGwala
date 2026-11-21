@@ -1,31 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Linking,
-  Platform,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Notifications from 'expo-notifications';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { Clock, DoorOpen, HelpCircle, Home, LogOut } from 'lucide-react-native';
+import { GoingOutModal, GoingOutSubmitPayload } from '@/components/going-out-modal';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { OwnerHeader } from '@/components/ui/owner';
-import { GoingOutModal, GoingOutSubmitPayload } from '@/components/going-out-modal';
 import { BottomTabInset } from '@/constants/theme';
 import { buildWhatsAppReminderUrl } from '@/lib/billing-utils';
+import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import {
   countDaysOutThisMonth,
   groupLogsByLocalDay,
   isOutOverHours,
 } from '@/lib/movement-utils';
-import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { invalidatePrefix } from '@/lib/query-cache';
 import {
   formatRoomLabel,
@@ -34,13 +17,30 @@ import {
   toSentenceCaseStatus,
 } from '@/lib/ux-utils';
 import {
-  fetchPropertyCurfewAndOwner,
   recordStudentMovement,
   studentDashboardCacheKey,
 } from '@/services/dashboard.service';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Notifications from 'expo-notifications';
 import { router } from 'expo-router';
+import { Clock, DoorOpen, HelpCircle, Home, LogOut } from 'lucide-react-native';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  Linking,
+  Platform,
+  Pressable,
+  RefreshControl,
+  SectionList,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { useAuth } from '@/context/auth-context';
+import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
 import { supabase } from '@/lib/supabase';
 
@@ -79,7 +79,7 @@ async function cancelReturnReminderNotification(): Promise<void> {
     const existingId = await AsyncStorage.getItem(RETURN_REMINDER_STORAGE_KEY);
     if (existingId) {
       if (Platform.OS !== 'web') {
-        await Notifications.cancelScheduledNotificationAsync(existingId).catch(() => {});
+        await Notifications.cancelScheduledNotificationAsync(existingId).catch(() => { });
       }
       await AsyncStorage.removeItem(RETURN_REMINDER_STORAGE_KEY);
     }
@@ -159,14 +159,78 @@ function formatDateHeader(isoString: string): string {
   }
 }
 
+const GateLogRowCard = memo(function GateLogRowCard({
+  log,
+}: {
+  log: MovementLog;
+}) {
+  const isIn = log.direction === 'IN';
+  return (
+    <View style={styles.logCard}>
+      <View style={[styles.directionBadge, isIn ? styles.badgeIn : styles.badgeOut]}>
+        {isIn ? (
+          <DoorOpen size={14} color="#15803D" />
+        ) : (
+          <LogOut size={14} color="#B45309" />
+        )}
+        <Text
+          style={[
+            styles.directionText,
+            isIn ? styles.directionTextIn : styles.directionTextOut,
+          ]}>
+          {toSentenceCaseStatus(isIn ? 'gate_in' : 'gate_out')}
+        </Text>
+      </View>
+
+      <View style={styles.logDetails}>
+        <Text style={styles.logTime}>{formatEventTime(log.event_time)}</Text>
+        {log.purpose && (
+          <View style={styles.purposeTagRow}>
+            <Text style={styles.purposeBadge}>{log.purpose}</Text>
+            {log.expected_return_time && (
+              <Text style={styles.returnBadge}>
+                Return: {normalizeTimeMeridiemLowercase(log.expected_return_time)}
+              </Text>
+            )}
+          </View>
+        )}
+        {!isIn && typeof log.food_required === 'boolean' && (
+          <Text
+            style={[
+              styles.foodBadge,
+              log.food_required ? styles.foodNeeded : styles.foodNotNeeded,
+            ]}>
+            {log.food_required ? 'Dinner Required' : 'No Dinner Needed'}
+          </Text>
+        )}
+        {log.note && <Text style={styles.logNote}>Note: {log.note}</Text>}
+      </View>
+    </View>
+  );
+});
+
 export default function StudentGateHistoryScreen() {
   const { user } = useAuth();
+  const { resident: sharedResident, refreshResident } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
 
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [resident, setResident] = useState<StudentResident | null>(null);
+  const [resident, setResident] = useState<StudentResident | null>(() =>
+    sharedResident
+      ? {
+        id: sharedResident.residentId,
+        property_id: sharedResident.propertyId,
+        full_name: sharedResident.fullName,
+        room_number: sharedResident.roomNumber,
+        curfew_time: sharedResident.curfewTime,
+        owner_phone: sharedResident.ownerPhone,
+        owner_name: sharedResident.ownerName,
+        property: { name: sharedResident.propertyName },
+      }
+      : null
+  );
   const [logs, setLogs] = useState<MovementLog[]>([]);
   const [filter, setFilter] = useState<DateFilter>('all');
   const [savingMovement, setSavingMovement] = useState(false);
@@ -180,55 +244,33 @@ export default function StudentGateHistoryScreen() {
   const loadData = useCallback(async () => {
     if (!userId) return;
     try {
-      setLoading(true);
-
-      // 1. Fetch linked resident record
-      const { data: resData, error: resError } = await supabase
-        .from('residents')
-        .select(`
-          id,
-          property_id,
-          full_name,
-          room_number,
-          property:properties (
-            name
-          )
-        `)
-        .eq('profile_id', userId)
-        .eq('is_active', true)
-        .maybeSingle();
-
-      if (resError) throw resError;
-      if (!resData) {
+      const activeRes = sharedResident ?? (await refreshResident(false));
+      if (!activeRes) {
         setResident(null);
-        setLoading(false);
         return;
       }
 
-      // 2. Fetch movement logs & safe property curfew/owner details in parallel
-      const [logsRes, propertyMeta] = await Promise.all([
-        supabase
-          .from('movement_logs')
-          .select('*')
-          .eq('resident_id', resData.id)
-          .order('event_time', { ascending: false }),
-        fetchPropertyCurfewAndOwner(resData.property_id),
-      ]);
-
-      if (logsRes.error) throw logsRes.error;
-
       const resObj: StudentResident = {
-        id: resData.id,
-        property_id: resData.property_id,
-        full_name: resData.full_name,
-        room_number: resData.room_number,
-        curfew_time: propertyMeta.curfew_time,
-        owner_phone: propertyMeta.owner_phone,
-        owner_name: propertyMeta.owner_name,
-        property: Array.isArray(resData.property) ? resData.property[0] : resData.property,
+        id: activeRes.residentId,
+        property_id: activeRes.propertyId,
+        full_name: activeRes.fullName,
+        room_number: activeRes.roomNumber,
+        curfew_time: activeRes.curfewTime,
+        owner_phone: activeRes.ownerPhone,
+        owner_name: activeRes.ownerName,
+        property: { name: activeRes.propertyName },
       };
       setResident(resObj);
-      setLogs(logsRes.data || []);
+
+      const { data: logsData, error: logsError } = await supabase
+        .from('movement_logs')
+        .select('*')
+        .eq('resident_id', activeRes.residentId)
+        .order('event_time', { ascending: false });
+
+      if (logsError) throw logsError;
+
+      setLogs(logsData || []);
       setNowMs(Date.now());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -238,7 +280,7 @@ export default function StudentGateHistoryScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [userId]);
+  }, [userId, sharedResident, refreshResident]);
 
   useEffect(() => {
     let cancelled = false;
@@ -263,9 +305,9 @@ export default function StudentGateHistoryScreen() {
   const expectedReturnDate =
     currentStatus === 'OUT' && latestLog
       ? resolveExpectedReturnDate(
-          latestLog.expected_return_time,
-          latestLog.event_time
-        )
+        latestLog.expected_return_time,
+        latestLog.event_time
+      )
       : null;
   const isRunningLate = Boolean(
     expectedReturnDate && nowMs >= expectedReturnDate.getTime()
@@ -421,16 +463,16 @@ export default function StudentGateHistoryScreen() {
         'Owner notified that you are running late',
         whatsappUrl
           ? {
-              actionLabel: 'WhatsApp',
-              onAction: () => {
-                void Linking.openURL(whatsappUrl).catch(() => {
-                  Alert.alert(
-                    'WhatsApp Unavailable',
-                    'Could not open WhatsApp on this device.'
-                  );
-                });
-              },
-            }
+            actionLabel: 'WhatsApp',
+            onAction: () => {
+              void Linking.openURL(whatsappUrl).catch(() => {
+                Alert.alert(
+                  'WhatsApp Unavailable',
+                  'Could not open WhatsApp on this device.'
+                );
+              });
+            },
+          }
           : undefined
       );
     } finally {
@@ -471,10 +513,228 @@ export default function StudentGateHistoryScreen() {
     [filteredLogs]
   );
 
+  const logSections = useMemo(
+    () =>
+      loading || !resident
+        ? []
+        : groupedLogs.map((group) => ({
+          dateKey: group.dateKey,
+          dateTitle: group.dateTitle,
+          data: group.items,
+        })),
+    [loading, resident, groupedLogs]
+  );
+
   const propertyName = resident?.property?.name || 'PG Accommodation';
   const headerSubtitle = resident?.room_number
     ? `${propertyName} · ${formatRoomLabel(resident.room_number)}`
     : propertyName;
+
+  const listHeader = useMemo(() => {
+    if (loading || !resident) return undefined;
+    return (
+      <>
+        {/* Status Card */}
+        <View
+          style={[
+            styles.statusCard,
+            currentStatus === 'IN'
+              ? styles.statusCardIn
+              : currentStatus === 'OUT'
+                ? styles.statusCardOut
+                : styles.statusCardUnknown,
+          ]}>
+          <View style={styles.statusIconWrap}>
+            {currentStatus === 'IN' ? (
+              <Home size={22} color="#16A34A" />
+            ) : currentStatus === 'OUT' ? (
+              <LogOut size={22} color="#D97706" />
+            ) : (
+              <HelpCircle size={22} color="#64748B" />
+            )}
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.statusLabel}>Current Gate Status</Text>
+            <Text
+              style={[
+                styles.statusValue,
+                currentStatus === 'IN'
+                  ? styles.textIn
+                  : currentStatus === 'OUT'
+                    ? styles.textOut
+                    : styles.textUnknown,
+              ]}>
+              {currentStatus === 'IN'
+                ? 'Checked in'
+                : currentStatus === 'OUT'
+                  ? 'Checked out'
+                  : 'No Gate Logs Recorded'}
+            </Text>
+            {lastEventTime && (
+              <Text style={styles.statusSub}>
+                Last recorded: {lastEventDate} at {lastEventTime}
+              </Text>
+            )}
+          </View>
+          <Pressable
+            style={[
+              styles.gateQuickBtn,
+              currentStatus === 'IN' ? styles.gateQuickOutBtn : styles.gateQuickInBtn,
+              savingMovement && { opacity: 0.6 },
+            ]}
+            disabled={savingMovement}
+            onPress={() => {
+              if (currentStatus === 'IN') {
+                setGoingOutModalVisible(true);
+                return;
+              }
+              const eventMs = latestLog?.event_time
+                ? new Date(latestLog.event_time).getTime()
+                : NaN;
+              if (
+                !Number.isNaN(eventMs) &&
+                Date.now() - eventMs < ACCIDENTAL_TAP_WINDOW_MS
+              ) {
+                Alert.alert(
+                  'Confirm Check-In',
+                  'You marked Going Out less than 5 minutes ago. Record check-in anyway?',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Mark Inside', onPress: () => void recordGateToggle('IN') },
+                  ]
+                );
+                return;
+              }
+              void recordGateToggle('IN');
+            }}>
+            {savingMovement ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Text style={styles.gateQuickBtnText}>
+                {currentStatus === 'IN' ? 'Going Out' : 'Mark Inside'}
+              </Text>
+            )}
+          </Pressable>
+        </View>
+
+        {/* Running Late Banner when expected return time has passed */}
+        {isRunningLate && latestLog && (
+          <View style={styles.runningLateBanner}>
+            <View style={styles.runningLateHeader}>
+              <Clock size={16} color="#B45309" />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.runningLateTitle}>Running late</Text>
+                <Text style={styles.runningLateSub}>
+                  Expected return (
+                  {normalizeTimeMeridiemLowercase(
+                    latestLog.expected_return_time || ''
+                  )}
+                  ) has passed.
+                </Text>
+              </View>
+            </View>
+            <Pressable
+              accessibilityRole="button"
+              style={[
+                styles.runningLateBtn,
+                savingMovement && { opacity: 0.6 },
+              ]}
+              disabled={savingMovement}
+              onPress={() => void handleTellOwnerRunningLate()}>
+              <Text style={styles.runningLateBtnText}>
+                Tell the owner I&apos;m running late
+              </Text>
+            </Pressable>
+          </View>
+        )}
+
+        {/* 10+ Hours Out Nudge */}
+        {outNudge.isOver && (
+          <View style={styles.overHoursBanner}>
+            <Text style={styles.overHoursText}>
+              You&apos;ve been out for {outNudge.hoursOut}+ hours. Tap &quot;Mark Inside&quot; when you&apos;re back at the PG.
+            </Text>
+          </View>
+        )}
+
+        {/* Monthly Summary */}
+        <View style={styles.monthSummaryCard}>
+          <Text style={styles.monthSummaryLabel}>This month</Text>
+          <Text style={styles.monthSummaryValue}>
+            {daysOutThisMonth} {daysOutThisMonth === 1 ? 'day' : 'days'} out
+          </Text>
+        </View>
+
+        {/* Filter Tabs */}
+        <View style={styles.filterRow}>
+          {(
+            [
+              { key: 'all', label: 'All' },
+              { key: 'today', label: 'Today' },
+              { key: 'week', label: 'Last 7 Days' },
+              { key: 'month', label: 'Last 30 Days' },
+            ] as const
+          ).map((f) => (
+            <Pressable
+              key={f.key}
+              style={[styles.filterBtn, filter === f.key && styles.filterBtnActive]}
+              onPress={() => setFilter(f.key)}>
+              <Text
+                style={[
+                  styles.filterBtnText,
+                  filter === f.key && styles.filterBtnTextActive,
+                ]}>
+                {f.label}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      </>
+    );
+  }, [
+    loading,
+    resident,
+    currentStatus,
+    lastEventTime,
+    lastEventDate,
+    savingMovement,
+    latestLog,
+    isRunningLate,
+    outNudge,
+    daysOutThisMonth,
+    filter,
+    recordGateToggle,
+    handleTellOwnerRunningLate,
+  ]);
+
+  const listEmpty = useMemo(() => {
+    if (loading) {
+      return (
+        <View style={styles.loadingBox}>
+          <ActivityIndicator size="small" color="#0284C7" />
+          <Text style={styles.loadingText}>Loading gate access logs...</Text>
+        </View>
+      );
+    }
+    if (!resident) {
+      return (
+        <View style={styles.unlinkedCard}>
+          <Text style={styles.unlinkedTitle}>Account Not Linked</Text>
+          <Text style={styles.unlinkedSub}>
+            Your account is not linked to an active PG room record yet.
+          </Text>
+        </View>
+      );
+    }
+    return (
+      <View style={styles.emptyCard}>
+        <Text style={styles.emptyTitle}>No Gate Logs</Text>
+        <Text style={styles.emptySub}>
+          No gate check-in or check-out events found for the selected timeframe.
+        </Text>
+      </View>
+    );
+  }, [loading, resident]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -487,259 +747,38 @@ export default function StudentGateHistoryScreen() {
         }
       />
 
-      <ScrollView
+      <SectionList
+        sections={logSections}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => <GateLogRowCard log={item} />}
+        renderSectionHeader={({ section }) => (
+          <View style={styles.dateHeader}>
+            <Text style={styles.dateHeaderTitle}>{section.dateTitle}</Text>
+            <Text style={styles.dateHeaderCount}>
+              {section.data.length} event{section.data.length === 1 ? '' : 's'}
+            </Text>
+          </View>
+        )}
+        renderSectionFooter={() => <View style={{ height: 10 }} />}
+        ListHeaderComponent={listHeader}
+        ListEmptyComponent={listEmpty}
         contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        stickySectionHeadersEnabled={false}
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={7}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => {
               setRefreshing(true);
-              loadData();
+              void loadData();
             }}
             colors={['#0284C7']}
           />
-        }>
-        {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
-            <Text style={styles.loadingText}>Loading gate access logs...</Text>
-          </View>
-        ) : !resident ? (
-          <View style={styles.unlinkedCard}>
-            <Text style={styles.unlinkedTitle}>Account Not Linked</Text>
-            <Text style={styles.unlinkedSub}>
-              Your account is not linked to an active PG room record yet.
-            </Text>
-          </View>
-        ) : (
-          <>
-            {/* Status Card */}
-            <View
-              style={[
-                styles.statusCard,
-                currentStatus === 'IN'
-                  ? styles.statusCardIn
-                  : currentStatus === 'OUT'
-                  ? styles.statusCardOut
-                  : styles.statusCardUnknown,
-              ]}>
-              <View style={styles.statusIconWrap}>
-                {currentStatus === 'IN' ? (
-                  <Home size={22} color="#16A34A" />
-                ) : currentStatus === 'OUT' ? (
-                  <LogOut size={22} color="#D97706" />
-                ) : (
-                  <HelpCircle size={22} color="#64748B" />
-                )}
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.statusLabel}>Current Gate Status</Text>
-                <Text
-                  style={[
-                    styles.statusValue,
-                    currentStatus === 'IN'
-                      ? styles.textIn
-                      : currentStatus === 'OUT'
-                      ? styles.textOut
-                      : styles.textUnknown,
-                  ]}>
-                  {currentStatus === 'IN'
-                    ? 'Checked in'
-                    : currentStatus === 'OUT'
-                    ? 'Checked out'
-                    : 'No Gate Logs Recorded'}
-                </Text>
-                {lastEventTime && (
-                  <Text style={styles.statusSub}>
-                    Last recorded: {lastEventDate} at {lastEventTime}
-                  </Text>
-                )}
-              </View>
-              <Pressable
-                style={[
-                  styles.gateQuickBtn,
-                  currentStatus === 'IN' ? styles.gateQuickOutBtn : styles.gateQuickInBtn,
-                  savingMovement && { opacity: 0.6 },
-                ]}
-                disabled={savingMovement}
-                onPress={() => {
-                  if (currentStatus === 'IN') {
-                    setGoingOutModalVisible(true);
-                    return;
-                  }
-                  const eventMs = latestLog?.event_time
-                    ? new Date(latestLog.event_time).getTime()
-                    : NaN;
-                  if (
-                    !Number.isNaN(eventMs) &&
-                    Date.now() - eventMs < ACCIDENTAL_TAP_WINDOW_MS
-                  ) {
-                    Alert.alert(
-                      'Confirm Check-In',
-                      'You marked Going Out less than 5 minutes ago. Record check-in anyway?',
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        { text: 'Mark Inside', onPress: () => void recordGateToggle('IN') },
-                      ]
-                    );
-                    return;
-                  }
-                  void recordGateToggle('IN');
-                }}>
-                {savingMovement ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.gateQuickBtnText}>
-                    {currentStatus === 'IN' ? 'Going Out' : 'Mark Inside'}
-                  </Text>
-                )}
-              </Pressable>
-            </View>
-
-            {/* Running Late Banner when expected return time has passed */}
-            {isRunningLate && latestLog && (
-              <View style={styles.runningLateBanner}>
-                <View style={styles.runningLateHeader}>
-                  <Clock size={16} color="#B45309" />
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.runningLateTitle}>Running late</Text>
-                    <Text style={styles.runningLateSub}>
-                      Expected return (
-                      {normalizeTimeMeridiemLowercase(
-                        latestLog.expected_return_time || ''
-                      )}
-                      ) has passed.
-                    </Text>
-                  </View>
-                </View>
-                <Pressable
-                  accessibilityRole="button"
-                  style={[
-                    styles.runningLateBtn,
-                    savingMovement && { opacity: 0.6 },
-                  ]}
-                  disabled={savingMovement}
-                  onPress={() => void handleTellOwnerRunningLate()}>
-                  <Text style={styles.runningLateBtnText}>
-                    Tell the owner I&apos;m running late
-                  </Text>
-                </Pressable>
-              </View>
-            )}
-
-            {/* 10+ Hours Out Nudge */}
-            {outNudge.isOver && (
-              <View style={styles.overHoursBanner}>
-                <Text style={styles.overHoursText}>
-                  You&apos;ve been out for {outNudge.hoursOut}+ hours. Tap &quot;Mark Inside&quot; when you&apos;re back at the PG.
-                </Text>
-              </View>
-            )}
-
-            {/* Monthly Summary */}
-            <View style={styles.monthSummaryCard}>
-              <Text style={styles.monthSummaryLabel}>This month</Text>
-              <Text style={styles.monthSummaryValue}>
-                {daysOutThisMonth} {daysOutThisMonth === 1 ? 'day' : 'days'} out
-              </Text>
-            </View>
-
-            {/* Filter Tabs */}
-            <View style={styles.filterRow}>
-              {(
-                [
-                  { key: 'all', label: 'All' },
-                  { key: 'today', label: 'Today' },
-                  { key: 'week', label: 'Last 7 Days' },
-                  { key: 'month', label: 'Last 30 Days' },
-                ] as const
-              ).map((f) => (
-                <Pressable
-                  key={f.key}
-                  style={[styles.filterBtn, filter === f.key && styles.filterBtnActive]}
-                  onPress={() => setFilter(f.key)}>
-                  <Text
-                    style={[
-                      styles.filterBtnText,
-                      filter === f.key && styles.filterBtnTextActive,
-                    ]}>
-                    {f.label}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            {/* Movement Logs List */}
-            {groupedLogs.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyTitle}>No Gate Logs</Text>
-                <Text style={styles.emptySub}>
-                  No gate check-in or check-out events found for the selected timeframe.
-                </Text>
-              </View>
-            ) : (
-              groupedLogs.map((group) => (
-                <View key={group.dateKey} style={styles.dateGroup}>
-                  <View style={styles.dateHeader}>
-                    <Text style={styles.dateHeaderTitle}>{group.dateTitle}</Text>
-                    <Text style={styles.dateHeaderCount}>
-                      {group.items.length} event{group.items.length === 1 ? '' : 's'}
-                    </Text>
-                  </View>
-
-                  {group.items.map((log) => {
-                    const isIn = log.direction === 'IN';
-                    return (
-                      <View key={log.id} style={styles.logCard}>
-                        <View
-                          style={[
-                            styles.directionBadge,
-                            isIn ? styles.badgeIn : styles.badgeOut,
-                          ]}>
-                          {isIn ? (
-                            <DoorOpen size={14} color="#15803D" />
-                          ) : (
-                            <LogOut size={14} color="#B45309" />
-                          )}
-                          <Text
-                            style={[
-                              styles.directionText,
-                              isIn ? styles.directionTextIn : styles.directionTextOut,
-                            ]}>
-                            {toSentenceCaseStatus(isIn ? 'gate_in' : 'gate_out')}
-                          </Text>
-                        </View>
-
-                        <View style={styles.logDetails}>
-                          <Text style={styles.logTime}>{formatEventTime(log.event_time)}</Text>
-                          {log.purpose && (
-                            <View style={styles.purposeTagRow}>
-                              <Text style={styles.purposeBadge}>{log.purpose}</Text>
-                              {log.expected_return_time && (
-                                <Text style={styles.returnBadge}>
-                                  Return: {normalizeTimeMeridiemLowercase(log.expected_return_time)}
-                                </Text>
-                              )}
-                            </View>
-                          )}
-                          {!isIn && typeof log.food_required === 'boolean' && (
-                            <Text style={[styles.foodBadge, log.food_required ? styles.foodNeeded : styles.foodNotNeeded]}>
-                              {log.food_required ? 'Dinner Required' : 'No Dinner Needed'}
-                            </Text>
-                          )}
-                          {log.note && (
-                            <Text style={styles.logNote}>Note: {log.note}</Text>
-                          )}
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-              ))
-            )}
-          </>
-        )}
-      </ScrollView>
+        }
+      />
 
       <GoingOutModal
         visible={goingOutModalVisible}

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import {
   Alert,
   Platform,
@@ -14,52 +14,18 @@ import { Bell, ChevronRight, LogOut, Megaphone, ShieldCheck } from 'lucide-react
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useResident } from '@/context/resident-context';
 import { formatRoomLabel } from '@/lib/ux-utils';
-import { supabase } from '@/lib/supabase';
 import { OwnerHeader } from '@/components/ui/owner';
 import { BiometricSettingsRow } from '@/components/biometric-settings-row';
 
-interface ResidentProfileSummary {
-  roomNumber: string;
-  propertyName: string;
-}
-
 export default function ResidentSettingsScreen() {
   const { user, profile, signOut } = useAuth();
+  const { resident } = useResident();
   const colors = OwnerTheme.colors;
-  const [summary, setSummary] = useState<ResidentProfileSummary | null>(null);
-
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      if (!user?.id) return;
-      try {
-        const { data } = await supabase
-          .from('residents')
-          .select(`
-            room_number,
-            property:properties (
-              name
-            )
-          `)
-          .eq('profile_id', user.id)
-          .eq('is_active', true)
-          .maybeSingle();
-
-        if (!active || !data) return;
-        const prop = Array.isArray(data.property) ? data.property[0] : data.property;
-        setSummary({
-          roomNumber: data.room_number,
-          propertyName: prop?.name || 'My PG',
-        });
-      } catch (err) {
-        console.warn('Failed to load resident summary:', err);
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [user?.id]);
+  const summary = resident
+    ? { roomNumber: resident.roomNumber, propertyName: resident.propertyName }
+    : null;
 
   const handleLogout = async () => {
     if (Platform.OS === 'web') {

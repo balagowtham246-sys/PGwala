@@ -24,6 +24,7 @@ import {
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
 import { useOfflineMutation } from '@/hooks/use-offline-mutation';
 import { extractErrorMessage } from '@/lib/error-utils';
@@ -106,12 +107,6 @@ function buildRollingSevenDays(anchorIso: string): RollingDayOption[] {
   return result;
 }
 
-interface ResidentMenuRow {
-  property_id: string;
-  meal_opt_in?: boolean | null;
-  property: { name?: string | null } | { name?: string | null }[] | null;
-}
-
 const EMPTY_DAY_MENU: DayMenuMap = {
   breakfast: null,
   lunch: null,
@@ -120,6 +115,7 @@ const EMPTY_DAY_MENU: DayMenuMap = {
 
 export default function StudentMenuScreen() {
   const { user } = useAuth();
+  const { resident: sharedResident, refreshResident, patchResident } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
 
@@ -130,10 +126,10 @@ export default function StudentMenuScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [hasAssignedProperty, setHasAssignedProperty] = useState(true);
-  const [propertyName, setPropertyName] = useState('Assigned PG');
+  const [propertyName, setPropertyName] = useState(sharedResident?.propertyName || 'Assigned PG');
   const [menusByDate, setMenusByDate] = useState<Record<string, DayMenuMap>>({});
   const [publishedDates, setPublishedDates] = useState<string[]>([]);
-  const [mealOptIn, setMealOptIn] = useState(true);
+  const [mealOptIn, setMealOptIn] = useState(sharedResident?.mealOptIn ?? true);
 
   const dateStrip = useMemo(() => buildRollingSevenDays(anchorIso), [anchorIso]);
   const publishedSet = useMemo(() => new Set(publishedDates), [publishedDates]);
@@ -153,84 +149,56 @@ export default function StudentMenuScreen() {
     execute: executeFoodOptIn,
   });
 
-  const loadMenu = useCallback(async () => {
-    const todayIso = toLocalIsoDate(new Date());
-    setAnchorIso(todayIso);
-    const strip = buildRollingSevenDays(todayIso);
-    setSelectedIso((prev) => (strip.some((d) => d.iso === prev) ? prev : strip[0].iso));
+  const loadMenu = useCallback(
+    async (forceResident = false) => {
+      const todayIso = toLocalIsoDate(new Date());
+      setAnchorIso(todayIso);
+      const strip = buildRollingSevenDays(todayIso);
+      setSelectedIso((prev) => (strip.some((d) => d.iso === prev) ? prev : strip[0].iso));
 
-    if (!userId) {
-      setLoading(false);
-      setRefreshing(false);
-      return;
-    }
+      if (!userId) {
+        setLoading(false);
+        setRefreshing(false);
+        return;
+      }
 
-    try {
-      setErrorMessage(null);
-      let resData: ResidentMenuRow | null = null;
+      try {
+        setErrorMessage(null);
+        const activeRes =
+          !forceResident && sharedResident ? sharedResident : await refreshResident(forceResident);
 
-      const richRes = await supabase
-        .from('residents')
-        .select('property_id, meal_opt_in, property:properties(name)')
-        .eq('profile_id', userId)
-        .eq('is_active', true)
-        .maybeSingle();
-
-      if (richRes.error) {
-        if (
-          richRes.error.code === '42703' ||
-          richRes.error.message?.toLowerCase().includes('column')
-        ) {
-          const basicRes = await supabase
-            .from('residents')
-            .select('property_id, property:properties(name)')
-            .eq('profile_id', userId)
-            .eq('is_active', true)
-            .maybeSingle();
-          if (basicRes.error) throw basicRes.error;
-          resData = (basicRes.data as unknown as ResidentMenuRow | null) ?? null;
-        } else {
-          throw richRes.error;
+        if (!activeRes?.propertyId) {
+          setHasAssignedProperty(false);
+          setMenusByDate({});
+          setPublishedDates([]);
+          return;
         }
-      } else {
-        resData = (richRes.data as unknown as ResidentMenuRow | null) ?? null;
+
+        setHasAssignedProperty(true);
+        setPropertyName(activeRes.propertyName || 'Assigned PG');
+        setMealOptIn(activeRes.mealOptIn);
+
+        const menusRes = await fetchResidentMultiDayMenus(
+          activeRes.propertyId,
+          strip.map((d) => d.iso)
+        );
+
+        if (!menusRes.ok) {
+          setErrorMessage(menusRes.error.message || 'Could not load meal schedules.');
+          return;
+        }
+
+        setMenusByDate(menusRes.data.byDate);
+        setPublishedDates(menusRes.data.publishedDates);
+      } catch (err) {
+        setErrorMessage(extractErrorMessage(err, 'Could not load meal schedules.'));
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
       }
-
-      if (!resData?.property_id) {
-        setHasAssignedProperty(false);
-        setMenusByDate({});
-        setPublishedDates([]);
-        return;
-      }
-
-      setHasAssignedProperty(true);
-      const propObj = Array.isArray(resData.property)
-        ? resData.property[0]
-        : resData.property;
-      if (propObj?.name) setPropertyName(propObj.name);
-      if (typeof resData.meal_opt_in === 'boolean') {
-        setMealOptIn(resData.meal_opt_in);
-      }
-
-      const menusRes = await fetchResidentMultiDayMenus(
-        resData.property_id,
-        strip.map((d) => d.iso)
-      );
-
-      if (!menusRes.ok) {
-        setErrorMessage(menusRes.error.message || 'Could not load meal schedules.');
-        return;
-      }
-
-      setMenusByDate(menusRes.data.byDate);
-      setPublishedDates(menusRes.data.publishedDates);
-    } catch (err) {
-      setErrorMessage(extractErrorMessage(err, 'Could not load meal schedules.'));
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  }, [userId]);
+    },
+    [userId, sharedResident, refreshResident]
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -239,7 +207,7 @@ export default function StudentMenuScreen() {
         void (async () => {
           await flushOfflineQueue(defaultOfflineExecutors);
           if (active) {
-            await loadMenu();
+            await loadMenu(false);
           }
         })();
       }, 0);
@@ -254,13 +222,14 @@ export default function StudentMenuScreen() {
     setRefreshing(true);
     void (async () => {
       await flushOfflineQueue(defaultOfflineExecutors);
-      await loadMenu();
+      await loadMenu(true);
     })();
   };
 
   const handleToggleMealAlerts = async (nextValue: boolean) => {
     if (savingOptIn) return;
     setMealOptIn(nextValue);
+    patchResident({ mealOptIn: nextValue });
     triggerSelectionHaptic();
 
     const outcome = await mutateFoodOptIn(
@@ -270,6 +239,7 @@ export default function StudentMenuScreen() {
 
     if (!outcome.ok) {
       setMealOptIn(!nextValue);
+      patchResident({ mealOptIn: !nextValue });
       Alert.alert(
         'Update Failed',
         outcome.error.message || 'Could not update meal alert preference.'

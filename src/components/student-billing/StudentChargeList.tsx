@@ -313,11 +313,11 @@ export function StudentChargeList({
 
 const styles = StyleSheet.create({
   heroStatusCard: {
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 14,
+    borderRadius: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
     borderWidth: 1,
-    marginBottom: 12,
+    marginBottom: 10,
   },
   heroStatusClear: {
     backgroundColor: '#F0FDF4',
@@ -328,7 +328,7 @@ const styles = StyleSheet.create({
     borderColor: '#FDE68A',
   },
   heroStatusAmount: {
-    fontSize: 20,
+    fontSize: 16,
     fontWeight: '800',
   },
   heroStatusAmountClear: {
@@ -343,33 +343,33 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   heroPayActions: {
-    marginTop: 10,
-    gap: 6,
+    marginTop: 7,
+    gap: 4,
   },
   upiPayeeHint: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: '#475569',
   },
   upiMissingNote: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: '#64748B',
   },
   heroPayBtn: {
     backgroundColor: '#0284C7',
-    borderRadius: 10,
-    paddingVertical: 10,
+    borderRadius: 8,
+    paddingVertical: 8,
     alignItems: 'center',
   },
   heroPayBtnText: {
     color: '#FFFFFF',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
   },
   heroSecondaryLinkWrap: {
     alignItems: 'center',
-    paddingVertical: 4,
+    paddingVertical: 2,
   },
   heroSecondaryLinkText: {
     fontSize: 12,

@@ -9,6 +9,7 @@ import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { UpdateGuard } from '@/components/update-guard';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { PropertyProvider } from '@/context/property-context';
+import { ResidentProvider } from '@/context/resident-context';
 import { ToastProvider } from '@/context/toast-context';
 import { evaluateNavigationRedirect } from '@/lib/navigation-guards';
 import { registerForPushNotifications, subscribeToPushTokenChanges } from '@/lib/push-notifications';
@@ -106,11 +107,13 @@ function RootLayout() {
       <StatusBar style="dark" />
       <AuthProvider>
         <PropertyProvider>
-          <ToastProvider>
-            <AnimatedSplashOverlay />
-            <UpdateGuard />
-            <RootNavigationLayout />
-          </ToastProvider>
+          <ResidentProvider>
+            <ToastProvider>
+              <AnimatedSplashOverlay />
+              <UpdateGuard />
+              <RootNavigationLayout />
+            </ToastProvider>
+          </ResidentProvider>
         </PropertyProvider>
       </AuthProvider>
     </ThemeProvider>

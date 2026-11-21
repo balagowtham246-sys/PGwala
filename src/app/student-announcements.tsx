@@ -28,11 +28,11 @@ import {
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { FoodAlertStatus, statusLabel } from '@/lib/food-alert-utils';
 import { triggerSelectionHaptic } from '@/lib/haptics';
-import { supabase } from '@/lib/supabase';
 import { formatGateEventTimestamp, formatRoomLabel } from '@/lib/ux-utils';
 import {
   fetchResidentNotices,
@@ -67,12 +67,21 @@ function resolveTabParam(
 
 export default function StudentAnnouncementsScreen() {
   const { user } = useAuth();
+  const { resident: sharedResident, refreshResident } = useResident();
   const { showToast } = useToast();
   const userId = user?.id ?? null;
   const params = useLocalSearchParams<{ tab?: string }>();
   const tabParam = resolveTabParam(params.tab);
 
-  const [propertyInfo, setPropertyInfo] = useState<LinkedPropertyInfo | null>(null);
+  const [propertyInfo, setPropertyInfo] = useState<LinkedPropertyInfo | null>(() =>
+    sharedResident?.propertyId
+      ? {
+          propertyId: sharedResident.propertyId,
+          propertyName: sharedResident.propertyName || 'My PG',
+          roomNumber: sharedResident.roomNumber || '',
+        }
+      : null
+  );
   const [items, setItems] = useState<ResidentNoticeItem[]>([]);
   const [filter, setFilter] = useState<ResidentNoticesFilter>(tabParam ?? 'all');
   const [loading, setLoading] = useState(true);
@@ -106,32 +115,22 @@ export default function StudentAnnouncementsScreen() {
       const seq = ++requestSeqRef.current;
 
       try {
-        const { data: resData, error: resErr } = await supabase
-          .from('residents')
-          .select('property_id, room_number, property:properties(name)')
-          .eq('profile_id', userId)
-          .eq('is_active', true)
-          .maybeSingle();
+        const activeRes =
+          !forceRefresh && sharedResident ? sharedResident : await refreshResident(forceRefresh);
 
         if (seq !== requestSeqRef.current) return;
-        if (resErr) {
-          throw resErr;
-        }
 
-        if (!resData?.property_id) {
+        if (!activeRes?.propertyId) {
           setPropertyInfo(null);
           setItems([]);
           setErrorMessage(null);
           return;
         }
 
-        const propObj = Array.isArray(resData.property)
-          ? resData.property[0]
-          : resData.property;
         const nextInfo: LinkedPropertyInfo = {
-          propertyId: resData.property_id,
-          propertyName: propObj?.name || 'My PG',
-          roomNumber: resData.room_number || '',
+          propertyId: activeRes.propertyId,
+          propertyName: activeRes.propertyName || 'My PG',
+          roomNumber: activeRes.roomNumber || '',
         };
         setPropertyInfo(nextInfo);
 
@@ -159,7 +158,7 @@ export default function StudentAnnouncementsScreen() {
         }
       }
     },
-    [userId]
+    [userId, sharedResident, refreshResident]
   );
 
   useFocusEffect(

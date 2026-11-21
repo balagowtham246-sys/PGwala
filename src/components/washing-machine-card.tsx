@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Platform,
   Pressable,
   StyleSheet,
@@ -354,7 +355,16 @@ export function WashingMachineCard({
     [propertyId, userRole]
   );
 
-  // Set up Realtime subscription scoped to this property
+  const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      setIsAppActive(nextState === 'active');
+    });
+    return () => sub.remove();
+  }, []);
+
+  // Set up Realtime subscription scoped to this property (300ms debounced, active app only)
   useEffect(() => {
     isMountedRef.current = true;
     let isEffectActive = true;
@@ -378,6 +388,26 @@ export function WashingMachineCard({
       void supabase.removeChannel(oldChannel);
     }
 
+    if (!isAppActive) {
+      return () => {
+        clearTimeout(initialFetchTimer);
+        isMountedRef.current = false;
+        isEffectActive = false;
+      };
+    }
+
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRealtimeRefetch = () => {
+      if (!isEffectActive || !isMountedRef.current) return;
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        if (isEffectActive && isMountedRef.current) {
+          void fetchStatus(false);
+        }
+      }, 300);
+    };
+
     wmChannelSequence += 1;
     const channelName = `wm_status_${propertyId}_${wmChannelSequence}`;
 
@@ -391,10 +421,7 @@ export function WashingMachineCard({
           table: 'washing_machines',
           filter: `property_id=eq.${propertyId}`,
         },
-        async () => {
-          if (!isEffectActive || !isMountedRef.current) return;
-          await fetchStatus(false);
-        }
+        scheduleRealtimeRefetch
       )
       .on(
         'postgres_changes',
@@ -404,10 +431,7 @@ export function WashingMachineCard({
           table: 'washing_machine_requests',
           filter: `property_id=eq.${propertyId}`,
         },
-        async () => {
-          if (!isEffectActive || !isMountedRef.current) return;
-          await fetchStatus(false);
-        }
+        scheduleRealtimeRefetch
       );
 
     // Scope resident_opt_ins Realtime strictly to the active student's resident_id
@@ -421,10 +445,7 @@ export function WashingMachineCard({
           table: 'resident_opt_ins',
           filter: `resident_id=eq.${currentResidentId}`,
         },
-        async () => {
-          if (!isEffectActive || !isMountedRef.current) return;
-          await fetchStatus(false);
-        }
+        scheduleRealtimeRefetch
       );
     }
 
@@ -438,6 +459,7 @@ export function WashingMachineCard({
 
     return () => {
       clearTimeout(initialFetchTimer);
+      if (debounceTimer) clearTimeout(debounceTimer);
       isMountedRef.current = false;
       isEffectActive = false;
       setIsSubscribed(false);
@@ -446,7 +468,7 @@ export function WashingMachineCard({
       }
       void supabase.removeChannel(channel);
     };
-  }, [propertyId, userRole, currentResidentId, fetchStatus]);
+  }, [propertyId, userRole, currentResidentId, isAppActive, fetchStatus]);
 
   // Request Access from Owner (strictly online)
   const handleRequestAccess = async () => {

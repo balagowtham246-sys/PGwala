@@ -1,9 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AppState,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
+  SectionList,
   StyleSheet,
   Text,
   TextInput,
@@ -48,8 +51,61 @@ type GenderFilter = 'all' | ResidentGender;
 
 interface RoomGroup {
   roomNumber: string;
-  residents: ResidentDirectoryItem[];
+  data: ResidentDirectoryItem[];
 }
+
+const ResidentDirectoryRow = memo(function ResidentDirectoryRow({
+  resident,
+  isFirst,
+  isLast,
+  onPress,
+}: {
+  resident: ResidentDirectoryItem;
+  isFirst: boolean;
+  isLast: boolean;
+  onPress: (id: string) => void;
+}) {
+  const roomBedText = resident.bedLabel
+    ? `Room ${resident.roomNumber} · ${resident.bedLabel}`
+    : `Room ${resident.roomNumber}`;
+  const statusLabel = toSentenceCaseStatus(resident.gateStatus);
+  const statusVariant = resident.gateStatus === 'IN' ? 'success' : 'warning';
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`${resident.fullName}, ${roomBedText}, ${statusLabel}`}
+      onPress={() => onPress(resident.id)}
+      style={({ pressed }) => [
+        styles.residentRow,
+        styles.residentRowSectionItem,
+        isFirst && styles.residentRowFirst,
+        isLast ? styles.residentRowLast : styles.residentRowDivider,
+        pressed && styles.residentRowPressed,
+      ]}>
+      <View style={styles.residentMain}>
+        <Text style={styles.residentName} numberOfLines={1}>
+          {resident.fullName}
+        </Text>
+        <Text style={styles.residentMeta} numberOfLines={1}>
+          {roomBedText}
+        </Text>
+      </View>
+
+      <View style={styles.residentRight}>
+        <View style={styles.badgesCol}>
+          <StatusBadge label={statusLabel} variant={statusVariant} size="sm" />
+          {resident.pendingDuesPaise > 0 && (
+            <Text style={styles.dueText}>
+              {formatPaiseToRupees(resident.pendingDuesPaise)} due
+            </Text>
+          )}
+        </View>
+        <ChevronRight size={16} color={OwnerTheme.colors.textMuted} />
+      </View>
+    </Pressable>
+  );
+});
 
 export default function ResidentsDirectoryScreen() {
   const { selectedProperty, selectedPropertyId, loadingProperties } = useProperty();
@@ -111,8 +167,12 @@ export default function ResidentsDirectoryScreen() {
     }
   }, [selectedPropertyId, refreshFromNetwork]);
 
+  const [isScreenFocused, setIsScreenFocused] = useState(true);
+  const [isAppActive, setIsAppActive] = useState(AppState.currentState === 'active');
+
   useFocusEffect(
     useCallback(() => {
+      setIsScreenFocused(true);
       let active = true;
       const timer = setTimeout(() => {
         if (active) {
@@ -120,6 +180,7 @@ export default function ResidentsDirectoryScreen() {
         }
       }, 0);
       return () => {
+        setIsScreenFocused(false);
         active = false;
         clearTimeout(timer);
       };
@@ -127,11 +188,27 @@ export default function ResidentsDirectoryScreen() {
   );
 
   useEffect(() => {
-    if (!selectedPropertyId) return;
-    return subscribePropertyResidentsRealtime(selectedPropertyId, () => {
-      void refreshFromNetwork(selectedPropertyId, false);
+    const sub = AppState.addEventListener('change', (nextState) => {
+      setIsAppActive(nextState === 'active');
     });
-  }, [selectedPropertyId, refreshFromNetwork]);
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    if (!selectedPropertyId || !isScreenFocused || !isAppActive) return;
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsubscribe = subscribePropertyResidentsRealtime(selectedPropertyId, () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void refreshFromNetwork(selectedPropertyId, false);
+      }, 300);
+    });
+    return () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      unsubscribe();
+    };
+  }, [selectedPropertyId, isScreenFocused, isAppActive, refreshFromNetwork]);
 
   const handleRefresh = useCallback(() => {
     if (!selectedPropertyId) return;
@@ -255,7 +332,7 @@ export default function ResidentsDirectoryScreen() {
           }
           return a.fullName.localeCompare(b.fullName);
         });
-        return { roomNumber, residents: list };
+        return { roomNumber, data: list };
       });
   }, [filteredResidents]);
 
@@ -267,6 +344,45 @@ export default function ResidentsDirectoryScreen() {
   }, []);
 
   const hasSearchOrFilter = searchQuery.trim().length > 0 || activeFilterCount > 0;
+  const activeSections =
+    loading && activeResidents.length === 0 ? [] : groupedRooms;
+
+  const listEmptyComponent = useMemo(() => {
+    if (loading && activeResidents.length === 0) {
+      return <LoadingState message="Loading residents..." style={styles.loadingWrap} />;
+    }
+    if (activeResidents.length === 0) {
+      return (
+        <EmptyState
+          icon={Users}
+          title="No residents yet"
+          description="Add your first resident to manage rooms, monthly rent dues, and gate attendance."
+          actionLabel="Add your first resident"
+          onAction={() => router.push('/add-resident')}
+          style={styles.emptyWrap}
+        />
+      );
+    }
+    return (
+      <EmptyState
+        icon={Search}
+        title="No matching residents"
+        description={
+          hasSearchOrFilter
+            ? 'Try adjusting your search query or clearing your active filters.'
+            : 'No residents match the current view.'
+        }
+        actionLabel="Clear filters"
+        onAction={clearAllFiltersAndSearch}
+        style={styles.emptyWrap}
+      />
+    );
+  }, [
+    loading,
+    activeResidents.length,
+    hasSearchOrFilter,
+    clearAllFiltersAndSearch,
+  ]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
@@ -299,195 +415,131 @@ export default function ResidentsDirectoryScreen() {
           />
         </View>
       ) : (
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              colors={[OwnerTheme.colors.primary]}
-            />
-          }>
-          {/* Live Search Bar */}
-          <View style={styles.searchBarWrap}>
-            <Search size={16} color={OwnerTheme.colors.textMuted} />
-            <TextInput
-              style={styles.searchInput}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search name, room, or phone..."
-              placeholderTextColor={OwnerTheme.colors.textMuted}
-              returnKeyType="search"
-              autoCorrect={false}
-            />
-            {searchQuery.length > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Clear search"
-                hitSlop={8}
-                onPress={() => setSearchQuery('')}>
-                <X size={16} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            )}
-          </View>
-
-          {/* Compact Single Filter Trigger Row */}
-          <View style={styles.filterToolbarRow}>
-            <View style={styles.filterToolbarLeft}>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Open resident filters"
-                style={[
-                  styles.filtersBtn,
-                  activeFilterCount > 0 && styles.filtersBtnActive,
-                ]}
-                onPress={() => setFilterSheetVisible(true)}>
-                <SlidersHorizontal
-                  size={14}
-                  color={
-                    activeFilterCount > 0
-                      ? OwnerTheme.colors.primary
-                      : OwnerTheme.colors.textSecondary
-                  }
-                />
-                <Text
-                  style={[
-                    styles.filtersBtnText,
-                    activeFilterCount > 0 && styles.filtersBtnTextActive,
-                  ]}>
-                  Filters
-                </Text>
-                {activeFilterCount > 0 && (
-                  <View style={styles.filterCountBadge}>
-                    <Text style={styles.filterCountBadgeText}>{activeFilterCount}</Text>
-                  </View>
-                )}
-              </Pressable>
-
-              {activeFilterCount > 0 && (
+        <View style={styles.directoryBody}>
+          {/* Live Search & Filter Toolbar pinned outside SectionList so TextInput keeps focus */}
+          <View style={styles.toolbarHeaderWrap}>
+            <View style={styles.searchBarWrap}>
+              <Search size={16} color={OwnerTheme.colors.textMuted} />
+              <TextInput
+                style={styles.searchInput}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="Search name, room, or phone..."
+                placeholderTextColor={OwnerTheme.colors.textMuted}
+                returnKeyType="search"
+                autoCorrect={false}
+              />
+              {searchQuery.length > 0 && (
                 <Pressable
                   accessibilityRole="button"
+                  accessibilityLabel="Clear search"
                   hitSlop={8}
-                  style={styles.clearAllBtn}
-                  onPress={clearFiltersOnly}>
-                  <Text style={styles.clearAllText}>Clear all</Text>
+                  onPress={() => setSearchQuery('')}>
+                  <X size={16} color={OwnerTheme.colors.textSecondary} />
                 </Pressable>
               )}
             </View>
 
-            <Text style={styles.countMeta}>
-              {filteredResidents.length}{' '}
-              {filteredResidents.length === 1 ? 'resident' : 'residents'}
-            </Text>
+            <View style={styles.filterToolbarRow}>
+              <View style={styles.filterToolbarLeft}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Open resident filters"
+                  style={[
+                    styles.filtersBtn,
+                    activeFilterCount > 0 && styles.filtersBtnActive,
+                  ]}
+                  onPress={() => setFilterSheetVisible(true)}>
+                  <SlidersHorizontal
+                    size={14}
+                    color={
+                      activeFilterCount > 0
+                        ? OwnerTheme.colors.primary
+                        : OwnerTheme.colors.textSecondary
+                    }
+                  />
+                  <Text
+                    style={[
+                      styles.filtersBtnText,
+                      activeFilterCount > 0 && styles.filtersBtnTextActive,
+                    ]}>
+                    Filters
+                  </Text>
+                  {activeFilterCount > 0 && (
+                    <View style={styles.filterCountBadge}>
+                      <Text style={styles.filterCountBadgeText}>{activeFilterCount}</Text>
+                    </View>
+                  )}
+                </Pressable>
+
+                {activeFilterCount > 0 && (
+                  <Pressable
+                    accessibilityRole="button"
+                    hitSlop={8}
+                    style={styles.clearAllBtn}
+                    onPress={clearFiltersOnly}>
+                    <Text style={styles.clearAllText}>Clear all</Text>
+                  </Pressable>
+                )}
+              </View>
+
+              <Text style={styles.countMeta}>
+                {filteredResidents.length}{' '}
+                {filteredResidents.length === 1 ? 'resident' : 'residents'}
+              </Text>
+            </View>
+
+            {errorMessage ? (
+              <ErrorState
+                message={errorMessage}
+                onRetry={() => {
+                  if (selectedPropertyId) {
+                    void refreshFromNetwork(selectedPropertyId, true);
+                  }
+                }}
+                style={styles.errorBanner}
+              />
+            ) : null}
           </View>
 
-          {errorMessage ? (
-            <ErrorState
-              message={errorMessage}
-              onRetry={() => {
-                if (selectedPropertyId) {
-                  void refreshFromNetwork(selectedPropertyId, true);
-                }
-              }}
-              style={styles.errorBanner}
-            />
-          ) : null}
-
-          {loading && activeResidents.length === 0 ? (
-            <LoadingState message="Loading residents..." style={styles.loadingWrap} />
-          ) : activeResidents.length === 0 ? (
-            <EmptyState
-              icon={Users}
-              title="No residents yet"
-              description="Add your first resident to manage rooms, monthly rent dues, and gate attendance."
-              actionLabel="Add your first resident"
-              onAction={() => router.push('/add-resident')}
-              style={styles.emptyWrap}
-            />
-          ) : filteredResidents.length === 0 ? (
-            <EmptyState
-              icon={Search}
-              title="No matching residents"
-              description={
-                hasSearchOrFilter
-                  ? 'Try adjusting your search query or clearing your active filters.'
-                  : 'No residents match the current view.'
-              }
-              actionLabel="Clear filters"
-              onAction={clearAllFiltersAndSearch}
-              style={styles.emptyWrap}
-            />
-          ) : (
-            <View style={styles.groupsContainer}>
-              {groupedRooms.map((group) => (
-                <View key={group.roomNumber} style={styles.roomGroup}>
-                  <View style={styles.roomGroupHeader}>
-                    <Text style={styles.roomGroupTitle}>Room {group.roomNumber}</Text>
-                    <Text style={styles.roomGroupCount}>
-                      {group.residents.length}{' '}
-                      {group.residents.length === 1 ? 'resident' : 'residents'}
-                    </Text>
-                  </View>
-
-                  <View style={styles.roomGroupCard}>
-                    {group.residents.map((resident, idx) => {
-                      const isLast = idx === group.residents.length - 1;
-                      const roomBedText = resident.bedLabel
-                        ? `Room ${resident.roomNumber} · ${resident.bedLabel}`
-                        : `Room ${resident.roomNumber}`;
-                      const statusLabel = toSentenceCaseStatus(resident.gateStatus);
-                      const statusVariant =
-                        resident.gateStatus === 'IN' ? 'success' : 'warning';
-
-                      return (
-                        <Pressable
-                          key={resident.id}
-                          accessibilityRole="button"
-                          accessibilityLabel={`${resident.fullName}, ${roomBedText}, ${statusLabel}`}
-                          onPress={() => openResidentProfile(resident.id)}
-                          style={({ pressed }) => [
-                            styles.residentRow,
-                            !isLast && styles.residentRowDivider,
-                            pressed && styles.residentRowPressed,
-                          ]}>
-                          <View style={styles.residentMain}>
-                            <Text style={styles.residentName} numberOfLines={1}>
-                              {resident.fullName}
-                            </Text>
-                            <Text style={styles.residentMeta} numberOfLines={1}>
-                              {roomBedText}
-                            </Text>
-                          </View>
-
-                          <View style={styles.residentRight}>
-                            <View style={styles.badgesCol}>
-                              <StatusBadge
-                                label={statusLabel}
-                                variant={statusVariant}
-                                size="sm"
-                              />
-                              {resident.pendingDuesPaise > 0 && (
-                                <Text style={styles.dueText}>
-                                  {formatPaiseToRupees(resident.pendingDuesPaise)} due
-                                </Text>
-                              )}
-                            </View>
-                            <ChevronRight
-                              size={16}
-                              color={OwnerTheme.colors.textMuted}
-                            />
-                          </View>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </View>
-              ))}
-            </View>
-          )}
-        </ScrollView>
+          <SectionList
+            sections={activeSections}
+            keyExtractor={(item) => item.id}
+            renderSectionHeader={({ section }) => (
+              <View style={styles.roomGroupHeader}>
+                <Text style={styles.roomGroupTitle}>Room {section.roomNumber}</Text>
+                <Text style={styles.roomGroupCount}>
+                  {section.data.length}{' '}
+                  {section.data.length === 1 ? 'resident' : 'residents'}
+                </Text>
+              </View>
+            )}
+            renderItem={({ item, index, section }) => (
+              <ResidentDirectoryRow
+                resident={item}
+                isFirst={index === 0}
+                isLast={index === section.data.length - 1}
+                onPress={openResidentProfile}
+              />
+            )}
+            ListEmptyComponent={listEmptyComponent}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            stickySectionHeadersEnabled={false}
+            initialNumToRender={15}
+            maxToRenderPerBatch={15}
+            windowSize={9}
+            removeClippedSubviews={Platform.OS === 'android'}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                colors={[OwnerTheme.colors.primary]}
+              />
+            }
+          />
+        </View>
       )}
 
       {/* Unified Filter Bottom Sheet Modal */}
@@ -735,7 +787,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     paddingHorizontal: OwnerTheme.spacing.lg,
-    paddingTop: OwnerTheme.spacing.md,
+    paddingTop: 2,
     paddingBottom: OwnerTheme.spacing.xxxl,
   },
   searchBarWrap: {
@@ -841,6 +893,30 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 4,
+    marginBottom: 6,
+  },
+  directoryBody: {
+    flex: 1,
+  },
+  toolbarHeaderWrap: {
+    paddingHorizontal: 16,
+    paddingTop: 12,
+  },
+  residentRowSectionItem: {
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+  },
+  residentRowFirst: {
+    borderTopWidth: 1,
+    borderTopLeftRadius: OwnerTheme.radius.card,
+    borderTopRightRadius: OwnerTheme.radius.card,
+  },
+  residentRowLast: {
+    borderBottomWidth: 1,
+    borderBottomLeftRadius: OwnerTheme.radius.card,
+    borderBottomRightRadius: OwnerTheme.radius.card,
+    marginBottom: 14,
   },
   roomGroupTitle: {
     fontSize: 13,
