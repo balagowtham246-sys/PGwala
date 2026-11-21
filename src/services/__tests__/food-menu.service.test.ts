@@ -1,7 +1,3 @@
-jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
-);
-
 import { clearQueryCache } from '@/lib/query-cache';
 import { resetPerfMonitor } from '@/lib/perf-monitor';
 import { supabase } from '@/lib/supabase';
@@ -11,6 +7,10 @@ import {
   saveFoodMenu,
   toggleFoodMenuPublish,
 } from '../food-menu.service';
+
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {

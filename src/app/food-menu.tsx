@@ -21,6 +21,7 @@ import { OwnerHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSuccessHaptic } from '@/lib/haptics';
 import {
   formatHhMmTo12h,
@@ -175,7 +176,7 @@ export default function FoodMenuScreen() {
         setProperty(result.data);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       console.error('[FoodMenu] Error loading property:', err);
       setErrorMessage(msg);
     } finally {
@@ -217,7 +218,7 @@ export default function FoodMenuScreen() {
 
         setMenus(result.data.menus);
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
+        const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
         console.error('[FoodMenu] Error fetching menus:', err);
         setErrorMessage(`Failed to load menus: ${msg}`);
       } finally {
@@ -340,7 +341,7 @@ export default function FoodMenuScreen() {
       setEditingMeal(null);
       await loadMenusForDate(property.id, selectedDateStr, true);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       console.error('[FoodMenu] Save error:', err);
       Alert.alert('Save Failed', msg);
       setErrorMessage(`Save Failed: ${msg}`);
@@ -375,7 +376,7 @@ export default function FoodMenuScreen() {
 
       await loadMenusForDate(property.id, selectedDateStr, true);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       Alert.alert('Status Update Failed', msg);
     }
   };
@@ -409,7 +410,7 @@ export default function FoodMenuScreen() {
               );
               await loadMenusForDate(property.id, selectedDateStr, true);
             } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err);
+              const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
               Alert.alert('Delete Failed', msg);
             }
           },
@@ -461,7 +462,7 @@ export default function FoodMenuScreen() {
       triggerSuccessHaptic();
       showToast(`Saved ${dayName} menu as weekly template`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       Alert.alert('Template Save Failed', msg);
     } finally {
       setApplyingBulk(false);
@@ -493,7 +494,7 @@ export default function FoodMenuScreen() {
       triggerSuccessHaptic();
       showToast(`Applied ${dayName} template for ${formatDayMonth(selectedDate)}`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       Alert.alert('Apply Template Failed', msg);
     } finally {
       setApplyingBulk(false);

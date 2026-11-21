@@ -959,3 +959,137 @@ const styles = StyleSheet.create({
   },
 });
 
+/**
+ * Shared modal, bottom-sheet, form-input, and pill selector styles reused
+ * across owner & resident screens so styling stays consistent with zero duplication.
+ */
+export const OwnerSharedStyles = StyleSheet.create({
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.5)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: OwnerTheme.radius.card,
+    padding: 20,
+    ...OwnerTheme.shadowElevated,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  modalSub: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 2,
+    marginBottom: 12,
+  },
+  sheetOverlay: {
+    flex: 1,
+    justifyContent: 'flex-end',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
+  },
+  sheetBackdrop: {
+    flex: 1,
+  },
+  sheetCard: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 10,
+    paddingBottom: 24,
+    maxHeight: '82%',
+    ...OwnerTheme.shadowElevated,
+  },
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: '#CBD5E1',
+    alignSelf: 'center',
+    marginBottom: 12,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 6,
+  },
+  textInput: {
+    height: 46,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.md,
+    paddingHorizontal: 12,
+    fontSize: 14,
+    color: OwnerTheme.colors.textPrimary,
+  },
+  textArea: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: OwnerTheme.radius.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 13,
+    color: OwnerTheme.colors.textPrimary,
+    minHeight: 75,
+    textAlignVertical: 'top',
+  },
+  pillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  pillChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: OwnerTheme.radius.full,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+  },
+  pillChipActive: {
+    backgroundColor: OwnerTheme.colors.primary,
+    borderColor: OwnerTheme.colors.primary,
+  },
+  pillText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  pillTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+  },
+  fullImageOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.92)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  fullImageCloseBtn: {
+    position: 'absolute',
+    top: 50,
+    right: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    zIndex: 10,
+  },
+  fullImageCloseText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
+  },
+});
+

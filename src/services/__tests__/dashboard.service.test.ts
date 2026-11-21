@@ -1,7 +1,3 @@
-jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
-);
-
 import { clearOfflineQueue, getPendingCount } from '@/lib/offline-queue';
 import { resetPerfMonitor } from '@/lib/perf-monitor';
 import { clearQueryCache } from '@/lib/query-cache';
@@ -13,6 +9,10 @@ import {
   getCachedStudentDashboard,
   recordStudentMovement,
 } from '../dashboard.service';
+
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
 
 jest.mock('@/lib/supabase', () => ({
   supabase: {

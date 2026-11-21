@@ -1,5 +1,10 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 import { OfflineExecutorMap } from '@/lib/offline-queue';
+import { invalidatePrefix } from '@/lib/query-cache';
 import { supabase } from '@/lib/supabase';
+
+const STORAGE_EMERGENCY_CONTACT_PREFIX = '@pgwala_resident_emergency_contact:';
 
 export interface GateMovementOfflinePayload {
   p_direction: 'IN' | 'OUT';
@@ -21,6 +26,11 @@ export interface ComplaintOfflinePayload {
   title: string;
   description: string;
   photo_url?: null;
+}
+
+export interface EmergencyContactOfflinePayload {
+  residentId: string;
+  value: string;
 }
 
 const LOCAL_URI_PREFIXES = ['file://', 'ph://', 'content://', 'assets-library://'];
@@ -70,5 +80,25 @@ export const defaultOfflineExecutors: OfflineExecutorMap = {
       photo_url: null,
     });
     if (error) throw error;
+  },
+
+  set_my_emergency_contact: async (payload) => {
+    const typed = payload as unknown as EmergencyContactOfflinePayload;
+    const clean = typeof typed.value === 'string' ? typed.value.trim() || null : null;
+    const { error } = await supabase.rpc('set_my_emergency_contact', {
+      p_value: clean ?? '',
+    });
+    if (error) throw error;
+
+    if (typed.residentId) {
+      await AsyncStorage.setItem(
+        `${STORAGE_EMERGENCY_CONTACT_PREFIX}${typed.residentId}`,
+        JSON.stringify({ value: clean, pendingLocalFallback: false })
+      );
+    }
+    await Promise.all([
+      invalidatePrefix('residents:'),
+      invalidatePrefix('dashboard:'),
+    ]);
   },
 };

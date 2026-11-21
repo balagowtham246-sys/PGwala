@@ -58,6 +58,7 @@ function defaultMealForNow(): FoodMealType {
 
 export default function WardenDashboardScreen() {
   const { profile, user } = useAuth();
+  const userId = user?.id;
   const colors = OwnerTheme.colors;
 
   const [loading, setLoading] = useState(true);
@@ -91,54 +92,85 @@ export default function WardenDashboardScreen() {
     profile?.must_change_password || user?.user_metadata?.must_change_password
   );
 
+  const fetchWardenState = useCallback(async () => {
+    if (!userId) return null;
+    const { data: assignment, error: assignmentError } = await supabase
+      .from('property_wardens')
+      .select('property_id, properties(name)')
+      .eq('warden_profile_id', userId)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (assignmentError) throw assignmentError;
+
+    if (!assignment) {
+      return {
+        property: null as { id: string; name: string } | null,
+        audienceList: [] as AudienceResident[],
+        recent: [] as FoodAlertRecord[],
+      };
+    }
+
+    const propertyRel = (assignment as any).properties;
+    const propertyName: string =
+      (Array.isArray(propertyRel) ? propertyRel[0]?.name : propertyRel?.name) ?? 'Your PG';
+    const propertyId = (assignment as any).property_id as string;
+
+    const [audienceRes, recentRes] = await Promise.all([
+      supabase.rpc('get_alert_audience', { p_property_id: propertyId }),
+      supabase
+        .from('food_alerts')
+        .select(
+          'id, property_id, meal_type, status, message, audience_type, dispatch_status, recipients_count, push_sent, push_failed, no_token_count, alert_date, created_at'
+        )
+        .eq('property_id', propertyId)
+        .order('created_at', { ascending: false })
+        .limit(8),
+    ]);
+    if (audienceRes.error) throw audienceRes.error;
+    if (recentRes.error) throw recentRes.error;
+
+    return {
+      property: { id: propertyId, name: propertyName },
+      audienceList: (audienceRes.data ?? []) as AudienceResident[],
+      recent: (recentRes.data ?? []) as FoodAlertRecord[],
+    };
+  }, [userId]);
+
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      if (!user?.id) return;
-      const { data: assignment, error: assignmentError } = await supabase
-        .from('property_wardens')
-        .select('property_id, properties(name)')
-        .eq('warden_profile_id', user.id)
-        .eq('is_active', true)
-        .maybeSingle();
-      if (assignmentError) throw assignmentError;
-
-      if (!assignment) {
-        setProperty(null);
-        setAudienceList([]);
-        setRecent([]);
-        return;
-      }
-
-      const propertyRel = (assignment as any).properties;
-      const propertyName: string = (Array.isArray(propertyRel) ? propertyRel[0]?.name : propertyRel?.name) ?? 'Your PG';
-      const propertyId = (assignment as any).property_id as string;
-      setProperty({ id: propertyId, name: propertyName });
-
-      const [audienceRes, recentRes] = await Promise.all([
-        supabase.rpc('get_alert_audience', { p_property_id: propertyId }),
-        supabase
-          .from('food_alerts')
-          .select(
-            'id, property_id, meal_type, status, message, audience_type, dispatch_status, recipients_count, push_sent, push_failed, no_token_count, alert_date, created_at'
-          )
-          .eq('property_id', propertyId)
-          .order('created_at', { ascending: false })
-          .limit(8),
-      ]);
-      if (audienceRes.error) throw audienceRes.error;
-      if (recentRes.error) throw recentRes.error;
-      setAudienceList((audienceRes.data ?? []) as AudienceResident[]);
-      setRecent((recentRes.data ?? []) as FoodAlertRecord[]);
+      const next = await fetchWardenState();
+      if (!next) return;
+      setProperty(next.property);
+      setAudienceList(next.audienceList);
+      setRecent(next.recent);
     } catch (err) {
       setLoadError(extractErrorMessage(err, 'Could not load your property.'));
     }
-  }, [user?.id]);
+  }, [fetchWardenState]);
 
   useEffect(() => {
-    setLoading(true);
-    load().finally(() => setLoading(false));
-  }, [load]);
+    let active = true;
+    void fetchWardenState()
+      .then((next) => {
+        if (!active) return;
+        setLoadError(null);
+        if (next) {
+          setProperty(next.property);
+          setAudienceList(next.audienceList);
+          setRecent(next.recent);
+        }
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (!active) return;
+        setLoadError(extractErrorMessage(err, 'Could not load your property.'));
+        setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [fetchWardenState]);
 
   const roomList = useMemo(() => uniqueRooms(audienceList), [audienceList]);
   const targeted = useMemo(

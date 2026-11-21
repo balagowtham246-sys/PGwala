@@ -2,31 +2,30 @@ import { Href, router, useFocusEffect } from 'expo-router';
 import {
   Bell,
   Building2,
-  Check,
   ChevronDown,
-  Clock,
   Disc3,
-  Plus,
   User,
   Utensils,
-  X,
 } from 'lucide-react-native';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
   AppState,
-  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import {
+  AddPropertyModal,
+  PropertySwitcherModal,
+  WmUnitsModal,
+} from '@/components/owner-dashboard/OwnerDashboardModals';
 import { OwnerMetricsGrid } from '@/components/owner-dashboard/OwnerMetricsGrid';
 import { OwnerQuickActions } from '@/components/owner-dashboard/OwnerQuickActions';
 import { RecentActivitySection } from '@/components/owner-dashboard/RecentActivitySection';
@@ -36,15 +35,10 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useResidentTabs } from '@/context/resident-tabs-context';
-import { triggerSelectionHaptic } from '@/lib/haptics';
 import { invalidatePrefix } from '@/lib/query-cache';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { supabase } from '@/lib/supabase';
-import {
-  formatPropertyGenderLabel,
-  inferPropertyGender,
-  PropertyGenderType,
-  toSentenceCaseStatus,
-} from '@/lib/ux-utils';
+import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import {
   createEmptyOwnerMenus,
   DashboardWmUnit,
@@ -81,48 +75,6 @@ function getFeaturedMealKey(
         : ['dinner', 'breakfast', 'lunch'];
 
   return order.find((key) => Boolean(todayMenus[key])) ?? order[0];
-}
-
-function formatElapsed(startedAtIso: string | null): string {
-  if (!startedAtIso) return '';
-  try {
-    const started = new Date(startedAtIso).getTime();
-    if (Number.isNaN(started)) return '';
-    const diff = Math.max(0, Math.floor((Date.now() - started) / 60000));
-    if (diff < 1) return 'Just started';
-    if (diff < 60) return `${diff} min${diff === 1 ? '' : 's'} ago`;
-    const h = Math.floor(diff / 60);
-    const m = diff % 60;
-    return `${h}h ${m}m ago`;
-  } catch {
-    return '';
-  }
-}
-
-function formatCycleStartTime(startedAtIso: string | null): string {
-  if (!startedAtIso) return '';
-  try {
-    const started = new Date(startedAtIso);
-    if (Number.isNaN(started.getTime())) return '';
-    const startTimeStr = started.toLocaleTimeString('en-IN', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    });
-    const elapsed = formatElapsed(startedAtIso);
-    return elapsed ? `Started ${startTimeStr} · ${elapsed}` : `Started ${startTimeStr}`;
-  } catch {
-    return '';
-  }
-}
-
-function getGenderPillStyle(gender: PropertyGenderType): {
-  bg: string;
-  text: string;
-} {
-  if (gender === 'girls') return { bg: '#FCE7F3', text: '#BE185D' };
-  if (gender === 'boys') return { bg: '#E0F2FE', text: '#0369A1' };
-  return { bg: '#EEF2FF', text: '#4338CA' };
 }
 
 export default function OwnerDashboard() {
@@ -498,7 +450,7 @@ export default function OwnerDashboard() {
       setNewPropAddress('');
       Alert.alert('Property Added', `Switched to "${trimmed}".`);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Could not add property.';
+      const msg = extractErrorMessage(err, 'Could not add property.');
       Alert.alert('Error', msg);
     } finally {
       setCreatingProperty(false);
@@ -725,367 +677,38 @@ export default function OwnerDashboard() {
         <RecentActivitySection loading={loading} activities={recentActivities} />
       </ScrollView>
 
-      {/* Global Property Switcher Modal */}
-      <Modal
+      <PropertySwitcherModal
         visible={switcherVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSwitcherVisible(false)}>
-        <View style={styles.modalOverlay}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close switch property modal"
-            style={StyleSheet.absoluteFill}
-            onPress={() => setSwitcherVisible(false)}
-          />
-          <View style={styles.switcherModalCard}>
-            <View style={styles.switcherModalHeader}>
-              <Text style={styles.switcherModalTitle}>Switch PG Property</Text>
-              <Pressable hitSlop={8} onPress={() => setSwitcherVisible(false)}>
-                <X size={20} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            </View>
-            <Text style={styles.switcherModalSub}>
-              Select which accommodation to view and manage:
-            </Text>
+        properties={properties}
+        selectedPropertyId={selectedPropertyId}
+        activePropertyResidentsCount={stats.totalResidents}
+        onSelectProperty={selectProperty}
+        onOpenAddProperty={() => setShowAddPropertyModal(true)}
+        onClose={() => setSwitcherVisible(false)}
+      />
 
-            <ScrollView style={{ maxHeight: 260 }}>
-              {properties.map((prop) => {
-                const isSelected = prop.id === selectedPropertyId;
-                const occupied =
-                  typeof prop.active_resident_count === 'number'
-                    ? prop.active_resident_count
-                    : isSelected
-                      ? stats.totalResidents
-                      : 0;
-                const totalBeds =
-                  typeof prop.total_beds === 'number' ? prop.total_beds : 0;
-                const occupancyText =
-                  totalBeds > 0
-                    ? `${occupied}/${totalBeds} beds`
-                    : `${occupied} residents`;
-                const genderType = inferPropertyGender(
-                  prop.name,
-                  prop.gender_type ?? null
-                );
-                const genderLabel = formatPropertyGenderLabel(genderType);
-                const genderStyle = getGenderPillStyle(genderType);
-
-                return (
-                  <Pressable
-                    key={prop.id}
-                    style={[
-                      styles.propertyItemRow,
-                      isSelected && styles.propertyItemRowSelected,
-                    ]}
-                    onPress={async () => {
-                      triggerSelectionHaptic();
-                      await selectProperty(prop.id);
-                      setSwitcherVisible(false);
-                    }}>
-                    <Building2
-                      size={18}
-                      color={
-                        isSelected
-                          ? OwnerTheme.colors.primary
-                          : OwnerTheme.colors.textSecondary
-                      }
-                      style={{ marginRight: 10 }}
-                    />
-                    <View style={{ flex: 1 }}>
-                      <Text
-                        style={[
-                          styles.propertyNameItem,
-                          isSelected && styles.propertyNameItemSelected,
-                        ]}>
-                        {prop.name}
-                      </Text>
-                      <View style={styles.propertyMetaRow}>
-                        <Text style={styles.propertyOccupancyText}>{occupancyText}</Text>
-                        <View
-                          style={[
-                            styles.propertyGenderPill,
-                            { backgroundColor: genderStyle.bg },
-                          ]}>
-                          <Text
-                            style={[
-                              styles.propertyGenderText,
-                              { color: genderStyle.text },
-                            ]}>
-                            {genderLabel}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                    {isSelected && (
-                      <Check size={18} color={OwnerTheme.colors.primary} />
-                    )}
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-
-            <Pressable
-              style={styles.addPropertyBtn}
-              onPress={() => setShowAddPropertyModal(true)}>
-              <Plus size={16} color={OwnerTheme.colors.primary} />
-              <Text style={styles.addPropertyBtnText}>Add Another PG Property</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Add New Property Sub-Modal */}
-      <Modal
+      <AddPropertyModal
         visible={showAddPropertyModal}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setShowAddPropertyModal(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.switcherModalCard}>
-            <View style={styles.switcherModalHeader}>
-              <Text style={styles.switcherModalTitle}>Add New PG Property</Text>
-              <Pressable
-                hitSlop={8}
-                onPress={() => setShowAddPropertyModal(false)}>
-                <X size={20} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            </View>
+        propName={newPropName}
+        propAddress={newPropAddress}
+        creating={creatingProperty}
+        onChangeName={setNewPropName}
+        onChangeAddress={setNewPropAddress}
+        onCreate={handleCreateProperty}
+        onClose={() => setShowAddPropertyModal(false)}
+      />
 
-            <Text style={styles.inputLabel}>PG Name *</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="e.g. Shalom Girls PG"
-              placeholderTextColor={OwnerTheme.colors.textMuted}
-              value={newPropName}
-              onChangeText={setNewPropName}
-            />
-
-            <Text style={styles.inputLabel}>Address (Optional)</Text>
-            <TextInput
-              style={styles.textInput}
-              placeholder="e.g. Street 4, College Road"
-              placeholderTextColor={OwnerTheme.colors.textMuted}
-              value={newPropAddress}
-              onChangeText={setNewPropAddress}
-            />
-
-            <View style={styles.modalActions}>
-              <Pressable
-                style={styles.modalCancelBtn}
-                onPress={() => setShowAddPropertyModal(false)}>
-                <Text style={styles.modalCancelBtnText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={[
-                  styles.modalConfirmBtn,
-                  creatingProperty && { opacity: 0.6 },
-                ]}
-                disabled={creatingProperty}
-                onPress={handleCreateProperty}>
-                {creatingProperty ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.modalConfirmBtnText}>Create PG</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Washing Machine Live Usage Popup Modal */}
-      <Modal
+      <WmUnitsModal
         visible={wmModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setWmModalVisible(false)}>
-        <View style={styles.modalOverlay}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Close washing machine modal"
-            style={StyleSheet.absoluteFill}
-            onPress={() => setWmModalVisible(false)}
-          />
-          <View style={styles.wmModalContent}>
-            <View style={styles.wmModalHeader}>
-              <View style={{ flex: 1 }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                  <Disc3 size={18} color="#0284C7" />
-                  <Text style={styles.wmModalTitle}>Washing Machine Units</Text>
-                </View>
-                <Text style={styles.wmModalSubtitle} numberOfLines={1}>
-                  {selectedProperty?.name || 'Live Usage'} • {wmSummary.inUseCount} in use,{' '}
-                  {wmSummary.freeCount} free
-                  {outOfOrderCount > 0 ? `, ${outOfOrderCount} out of order` : ''}
-                </Text>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close modal"
-                hitSlop={8}
-                onPress={() => setWmModalVisible(false)}>
-                <X size={20} color={OwnerTheme.colors.textMuted} />
-              </Pressable>
-            </View>
-
-            <ScrollView style={{ maxHeight: 400 }} showsVerticalScrollIndicator={false}>
-              {wmUnits.length === 0 ? (
-                <View style={styles.wmModalEmpty}>
-                  <Text style={styles.wmModalEmptyText}>
-                    No active washing machines configured.
-                  </Text>
-                  <Pressable
-                    style={styles.configureWmBtn}
-                    onPress={() => {
-                      setWmModalVisible(false);
-                      router.push('/owner-settings');
-                    }}>
-                    <Text style={styles.configureWmBtnText}>Configure in Settings ›</Text>
-                  </Pressable>
-                </View>
-              ) : (
-                wmUnits.map((unit, idx) => {
-                  const isInUse = unit.status === 'in_use';
-                  const isOutOfOrder = unit.status === 'out_of_order';
-                  const isBusy = busyMachineId === unit.id;
-                  const statusLabel = toSentenceCaseStatus(unit.status);
-                  const badgeStyle = isInUse
-                    ? styles.wmStatusInUse
-                    : isOutOfOrder
-                      ? styles.wmStatusOutOfOrder
-                      : styles.wmStatusFree;
-                  const dotColor = isInUse
-                    ? '#DC2626'
-                    : isOutOfOrder
-                      ? '#D97706'
-                      : '#16A34A';
-                  const textColor = isInUse
-                    ? '#B91C1C'
-                    : isOutOfOrder
-                      ? '#B45309'
-                      : '#15803D';
-                  const cycleStartText = isInUse
-                    ? formatCycleStartTime(unit.started_at)
-                    : '';
-
-                  return (
-                    <View
-                      key={unit.id}
-                      style={[
-                        styles.wmUnitRow,
-                        idx === wmUnits.length - 1 && { borderBottomWidth: 0 },
-                      ]}>
-                      <View style={styles.wmUnitTopRow}>
-                        <Text style={styles.wmUnitName}>{unit.machine_name}</Text>
-                        <View style={[styles.wmStatusBadge, badgeStyle]}>
-                          <View
-                            style={[styles.wmStatusDot, { backgroundColor: dotColor }]}
-                          />
-                          <Text style={[styles.wmStatusText, { color: textColor }]}>
-                            {statusLabel}
-                          </Text>
-                        </View>
-                      </View>
-
-                      {isInUse && (
-                        <View style={styles.wmInUseDetails}>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                            <User size={12} color="#1E293B" />
-                            <Text style={styles.wmOccupantText}>
-                              {unit.current_resident_name || 'Resident'}
-                              {unit.current_resident_room
-                                ? ` (Room ${unit.current_resident_room})`
-                                : ''}
-                            </Text>
-                          </View>
-                          {cycleStartText ? (
-                            <View
-                              style={{
-                                flexDirection: 'row',
-                                alignItems: 'center',
-                                gap: 4,
-                                marginTop: 2,
-                              }}>
-                              <Clock size={12} color="#64748B" />
-                              <Text style={styles.wmDurationText}>{cycleStartText}</Text>
-                            </View>
-                          ) : null}
-                        </View>
-                      )}
-
-                      <View style={styles.wmUnitActionsRow}>
-                        {isInUse && (
-                          <Pressable
-                            accessibilityRole="button"
-                            style={[
-                              styles.forceFreeBtn,
-                              isBusy && styles.forceFreeBtnDisabled,
-                            ]}
-                            disabled={isBusy}
-                            onPress={() => handleOwnerReleaseWm(unit.id, unit.machine_name)}>
-                            {isBusy ? (
-                              <ActivityIndicator size="small" color="#DC2626" />
-                            ) : (
-                              <Text style={styles.forceFreeBtnText}>Free up</Text>
-                            )}
-                          </Pressable>
-                        )}
-
-                        {isOutOfOrder ? (
-                          <Pressable
-                            accessibilityRole="button"
-                            style={[
-                              styles.markAvailableBtn,
-                              isBusy && styles.forceFreeBtnDisabled,
-                            ]}
-                            disabled={isBusy}
-                            onPress={() =>
-                              handleOwnerSetOutOfOrder(
-                                unit.id,
-                                unit.machine_name,
-                                false,
-                                false
-                              )
-                            }>
-                            {isBusy ? (
-                              <ActivityIndicator size="small" color="#15803D" />
-                            ) : (
-                              <Text style={styles.markAvailableBtnText}>
-                                Mark available
-                              </Text>
-                            )}
-                          </Pressable>
-                        ) : (
-                          <Pressable
-                            accessibilityRole="button"
-                            style={[
-                              styles.markOutOfOrderBtn,
-                              isBusy && styles.forceFreeBtnDisabled,
-                            ]}
-                            disabled={isBusy}
-                            onPress={() =>
-                              handleOwnerSetOutOfOrder(
-                                unit.id,
-                                unit.machine_name,
-                                true,
-                                isInUse
-                              )
-                            }>
-                            <Text style={styles.markOutOfOrderBtnText}>
-                              Mark out of order
-                            </Text>
-                          </Pressable>
-                        )}
-                      </View>
-                    </View>
-                  );
-                })
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+        propertyName={selectedProperty?.name || 'Live Usage'}
+        wmSummary={wmSummary}
+        wmUnits={wmUnits}
+        outOfOrderCount={outOfOrderCount}
+        busyMachineId={busyMachineId}
+        onRelease={handleOwnerReleaseWm}
+        onSetOutOfOrder={handleOwnerSetOutOfOrder}
+        onClose={() => setWmModalVisible(false)}
+      />
 
       <RoleBottomNav activeTab="home" roleOverride="owner" />
     </SafeAreaView>
@@ -1307,161 +930,6 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.primary,
     flexShrink: 0,
   },
-  wmModalContent: {
-    width: '90%',
-    maxWidth: 480,
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    padding: 18,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 8,
-  },
-  wmModalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: OwnerTheme.colors.borderLight,
-    marginBottom: 10,
-  },
-  wmModalTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  wmModalSubtitle: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 2,
-  },
-  wmModalEmpty: {
-    alignItems: 'center',
-    paddingVertical: 24,
-    gap: 8,
-  },
-  wmModalEmptyText: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textMuted,
-  },
-  configureWmBtn: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: OwnerTheme.radius.full,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-  },
-  configureWmBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  wmUnitRow: {
-    paddingVertical: 11,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F1F5F9',
-  },
-  wmUnitTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  wmUnitName: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-    flex: 1,
-  },
-  wmStatusBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 10,
-  },
-  wmStatusInUse: {
-    backgroundColor: '#FEE2E2',
-  },
-  wmStatusOutOfOrder: {
-    backgroundColor: '#FEF3C7',
-  },
-  wmStatusFree: {
-    backgroundColor: '#DCFCE7',
-  },
-  wmStatusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-  },
-  wmStatusText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  wmInUseDetails: {
-    marginTop: 5,
-  },
-  wmOccupantText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#334155',
-  },
-  wmDurationText: {
-    fontSize: 11,
-    color: '#64748B',
-  },
-  wmUnitActionsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 8,
-  },
-  forceFreeBtn: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 6,
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FCA5A5',
-  },
-  forceFreeBtnDisabled: {
-    opacity: 0.6,
-  },
-  forceFreeBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#DC2626',
-  },
-  markOutOfOrderBtn: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 6,
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-  },
-  markOutOfOrderBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#B45309',
-  },
-  markAvailableBtn: {
-    paddingVertical: 5,
-    paddingHorizontal: 10,
-    borderRadius: 6,
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#86EFAC',
-  },
-  markAvailableBtnText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#15803D',
-  },
   menuCompactCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1536,144 +1004,5 @@ const styles = StyleSheet.create({
     marginTop: 12,
     fontSize: 14,
     color: OwnerTheme.colors.textSecondary,
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  switcherModalCard: {
-    width: '100%',
-    maxWidth: 420,
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    padding: 20,
-    ...OwnerTheme.shadow,
-  },
-  switcherModalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  switcherModalTitle: {
-    fontSize: 17,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  switcherModalSub: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-    marginBottom: 14,
-  },
-  propertyItemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    borderRadius: OwnerTheme.radius.sm,
-    marginBottom: 6,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.borderLight,
-  },
-  propertyItemRowSelected: {
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    borderColor: OwnerTheme.colors.primary,
-  },
-  propertyNameItem: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  propertyNameItemSelected: {
-    color: OwnerTheme.colors.primary,
-  },
-  propertyMetaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 3,
-  },
-  propertyOccupancyText: {
-    fontSize: 11,
-    fontWeight: '500',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  propertyGenderPill: {
-    paddingHorizontal: 7,
-    paddingVertical: 1,
-    borderRadius: OwnerTheme.radius.full,
-  },
-  propertyGenderText: {
-    fontSize: 10,
-    fontWeight: '700',
-  },
-  addPropertyBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 12,
-    paddingVertical: 10,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.primary,
-    borderStyle: 'dashed',
-  },
-  addPropertyBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.primary,
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-    marginBottom: 4,
-    marginTop: 8,
-  },
-  textInput: {
-    height: 46,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    borderRadius: OwnerTheme.radius.md,
-    paddingHorizontal: 12,
-    fontSize: 14,
-    color: OwnerTheme.colors.textPrimary,
-    backgroundColor: '#F8FAFC',
-    marginBottom: 8,
-  },
-  modalActions: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    gap: 10,
-    marginTop: 12,
-  },
-  modalCancelBtn: {
-    height: 40,
-    paddingHorizontal: 14,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalCancelBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  modalConfirmBtn: {
-    height: 40,
-    paddingHorizontal: 16,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: OwnerTheme.colors.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  modalConfirmBtnText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#FFFFFF',
   },
 });

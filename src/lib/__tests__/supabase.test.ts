@@ -1,13 +1,13 @@
-jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
-);
-
 import {
   decodeBase64ToBytes,
   getSignedComplaintPhotoUrl,
   getSignedPaymentProofUrl,
   supabase,
 } from '../supabase';
+
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
 
 describe('getSignedPaymentProofUrl', () => {
   beforeEach(() => {

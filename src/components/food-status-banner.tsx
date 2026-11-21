@@ -1,9 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Platform, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Href, router, useFocusEffect } from 'expo-router';
 import { AlertTriangle, CheckCircle2, ChevronRight, Megaphone, XCircle } from 'lucide-react-native';
 import * as Notifications from 'expo-notifications';
-import { Platform } from 'react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { supabase } from '@/lib/supabase';
@@ -60,8 +59,27 @@ export function FoodStatusBanner({ refreshKey = 0 }: { refreshKey?: number }) {
   );
 
   useEffect(() => {
-    if (refreshKey > 0) load().catch(() => {});
-  }, [refreshKey, load]);
+    if (refreshKey <= 0) return;
+    let active = true;
+    void (async () => {
+      try {
+        const { data } = await supabase
+          .from('food_alerts')
+          .select('id, meal_type, status, message, alert_date, created_at')
+          .eq('alert_date', istDateIso())
+          .order('created_at', { ascending: false })
+          .limit(10);
+        if (active) {
+          setAlerts((data ?? []) as TodayAlert[]);
+        }
+      } catch {
+        // Silent refresh failure keeps last banner state
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [refreshKey]);
 
   // Refresh instantly when a push arrives while the app is open
   useEffect(() => {

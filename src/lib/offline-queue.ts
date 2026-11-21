@@ -13,6 +13,7 @@ export const APPROVED_OFFLINE_OPERATIONS = [
   'gate_movement_log',
   'food_opt_in',
   'complaint_submit',
+  'set_my_emergency_contact',
 ] as const;
 
 export type ApprovedOfflineOperation = (typeof APPROVED_OFFLINE_OPERATIONS)[number];

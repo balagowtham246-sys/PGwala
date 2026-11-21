@@ -1,9 +1,9 @@
-jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
-);
-
 import { endTrace, getPerfSnapshot, recordRoundTrip, resetPerfMonitor, startTrace } from '../perf-monitor';
 import { clearQueryCache, getCached, setCached } from '../query-cache';
+
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
 
 describe('perf-benchmark (cache overhead vs round-trip baseline)', () => {
   beforeEach(async () => {

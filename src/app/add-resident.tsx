@@ -16,11 +16,6 @@ import {
   AlertCircle,
   AlertTriangle,
   Building2,
-  Calendar,
-  CheckCircle2,
-  Eye,
-  EyeOff,
-  RefreshCw,
   X,
 } from 'lucide-react-native';
 
@@ -28,15 +23,17 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { EdgeFunctionError, invokeEdgeFunction } from '@/lib/edge-functions';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
 import { invalidatePrefix } from '@/lib/query-cache';
 import { normalizeAppError } from '@/lib/service-result';
 import { supabase } from '@/lib/supabase';
 import {
-  formatIsoDateDisplay,
+  formatLocalIsoDate,
   formatPropertyGenderLabel,
   inferPropertyGender,
   isPropertyCompatibleWithGender,
+  isValidIsoDate,
   normalizeIndianPhoneDigits,
   PropertyGenderType,
   ResidentGender,
@@ -46,14 +43,21 @@ import {
   RESIDENTS_CACHE_PREFIX,
   writeLocalResidentMeta,
 } from '@/services/residents.service';
+import {
+  AddResidentAccountStep,
+  AddResidentSuccessView,
+  ResidentGenderField,
+  ResidentJoiningDateField,
+  ResidentPhoneField,
+  ResidentRentDepositRow,
+} from '@/components/residents/ResidentFormSections';
 import { RoomBedPicker } from '@/components/residents/RoomBedPicker';
 import { CalendarDatePickerModal } from '@/components/ui/calendar-date-picker-modal';
 import {
-  OwnerHeader,
-  PrimaryButton,
-  SecondaryButton,
-  StatusBadge,
   ErrorState,
+  OwnerHeader,
+  OwnerSharedStyles,
+  PrimaryButton,
 } from '@/components/ui/owner';
 
 interface PropertyOption {
@@ -69,12 +73,6 @@ interface ExistingResidentRow {
   full_name: string;
 }
 
-const RESIDENT_GENDER_OPTIONS: { value: ResidentGender; label: string }[] = [
-  { value: 'male', label: 'Male' },
-  { value: 'female', label: 'Female' },
-  { value: 'other', label: 'Other' },
-];
-
 function generateRandomPassword(length = 8): string {
   const chars =
     'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$';
@@ -85,28 +83,7 @@ function generateRandomPassword(length = 8): string {
   return res;
 }
 
-function getTodayIsoDate(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function isValidIsoDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [yStr, mStr, dStr] = value.split('-');
-  const year = Number(yStr);
-  const month = Number(mStr);
-  const day = Number(dStr);
-  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
-  const date = new Date(year, month - 1, day);
-  return (
-    date.getFullYear() === year &&
-    date.getMonth() === month - 1 &&
-    date.getDate() === day
-  );
-}
+const getTodayIsoDate = formatLocalIsoDate;
 
 function parseRupeesToPaise(raw: string): { valid: boolean; paise?: number } {
   const trimmed = raw.trim();
@@ -292,7 +269,7 @@ export default function AddResidentScreen() {
       }
       setFallbackProperties(rows);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Could not load properties.');
       console.error('[AddResident] Error loading properties:', err);
       setIsLoadError(true);
       setErrorMessage(msg);
@@ -789,77 +766,10 @@ export default function AddResidentScreen() {
 
           {/* Step 3: Success Screen */}
           {currentStep === 3 && createdSummary ? (
-            <View style={styles.successCard}>
-              <View style={styles.successIconWrap}>
-                <CheckCircle2 size={44} color={OwnerTheme.colors.success} />
-              </View>
-              <Text style={styles.successHeading}>Resident Added</Text>
-              <Text style={styles.successSubheading}>
-                The resident profile and login credentials have been created
-                successfully.
-              </Text>
-
-              <View style={styles.summaryDetailsBox}>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Name</Text>
-                  <Text style={styles.summaryValue}>
-                    {createdSummary.fullName}
-                  </Text>
-                </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>PG Property</Text>
-                  <Text style={styles.summaryValue}>
-                    {createdSummary.propertyName}
-                  </Text>
-                </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Room & Bed</Text>
-                  <Text style={styles.summaryValue}>
-                    Room {createdSummary.roomNumber}
-                    {createdSummary.bedLabel
-                      ? ` · ${createdSummary.bedLabel}`
-                      : ''}
-                  </Text>
-                </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Joining Date</Text>
-                  <Text style={styles.summaryValue}>
-                    {formatIsoDateDisplay(createdSummary.joiningDate)}
-                  </Text>
-                </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Login Email</Text>
-                  <Text style={styles.summaryValue}>
-                    {createdSummary.email}
-                  </Text>
-                </View>
-                <View style={styles.summaryRow}>
-                  <Text style={styles.summaryLabel}>Account Status</Text>
-                  <StatusBadge label="ACTIVE" variant="success" size="sm" />
-                </View>
-              </View>
-
-              <View style={styles.successActions}>
-                <PrimaryButton
-                  label="View Resident"
-                  onPress={() => {
-                    if (createdSummary.id) {
-                      router.replace({
-                        pathname: '/resident-profile',
-                        params: { id: createdSummary.id },
-                      } as unknown as Href);
-                    } else {
-                      router.replace('/(tabs)');
-                    }
-                  }}
-                  style={{ marginBottom: 10 }}
-                />
-                <SecondaryButton
-                  label="Add Another Resident"
-                  onPress={resetForm}
-                />
-              </View>
-            </View>
+            <AddResidentSuccessView
+              createdSummary={createdSummary}
+              onResetForm={resetForm}
+            />
           ) : (
             <>
               {/* Step Progress Indicator */}
@@ -903,9 +813,9 @@ export default function AddResidentScreen() {
 
                   {/* Full Name */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Full Name *</Text>
+                    <Text style={OwnerSharedStyles.inputLabel}>Full Name *</Text>
                     <TextInput
-                      style={styles.textInput}
+                      style={OwnerSharedStyles.textInput}
                       placeholder="e.g. Arun Kumar"
                       placeholderTextColor={OwnerTheme.colors.textMuted}
                       value={fullName}
@@ -917,38 +827,14 @@ export default function AddResidentScreen() {
                     />
                   </View>
 
-                  {/* Gender Selector */}
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Gender *</Text>
-                    <View style={styles.chipRow}>
-                      {RESIDENT_GENDER_OPTIONS.map((opt) => {
-                        const isSelected = gender === opt.value;
-                        return (
-                          <Pressable
-                            key={opt.value}
-                            accessibilityRole="radio"
-                            accessibilityState={{ selected: isSelected }}
-                            onPress={() => handleSelectGender(opt.value)}
-                            style={[
-                              styles.segmentChip,
-                              isSelected && styles.segmentChipActive,
-                            ]}>
-                            <Text
-                              style={[
-                                styles.segmentChipText,
-                                isSelected && styles.segmentChipTextActive,
-                              ]}>
-                              {opt.label}
-                            </Text>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  </View>
+                  <ResidentGenderField
+                    gender={gender}
+                    onSelect={handleSelectGender}
+                  />
 
                   {/* Property Selector (filtered by gender) */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>PG Property *</Text>
+                    <Text style={OwnerSharedStyles.inputLabel}>PG Property *</Text>
                     {compatibleProperties.length > 0 ? (
                       <View style={styles.propertyChipWrap}>
                         {compatibleProperties.map((prop) => {
@@ -1043,119 +929,38 @@ export default function AddResidentScreen() {
                     </View>
                   ) : null}
 
-                  {/* Phone Number (Required, +91 prefix) */}
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Phone Number *</Text>
-                    <View style={styles.prefixedInputWrap}>
-                      <View style={styles.prefixBadge}>
-                        <Text style={styles.prefixText}>+91</Text>
-                      </View>
-                      <TextInput
-                        style={styles.prefixedTextInput}
-                        placeholder="Enter 10-digit mobile number"
-                        placeholderTextColor={OwnerTheme.colors.textMuted}
-                        value={phoneNumber}
-                        onChangeText={(val) => {
-                          setPhoneNumber(val);
-                          if (errorMessage) setErrorMessage(null);
-                        }}
-                        keyboardType="phone-pad"
-                        maxLength={16}
-                      />
-                    </View>
-                    <Text style={styles.helperText}>
-                      Enter any 10-digit mobile number (with or without +91).
-                    </Text>
+                  <ResidentPhoneField
+                    value={phoneNumber}
+                    onChangeText={(val) => {
+                      setPhoneNumber(val);
+                      if (errorMessage) setErrorMessage(null);
+                    }}
+                    duplicatePhoneResident={duplicatePhoneResident}
+                  />
 
-                    {duplicatePhoneResident && (
-                      <View style={[styles.warningBox, { marginTop: 8 }]}>
-                        <AlertTriangle
-                          size={15}
-                          color={OwnerTheme.colors.warning}
-                          style={{ marginTop: 1 }}
-                        />
-                        <Text style={styles.warningText}>
-                          Duplicate phone warning: Already registered to{' '}
-                          {duplicatePhoneResident.full_name} (Room{' '}
-                          {duplicatePhoneResident.room_number}) in this
-                          property.
-                        </Text>
-                      </View>
-                    )}
-                  </View>
+                  <ResidentJoiningDateField
+                    joiningDate={joiningDate}
+                    onOpenPicker={() => setShowDatePicker(true)}
+                  />
 
-                  {/* Joining Date */}
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Joining Date *</Text>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityLabel="Select joining date"
-                      onPress={() => setShowDatePicker(true)}
-                      style={({ pressed }) => [
-                        styles.datePickerBtn,
-                        pressed && styles.datePickerBtnPressed,
-                      ]}>
-                      <View style={styles.datePickerBtnLeft}>
-                        <Calendar
-                          size={18}
-                          color={OwnerTheme.colors.primary}
-                        />
-                        <Text style={styles.datePickerBtnText}>
-                          {formatIsoDateDisplay(joiningDate)}
-                        </Text>
-                      </View>
-                      <Text style={styles.datePickerChangeText}>Select</Text>
-                    </Pressable>
-                  </View>
-
-                  {/* Monthly Rent & Security Deposit */}
-                  <View style={styles.twoColRow}>
-                    <View style={[styles.inputGroup, { flex: 1 }]}>
-                      <Text style={styles.label}>Monthly Rent (₹)</Text>
-                      <View style={styles.prefixedInputWrap}>
-                        <View style={styles.prefixBadge}>
-                          <Text style={styles.prefixText}>₹</Text>
-                        </View>
-                        <TextInput
-                          style={styles.prefixedTextInput}
-                          placeholder="8000"
-                          placeholderTextColor={OwnerTheme.colors.textMuted}
-                          value={monthlyRent}
-                          onChangeText={(val) => {
-                            setMonthlyRent(val.replace(/[^0-9.]/g, ''));
-                            if (errorMessage) setErrorMessage(null);
-                          }}
-                          keyboardType="decimal-pad"
-                        />
-                      </View>
-                    </View>
-
-                    <View style={[styles.inputGroup, { flex: 1 }]}>
-                      <Text style={styles.label}>Security Deposit (₹)</Text>
-                      <View style={styles.prefixedInputWrap}>
-                        <View style={styles.prefixBadge}>
-                          <Text style={styles.prefixText}>₹</Text>
-                        </View>
-                        <TextInput
-                          style={styles.prefixedTextInput}
-                          placeholder="10000"
-                          placeholderTextColor={OwnerTheme.colors.textMuted}
-                          value={depositAmount}
-                          onChangeText={(val) => {
-                            setDepositAmount(val.replace(/[^0-9.]/g, ''));
-                            if (errorMessage) setErrorMessage(null);
-                          }}
-                          keyboardType="decimal-pad"
-                        />
-                      </View>
-                    </View>
-                  </View>
+                  <ResidentRentDepositRow
+                    monthlyRent={monthlyRent}
+                    depositAmount={depositAmount}
+                    onChangeRent={(val) => {
+                      setMonthlyRent(val);
+                      if (errorMessage) setErrorMessage(null);
+                    }}
+                    onChangeDeposit={(val) => {
+                      setDepositAmount(val);
+                      if (errorMessage) setErrorMessage(null);
+                    }}
+                  />
 
                   {/* Emergency Contact (Optional) */}
                   <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Emergency Contact</Text>
+                    <Text style={OwnerSharedStyles.inputLabel}>Emergency Contact</Text>
                     <TextInput
-                      style={styles.textInput}
+                      style={OwnerSharedStyles.textInput}
                       placeholder="Parent / guardian phone or name (optional)"
                       placeholderTextColor={OwnerTheme.colors.textMuted}
                       value={emergencyContact}
@@ -1174,96 +979,24 @@ export default function AddResidentScreen() {
                   />
                 </View>
               ) : (
-                /* Step 2: Account Setup */
-                <View style={styles.formCard}>
-                  <Text style={styles.formSectionTitle}>
-                    Resident Portal Login
-                  </Text>
-                  <Text style={styles.formSectionSubtitle}>
-                    Provide the email and temporary password for the resident to
-                    log into their PG app.
-                  </Text>
-
-                  <View style={styles.inputGroup}>
-                    <Text style={styles.label}>Resident Login Email *</Text>
-                    <TextInput
-                      style={styles.textInput}
-                      placeholder="resident@example.com"
-                      placeholderTextColor={OwnerTheme.colors.textMuted}
-                      value={email}
-                      onChangeText={(val) => {
-                        setEmail(val);
-                        if (errorMessage) setErrorMessage(null);
-                      }}
-                      keyboardType="email-address"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                  </View>
-
-                  <View style={styles.inputGroup}>
-                    <View style={styles.labelRow}>
-                      <Text style={styles.label}>Temporary Password *</Text>
-                      <Pressable
-                        hitSlop={8}
-                        onPress={handleGeneratePassword}
-                        style={styles.generateBtn}>
-                        <RefreshCw
-                          size={12}
-                          color={OwnerTheme.colors.primary}
-                        />
-                        <Text style={styles.generateBtnText}>
-                          Auto-Generate
-                        </Text>
-                      </Pressable>
-                    </View>
-                    <View style={styles.passwordInputWrap}>
-                      <TextInput
-                        style={[styles.textInput, { flex: 1, borderWidth: 0 }]}
-                        placeholder="At least 6 characters"
-                        placeholderTextColor={OwnerTheme.colors.textMuted}
-                        value={temporaryPassword}
-                        onChangeText={(val) => {
-                          setTemporaryPassword(val);
-                          if (errorMessage) setErrorMessage(null);
-                        }}
-                        secureTextEntry={!showPassword}
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                      />
-                      <Pressable
-                        hitSlop={8}
-                        style={styles.eyeBtn}
-                        onPress={() => setShowPassword(!showPassword)}>
-                        {showPassword ? (
-                          <EyeOff
-                            size={18}
-                            color={OwnerTheme.colors.textSecondary}
-                          />
-                        ) : (
-                          <Eye
-                            size={18}
-                            color={OwnerTheme.colors.textSecondary}
-                          />
-                        )}
-                      </Pressable>
-                    </View>
-                  </View>
-
-                  <View style={styles.step2Actions}>
-                    <SecondaryButton
-                      label="Back"
-                      onPress={() => setCurrentStep(1)}
-                      style={{ flex: 1, marginRight: 8 }}
-                    />
-                    <PrimaryButton
-                      label="Create Resident"
-                      onPress={handleSaveResident}
-                      loading={saving}
-                      style={{ flex: 2 }}
-                    />
-                  </View>
-                </View>
+                <AddResidentAccountStep
+                  email={email}
+                  temporaryPassword={temporaryPassword}
+                  showPassword={showPassword}
+                  saving={saving}
+                  onChangeEmail={(val) => {
+                    setEmail(val);
+                    if (errorMessage) setErrorMessage(null);
+                  }}
+                  onChangePassword={(val) => {
+                    setTemporaryPassword(val);
+                    if (errorMessage) setErrorMessage(null);
+                  }}
+                  onToggleShowPassword={() => setShowPassword(!showPassword)}
+                  onGeneratePassword={handleGeneratePassword}
+                  onBack={() => setCurrentStep(1)}
+                  onSave={handleSaveResident}
+                />
               )}
             </>
           )}
@@ -1391,132 +1124,11 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.textPrimary,
     marginBottom: 4,
   },
-  formSectionSubtitle: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-    marginBottom: 16,
-    lineHeight: 18,
-  },
   inputGroup: {
     marginBottom: 16,
   },
   pickerGroup: {
     marginBottom: 16,
-  },
-  labelRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-    marginBottom: 6,
-  },
-  textInput: {
-    height: 50,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    paddingHorizontal: 14,
-    fontSize: 15,
-    color: OwnerTheme.colors.textPrimary,
-    backgroundColor: '#FFFFFF',
-  },
-  datePickerBtn: {
-    height: 50,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    paddingHorizontal: 14,
-    backgroundColor: '#FFFFFF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  datePickerBtnPressed: {
-    backgroundColor: '#F8FAFC',
-    borderColor: OwnerTheme.colors.primary,
-  },
-  datePickerBtnLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  datePickerBtnText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  datePickerChangeText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.primary,
-  },
-  prefixedInputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: 50,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    backgroundColor: '#FFFFFF',
-    overflow: 'hidden',
-  },
-  prefixBadge: {
-    height: '100%',
-    paddingHorizontal: 12,
-    backgroundColor: '#F1F5F9',
-    borderRightWidth: 1,
-    borderRightColor: OwnerTheme.colors.border,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  prefixText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  prefixedTextInput: {
-    flex: 1,
-    height: '100%',
-    paddingHorizontal: 12,
-    fontSize: 15,
-    color: OwnerTheme.colors.textPrimary,
-  },
-  helperText: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 6,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  segmentChip: {
-    flex: 1,
-    height: 42,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    backgroundColor: '#FAFAFA',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  segmentChipActive: {
-    borderColor: OwnerTheme.colors.primary,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-  },
-  segmentChipText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  segmentChipTextActive: {
-    color: OwnerTheme.colors.primary,
-    fontWeight: '700',
   },
   propertyChipWrap: {
     gap: 8,
@@ -1580,86 +1192,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: OwnerTheme.colors.primary,
-  },
-  twoColRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  passwordInputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    backgroundColor: '#FFFFFF',
-    paddingRight: 12,
-  },
-  eyeBtn: {
-    padding: 6,
-  },
-  generateBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingVertical: 2,
-  },
-  generateBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: OwnerTheme.colors.primary,
-  },
-  step2Actions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 8,
-  },
-  successCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    padding: 24,
-    alignItems: 'center',
-  },
-  successIconWrap: {
-    marginBottom: 12,
-  },
-  successHeading: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-    marginBottom: 6,
-  },
-  successSubheading: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-    textAlign: 'center',
-    marginBottom: 20,
-    lineHeight: 18,
-  },
-  summaryDetailsBox: {
-    width: '100%',
-    backgroundColor: '#F8FAFC',
-    borderRadius: OwnerTheme.radius.md,
-    padding: 14,
-    gap: 10,
-    marginBottom: 20,
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  summaryLabel: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-  },
-  summaryValue: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  successActions: {
-    width: '100%',
   },
 });

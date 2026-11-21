@@ -9,6 +9,7 @@ import {
 import { ChevronLeft, ChevronRight, X } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
+import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
 
 interface CalendarDatePickerModalProps {
   visible: boolean;
@@ -62,6 +63,8 @@ export function CalendarDatePickerModal({
   const initial = useMemo(() => parseIsoParts(value), [value]);
   const [viewYear, setViewYear] = useState(initial.year);
   const [viewMonth, setViewMonth] = useState(initial.month);
+
+  useModalBackHandler(visible, onClose);
 
   const today = new Date();
   const todayIso = toIsoString(today.getFullYear(), today.getMonth(), today.getDate());

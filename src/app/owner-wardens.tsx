@@ -43,30 +43,50 @@ export default function OwnerWardensScreen() {
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const fetchWardensMap = useCallback(async () => {
+    const entries = await Promise.all(
+      properties.map(async (p) => {
+        const res = await invokeEdgeFunction<{ warden: WardenInfo | null }>('manage-warden', {
+          action: 'get',
+          property_id: p.id,
+        });
+        return [p.id, res.warden] as const;
+      })
+    );
+    return Object.fromEntries(entries);
+  }, [properties]);
+
   const loadWardens = useCallback(async () => {
     setLoading(true);
     setErrorMessage(null);
     try {
-      const entries = await Promise.all(
-        properties.map(async (p) => {
-          const res = await invokeEdgeFunction<{ warden: WardenInfo | null }>('manage-warden', {
-            action: 'get',
-            property_id: p.id,
-          });
-          return [p.id, res.warden] as const;
-        })
-      );
-      setWardens(Object.fromEntries(entries));
+      const next = await fetchWardensMap();
+      setWardens(next);
     } catch (err) {
       setErrorMessage(extractErrorMessage(err, 'Could not load wardens.'));
     } finally {
       setLoading(false);
     }
-  }, [properties]);
+  }, [fetchWardensMap]);
 
   useEffect(() => {
-    loadWardens();
-  }, [loadWardens]);
+    let cancelled = false;
+    void fetchWardensMap()
+      .then((next) => {
+        if (cancelled) return;
+        setWardens(next);
+        setErrorMessage(null);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setErrorMessage(extractErrorMessage(err, 'Could not load wardens.'));
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fetchWardensMap]);
 
   const openModal = (propertyId: string) => {
     setModalPropertyId(propertyId);

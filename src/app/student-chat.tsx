@@ -27,6 +27,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '@/context/auth-context';
 import { useResident } from '@/context/resident-context';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { getChatLastSeenStorageKey } from '@/lib/resident-home-utils';
 import { formatMovementDayLabel, getLocalDateKey } from '@/lib/movement-utils';
 import {
@@ -143,7 +144,7 @@ export default function StudentChatScreen() {
         setMessages(formatted);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Could not connect to resident chat room.');
       console.error('[StudentChat] Initialization error:', msg);
       Alert.alert('Chat Unavailable', 'Could not connect to resident chat room.');
     } finally {
@@ -313,9 +314,9 @@ export default function StudentChatScreen() {
 
       if (error) throw error;
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Could not deliver your message.');
       console.error('[StudentChat] Send error:', msg);
-      Alert.alert('Send Error', msg || 'Could not deliver your message.');
+      Alert.alert('Send Error', msg);
       setInputText(text); // restore failed input
     } finally {
       setSending(false);
@@ -347,8 +348,8 @@ export default function StudentChatScreen() {
                 prev.map((m) => (m.id === msg.id ? { ...m, is_deleted: true } : m))
               );
             } catch (err: unknown) {
-              const errMsg = err instanceof Error ? err.message : String(err);
-              Alert.alert('Error', errMsg || 'Could not delete message.');
+              const errMsg = extractErrorMessage(err, 'Could not delete message.');
+              Alert.alert('Error', errMsg);
             }
           },
         },

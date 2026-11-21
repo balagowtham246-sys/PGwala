@@ -3,6 +3,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import { AppState, Platform } from 'react-native';
 
+import { extractErrorMessage } from '@/lib/error-utils';
+
 const supabaseUrl =
   process.env.EXPO_PUBLIC_SUPABASE_URL || 'https://placeholder.supabase.co';
 const supabasePublishableKey =
@@ -104,7 +106,7 @@ export async function testSupabaseConnection(): Promise<{
       details: data,
     };
   } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
+    const errorMsg = extractErrorMessage(err, 'Unknown Supabase error');
     return {
       connected: false,
       message: `Failed to connect to Supabase: ${errorMsg}`,

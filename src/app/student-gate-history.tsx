@@ -42,6 +42,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '@/context/auth-context';
 import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { supabase } from '@/lib/supabase';
 
 interface StudentResident {
@@ -273,9 +274,9 @@ export default function StudentGateHistoryScreen() {
       setLogs(logsData || []);
       setNowMs(Date.now());
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Could not load your gate entry and exit history.');
       console.error('[StudentGateHistory] Error loading gate logs:', err);
-      Alert.alert('Load Error', msg || 'Could not load your gate entry and exit history.');
+      Alert.alert('Load Error', msg);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -360,8 +361,8 @@ export default function StudentGateHistoryScreen() {
         }
         await loadData();
       } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        Alert.alert('Update Failed', msg || 'Could not update gate status.');
+        const msg = extractErrorMessage(err, 'Could not update gate status.');
+        Alert.alert('Update Failed', msg);
       } finally {
         savingRef.current = false;
         setSavingMovement(false);
@@ -407,15 +408,15 @@ export default function StudentGateHistoryScreen() {
       });
       await loadData();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      Alert.alert('Update Failed', msg || 'Could not update gate status.');
+      const msg = extractErrorMessage(err, 'Could not update gate status.');
+      Alert.alert('Update Failed', msg);
     } finally {
       savingRef.current = false;
       setSavingMovement(false);
     }
   };
 
-  const handleTellOwnerRunningLate = async () => {
+  const handleTellOwnerRunningLate = useCallback(async () => {
     if (savingRef.current || currentStatus !== 'OUT' || !latestLog) return;
     savingRef.current = true;
     setSavingMovement(true);
@@ -479,7 +480,14 @@ export default function StudentGateHistoryScreen() {
       savingRef.current = false;
       setSavingMovement(false);
     }
-  };
+  }, [
+    currentStatus,
+    latestLog,
+    userId,
+    resident?.owner_phone,
+    loadData,
+    showToast,
+  ]);
 
   // Filtered logs
   const filteredLogs = useMemo(() => {

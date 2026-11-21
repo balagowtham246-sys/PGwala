@@ -39,6 +39,7 @@ import { useAuth } from '@/context/auth-context';
 import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
 import { useOfflineMutation } from '@/hooks/use-offline-mutation';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import { registerForPushNotifications } from '@/lib/push-notifications';
 import { supabase } from '@/lib/supabase';
@@ -365,10 +366,10 @@ export default function StudentNotificationsScreen() {
       triggerSuccessHaptic();
       setTestNotice('Test notification triggered on this device.');
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : 'Could not trigger test notification on this device.';
+      const msg = extractErrorMessage(
+        err,
+        'Could not trigger test notification on this device.'
+      );
       setTestNotice(msg);
       Alert.alert('Notification Test Failed', msg);
     } finally {

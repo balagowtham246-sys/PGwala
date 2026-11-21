@@ -38,6 +38,7 @@ import {
   StatusBadge,
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
@@ -264,8 +265,10 @@ export default function OwnerAnnouncementsScreen() {
     try {
       await Share.share({ message: whatsappState.whatsappMessage });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Could not open share sheet.';
-      Alert.alert('Share Unavailable', msg);
+      Alert.alert(
+        'Share Unavailable',
+        extractErrorMessage(err, 'Could not open share sheet.')
+      );
     }
   };
 

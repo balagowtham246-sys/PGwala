@@ -15,6 +15,7 @@ import {
 import { AlertTriangle, Clock, Utensils, X } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
+import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
 import { triggerSelectionHaptic } from '@/lib/haptics';
 import { formatHhMmTo12h, isReturnAfterCurfew } from '@/lib/ux-utils';
 
@@ -64,6 +65,8 @@ export function GoingOutModal({
     Boolean(curfewTime && formattedCurfew) &&
     isReturnAfterCurfew(effectiveReturn, curfewTime);
 
+  useModalBackHandler(visible, onClose, saving);
+
   const handleConfirmPress = () => {
     const finalPurpose =
       purpose === 'Other' ? customPurpose.trim() || 'Personal / Other' : purpose;
@@ -81,7 +84,9 @@ export function GoingOutModal({
       visible={visible}
       transparent
       animationType="slide"
-      onRequestClose={onClose}>
+      onRequestClose={() => {
+        if (!saving) onClose();
+      }}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.overlay}>

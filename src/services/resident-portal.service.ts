@@ -1,8 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import { enqueueOfflineMutation } from '@/lib/offline-queue';
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
 import { invalidatePrefix } from '@/lib/query-cache';
-import { fail, ok, ServiceResult } from '@/lib/service-result';
+import { fail, isLikelyNetworkError, ok, ServiceResult } from '@/lib/service-result';
 import { supabase } from '@/lib/supabase';
 import type { MealType } from '@/services/dashboard.service';
 
@@ -329,7 +330,13 @@ export async function fetchResidentAccommodation(
 export async function updateResidentEmergencyContact(
   residentId: string,
   rawValue: string
-): Promise<ServiceResult<{ emergencyContact: string | null; savedLocally: boolean }>> {
+): Promise<
+  ServiceResult<{
+    emergencyContact: string | null;
+    savedLocally: boolean;
+    queued?: boolean;
+  }>
+> {
   const clean = rawValue.trim() || null;
   const traceLabel = `resident-portal:emergency:${residentId}`;
   startTrace(traceLabel);
@@ -347,6 +354,18 @@ export async function updateResidentEmergencyContact(
         );
         return ok({ emergencyContact: clean, savedLocally: true });
       }
+      if (isLikelyNetworkError(error)) {
+        await enqueueOfflineMutation(
+          'set_my_emergency_contact',
+          { residentId, value: clean ?? '' },
+          `emergency-contact:${residentId}`
+        );
+        await AsyncStorage.setItem(
+          `${STORAGE_EMERGENCY_CONTACT_PREFIX}${residentId}`,
+          JSON.stringify({ value: clean, pendingLocalFallback: true })
+        );
+        return ok({ emergencyContact: clean, savedLocally: true, queued: true });
+      }
       return fail(error, 'Could not save emergency contact.');
     }
 
@@ -360,6 +379,22 @@ export async function updateResidentEmergencyContact(
     ]);
     return ok({ emergencyContact: clean, savedLocally: false });
   } catch (err) {
+    if (isLikelyNetworkError(err)) {
+      try {
+        await enqueueOfflineMutation(
+          'set_my_emergency_contact',
+          { residentId, value: clean ?? '' },
+          `emergency-contact:${residentId}`
+        );
+        await AsyncStorage.setItem(
+          `${STORAGE_EMERGENCY_CONTACT_PREFIX}${residentId}`,
+          JSON.stringify({ value: clean, pendingLocalFallback: true })
+        );
+        return ok({ emergencyContact: clean, savedLocally: true, queued: true });
+      } catch (queueErr) {
+        return fail(queueErr, 'Failed to queue emergency contact update.');
+      }
+    }
     return fail(err, 'Failed to save emergency contact.');
   } finally {
     endTrace(traceLabel);

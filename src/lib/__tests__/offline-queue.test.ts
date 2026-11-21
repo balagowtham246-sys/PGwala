@@ -1,7 +1,3 @@
-jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
-);
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   APPROVED_OFFLINE_OPERATIONS,
@@ -13,6 +9,10 @@ import {
   isApprovedOfflineOperation,
 } from '../offline-queue';
 
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
+
 describe('offline-queue', () => {
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -20,15 +20,17 @@ describe('offline-queue', () => {
     await clearOfflineQueue();
   });
 
-  it('only approves gate_movement_log, food_opt_in, and complaint_submit', () => {
+  it('only approves gate_movement_log, food_opt_in, complaint_submit, and set_my_emergency_contact', () => {
     expect(APPROVED_OFFLINE_OPERATIONS).toEqual([
       'gate_movement_log',
       'food_opt_in',
       'complaint_submit',
+      'set_my_emergency_contact',
     ]);
     expect(isApprovedOfflineOperation('gate_movement_log')).toBe(true);
     expect(isApprovedOfflineOperation('food_opt_in')).toBe(true);
     expect(isApprovedOfflineOperation('complaint_submit')).toBe(true);
+    expect(isApprovedOfflineOperation('set_my_emergency_contact')).toBe(true);
 
     expect(isApprovedOfflineOperation('confirm_monthly_payment')).toBe(false);
     expect(isApprovedOfflineOperation('generate_monthly_bills')).toBe(false);

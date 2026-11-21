@@ -454,3 +454,32 @@ export function isReturnAfterCurfew(
   if (returnMins === null) return false;
   return returnMins > curfewMins;
 }
+
+/**
+ * Validates a strict YYYY-MM-DD calendar date string (rejects Feb 30, etc.).
+ */
+export function isValidIsoDate(value: string): boolean {
+  const trimmed = value.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!match) return false;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
+}
+
+/**
+ * Returns today's local date formatted as YYYY-MM-DD.
+ */
+export function formatLocalIsoDate(date: Date = new Date()): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}

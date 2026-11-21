@@ -105,3 +105,34 @@ export async function checkAppVersion(platform: 'android' | 'ios' = 'android'): 
   }
 }
 
+export type UpdateGuardDisplayMode =
+  | 'none'
+  | 'mandatory_native'
+  | 'optional_native'
+  | 'ota_ready';
+
+/**
+ * Resolves which update prompt (if any) UpdateGuard should render,
+ * prioritizing mandatory native binary upgrades ahead of OTA restarts.
+ */
+export function resolveUpdateGuardMode(params: {
+  versionResult: VersionCheckResult | null;
+  otaReady: boolean;
+  dismissed: boolean;
+}): UpdateGuardDisplayMode {
+  const { versionResult, otaReady, dismissed } = params;
+  if (versionResult?.isOutdated && versionResult.isMandatory) {
+    return 'mandatory_native';
+  }
+  if (dismissed) {
+    return 'none';
+  }
+  if (otaReady) {
+    return 'ota_ready';
+  }
+  if (versionResult?.isOutdated) {
+    return 'optional_native';
+  }
+  return 'none';
+}
+

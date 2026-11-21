@@ -12,10 +12,11 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router, useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { AlertTriangle } from 'lucide-react-native';
 
 import { useAuth } from '@/context/auth-context';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { supabase } from '@/lib/supabase';
 import { OwnerHeader } from '@/components/ui/owner';
 
@@ -57,6 +58,7 @@ interface PaymentDetail {
 
 export default function ReceiptDetailScreen() {
   const { user, profile } = useAuth();
+  const userId = user?.id;
   const { id } = useLocalSearchParams<{ id?: string }>();
 
   const [loading, setLoading] = useState(true);
@@ -65,66 +67,95 @@ export default function ReceiptDetailScreen() {
   const [showReverseModal, setShowReverseModal] = useState(false);
   const [reversalReason, setReversalReason] = useState('');
 
+  const fetchReceiptDetail = useCallback(async () => {
+    if (!id || !userId) return null;
+    const { data, error } = await supabase
+      .from('payments')
+      .select(`
+        id,
+        property_id,
+        resident_id,
+        receipt_number,
+        amount_paise,
+        unallocated_amount_paise,
+        method,
+        payment_date,
+        status,
+        notes,
+        reversal_reason,
+        reversed_at,
+        created_at,
+        resident:residents (
+          full_name,
+          room_number
+        ),
+        property:properties (
+          name,
+          address
+        ),
+        allocations:payment_allocations (
+          id,
+          status,
+          settled_amount_paise,
+          charge:charges (
+            category,
+            description,
+            billing_period_start,
+            due_date,
+            amount_paise
+          )
+        )
+      `)
+      .eq('id', id)
+      .single();
+
+    if (error) throw error;
+    return (data as any) || null;
+  }, [id, userId]);
+
   const loadReceipt = useCallback(async () => {
-    if (!id || !user?.id) return;
+    if (!id || !userId) return;
     try {
       setLoading(true);
-
-      const { data, error } = await supabase
-        .from('payments')
-        .select(`
-          id,
-          property_id,
-          resident_id,
-          receipt_number,
-          amount_paise,
-          unallocated_amount_paise,
-          method,
-          payment_date,
-          status,
-          notes,
-          reversal_reason,
-          reversed_at,
-          created_at,
-          resident:residents (
-            full_name,
-            room_number
-          ),
-          property:properties (
-            name,
-            address
-          ),
-          allocations:payment_allocations (
-            id,
-            status,
-            settled_amount_paise,
-            charge:charges (
-              category,
-              description,
-              billing_period_start,
-              due_date,
-              amount_paise
-            )
-          )
-        `)
-        .eq('id', id)
-        .single();
-
-      if (error) throw error;
-      setPayment((data as any) || null);
-    } catch (err: any) {
+      const detail = await fetchReceiptDetail();
+      setPayment(detail);
+    } catch (err: unknown) {
       console.error('[ReceiptDetail] Error loading receipt:', err);
-      Alert.alert('Load Failed', err.message || 'Could not load receipt details.');
+      Alert.alert(
+        'Load Failed',
+        extractErrorMessage(err, 'Could not load receipt details.')
+      );
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, userId, fetchReceiptDetail]);
 
   useEffect(() => {
-    if (id && user?.id) {
-      loadReceipt();
-    }
-  }, [id, user?.id, loadReceipt]);
+    if (!id || !userId) return;
+    let cancelled = false;
+    void fetchReceiptDetail()
+      .then((detail) => {
+        if (!cancelled) {
+          setPayment(detail);
+        }
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        console.error('[ReceiptDetail] Error loading receipt:', err);
+        Alert.alert(
+          'Load Failed',
+          extractErrorMessage(err, 'Could not load receipt details.')
+        );
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [id, userId, fetchReceiptDetail]);
 
   const handleOpenReverseModal = () => {
     setReversalReason('');
@@ -155,9 +186,12 @@ export default function ReceiptDetailScreen() {
       setShowReverseModal(false);
       setReversalReason('');
       Alert.alert('Payment Reversed', data.message || 'Receipt marked as reversed.');
-      loadReceipt();
-    } catch (err: any) {
-      Alert.alert('Error', err.message || 'Failed to reverse payment.');
+      await loadReceipt();
+    } catch (err: unknown) {
+      Alert.alert(
+        'Error',
+        extractErrorMessage(err, 'Failed to reverse payment.')
+      );
     } finally {
       setReversing(false);
     }

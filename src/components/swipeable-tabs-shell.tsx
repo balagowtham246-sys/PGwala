@@ -1,11 +1,26 @@
+import { useFocusEffect } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { BackHandler, StyleSheet, View } from 'react-native';
 import PagerView from 'react-native-pager-view';
 
 import { BottomNavTab, RoleBottomNav } from '@/components/ui/bottom-nav';
 import { ResidentTabsContext } from '@/context/resident-tabs-context';
 
 const TAB_ORDER: BottomNavTab[] = ['maintenance', 'menu', 'home', 'gate', 'bill'];
+export const HOME_TAB_INDEX = 2;
+
+export function createTabsBackPressHandler(
+  getActiveIndex: () => number,
+  onReturnHome: () => void
+): () => boolean {
+  return () => {
+    if (getActiveIndex() !== HOME_TAB_INDEX) {
+      onReturnHome();
+      return true;
+    }
+    return false;
+  };
+}
 
 function tabToIndex(tab?: string): number {
   const idx = tab ? TAB_ORDER.indexOf(tab as BottomNavTab) : -1;
@@ -37,6 +52,12 @@ export function SwipeableTabsShell({
   const pagerRef = useRef<PagerView>(null);
 
   const [activeIndex, setActiveIndex] = useState(initialIndex);
+  const activeIndexRef = useRef(initialIndex);
+
+  useEffect(() => {
+    activeIndexRef.current = activeIndex;
+  }, [activeIndex]);
+
   const [mountedIndices, setMountedIndices] = useState<Set<number>>(
     () => new Set([initialIndex])
   );
@@ -57,10 +78,25 @@ export function SwipeableTabsShell({
       const idx = TAB_ORDER.indexOf(tab);
       if (idx < 0) return;
       markMounted(idx);
+      activeIndexRef.current = idx;
       setActiveIndex(idx);
       pagerRef.current?.setPage(idx);
     },
     [markMounted]
+  );
+
+  // Android hardware back returns to the Home tab before exiting the shell.
+  useFocusEffect(
+    useCallback(() => {
+      const subscription = BackHandler.addEventListener(
+        'hardwareBackPress',
+        createTabsBackPressHandler(
+          () => activeIndexRef.current,
+          () => navigateToTab('home')
+        )
+      );
+      return () => subscription.remove();
+    }, [navigateToTab])
   );
 
   // Preload adjacent pages silently so swiping feels instantaneous

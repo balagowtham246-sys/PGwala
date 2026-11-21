@@ -1,45 +1,156 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Linking,
   Modal,
+  Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
-  Linking,
-  ScrollView,
 } from 'react-native';
-import { AlertTriangle, Download } from 'lucide-react-native';
-import { checkAppVersion, VersionCheckResult } from '@/lib/version-check';
+import * as Updates from 'expo-updates';
+import { AlertTriangle, Download, RefreshCw } from 'lucide-react-native';
+
+import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
+import {
+  checkAppVersion,
+  resolveUpdateGuardMode,
+  VersionCheckResult,
+} from '@/lib/version-check';
 
 export function UpdateGuard() {
   const [versionState, setVersionState] = useState<VersionCheckResult | null>(null);
+  const [otaReady, setOtaReady] = useState(false);
   const [dismissed, setDismissed] = useState(false);
+  const [reloadingOta, setReloadingOta] = useState(false);
 
   useEffect(() => {
-    checkAppVersion('android').then((res) => {
-      if (res.isOutdated) {
-        setVersionState(res);
+    let active = true;
+    const platform: 'android' | 'ios' = Platform.OS === 'ios' ? 'ios' : 'android';
+
+    void (async () => {
+      const nativeRes = await checkAppVersion(platform);
+      if (!active) return;
+
+      if (nativeRes.isOutdated) {
+        setVersionState(nativeRes);
+        if (nativeRes.isMandatory) {
+          return;
+        }
       }
-    });
+
+      if (Platform.OS === 'web' || __DEV__ || !Updates.isEnabled) {
+        return;
+      }
+
+      try {
+        const updateCheck = await Updates.checkForUpdateAsync();
+        if (!active || !updateCheck.isAvailable) return;
+        const fetched = await Updates.fetchUpdateAsync();
+        if (active && fetched.isNew) {
+          setOtaReady(true);
+        }
+      } catch {
+        // Offline or transient update-server failures stay silent.
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
-  if (!versionState || !versionState.isOutdated) {
-    return null;
-  }
+  const displayMode = resolveUpdateGuardMode({
+    versionResult: versionState,
+    otaReady,
+    dismissed,
+  });
+  const isMandatory = displayMode === 'mandatory_native';
 
-  // If update is optional and user dismissed it
-  if (!versionState.isMandatory && dismissed) {
+  useModalBackHandler(
+    displayMode !== 'none',
+    () => {
+      if (!isMandatory) setDismissed(true);
+    },
+    isMandatory
+  );
+
+  if (displayMode === 'none') {
     return null;
   }
 
   const handleDownload = async () => {
-    if (versionState.apkDownloadUrl) {
+    if (versionState?.apkDownloadUrl) {
       const supported = await Linking.canOpenURL(versionState.apkDownloadUrl);
       if (supported) {
         await Linking.openURL(versionState.apkDownloadUrl);
       }
     }
   };
+
+  const handleApplyOta = async () => {
+    if (reloadingOta) return;
+    setReloadingOta(true);
+    try {
+      await Updates.reloadAsync();
+    } catch {
+      setReloadingOta(false);
+      setDismissed(true);
+    }
+  };
+
+  if (displayMode === 'ota_ready') {
+    return (
+      <Modal
+        visible={true}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => setDismissed(true)}
+      >
+        <View style={styles.backdrop}>
+          <View style={styles.card}>
+            <View style={[styles.iconContainer, { backgroundColor: '#E0F2FE' }]}>
+              <RefreshCw size={32} color="#0284C7" />
+            </View>
+
+            <Text style={styles.title}>Update Ready to Apply</Text>
+            <Text style={styles.description}>
+              A quick over-the-air improvement has been downloaded. Restart now to
+              use the latest version.
+            </Text>
+
+            <View style={styles.buttonContainer}>
+              <TouchableOpacity
+                style={styles.downloadButton}
+                activeOpacity={0.8}
+                disabled={reloadingOta}
+                onPress={() => void handleApplyOta()}
+              >
+                <RefreshCw size={18} color="#FFFFFF" style={styles.buttonIcon} />
+                <Text style={styles.downloadButtonText}>
+                  {reloadingOta ? 'Restarting...' : 'Restart & Apply Update'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.dismissButton}
+                activeOpacity={0.7}
+                disabled={reloadingOta}
+                onPress={() => setDismissed(true)}
+              >
+                <Text style={styles.dismissButtonText}>Later (Apply Next Launch)</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
+  if (!versionState) {
+    return null;
+  }
 
   return (
     <Modal

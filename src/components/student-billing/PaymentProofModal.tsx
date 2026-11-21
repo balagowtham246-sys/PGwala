@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { Camera, X } from 'lucide-react-native';
+import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
 import {
   PaymentMethod,
@@ -61,12 +62,16 @@ export function PaymentProofModal({
   onPickScreenshot,
   onSubmit,
 }: PaymentProofModalProps) {
+  useModalBackHandler(visible, onClose, submitting);
+
   return (
     <Modal
       visible={visible}
       transparent
       animationType="slide"
-      onRequestClose={onClose}>
+      onRequestClose={() => {
+        if (!submitting) onClose();
+      }}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.modalOverlay}>

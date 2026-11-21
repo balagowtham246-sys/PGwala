@@ -20,6 +20,7 @@ import {
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { supabase } from '@/lib/supabase';
 import { useAuth, UserProfile } from '@/context/auth-context';
 import { PrimaryButton } from '@/components/ui/owner';
@@ -147,8 +148,9 @@ export default function LoginScreen() {
         );
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setErrorMessage(`Unexpected error during sign in: ${msg}`);
+      setErrorMessage(
+        extractErrorMessage(err, 'Unexpected error during sign in.')
+      );
     } finally {
       setLoading(false);
     }

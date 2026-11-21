@@ -3,6 +3,7 @@ import { ActivityIndicator, StyleSheet, View } from 'react-native';
 import { DefaultTheme, Stack, ThemeProvider, router, useSegments } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
+import * as Updates from 'expo-updates';
 import * as Sentry from '@sentry/react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
@@ -21,7 +22,14 @@ if (SENTRY_DSN) {
     dsn: SENTRY_DSN,
     debug: false,
     tracesSampleRate: 0.2,
+    environment: Updates.channel || (__DEV__ ? 'development' : 'production'),
   });
+  if (Updates.updateId) {
+    Sentry.setTag('expo_update_id', Updates.updateId);
+  }
+  if (Updates.runtimeVersion) {
+    Sentry.setTag('expo_runtime_version', Updates.runtimeVersion);
+  }
 }
 
 SplashScreen.preventAutoHideAsync();

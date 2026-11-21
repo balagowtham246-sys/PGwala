@@ -4,6 +4,7 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import * as Notifications from 'expo-notifications';
 
+import { extractErrorMessage } from '@/lib/error-utils';
 import { supabase } from '@/lib/supabase';
 
 export const FOOD_ALERT_CHANNEL_ID = 'food-alerts';
@@ -75,7 +76,10 @@ export async function registerForPushNotifications(
     }
     return { status: 'registered', token };
   } catch (err) {
-    return { status: 'error', message: err instanceof Error ? err.message : String(err) };
+    return {
+      status: 'error',
+      message: extractErrorMessage(err, 'Could not register for push notifications.'),
+    };
   }
 }
 

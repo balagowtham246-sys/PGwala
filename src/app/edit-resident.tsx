@@ -15,8 +15,6 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Href, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   AlertCircle,
-  AlertTriangle,
-  Calendar,
   CheckCircle2,
   X,
 } from 'lucide-react-native';
@@ -25,11 +23,13 @@ import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { invalidatePrefix } from '@/lib/query-cache';
 import { supabase } from '@/lib/supabase';
 import {
-  formatIsoDateDisplay,
+  formatLocalIsoDate,
   inferPropertyGender,
+  isValidIsoDate,
   normalizeIndianPhoneDigits,
   PropertyGenderType,
   ResidentGender,
@@ -41,14 +41,21 @@ import {
   ResidentUpdatePatch,
   updateResidentWithLock,
 } from '@/services/residents.service';
+import {
+  EditResidentDangerZone,
+  EditResidentPortalSection,
+  ResidentGenderField,
+  ResidentJoiningDateField,
+  ResidentPhoneField,
+  ResidentRentDepositRow,
+} from '@/components/residents/ResidentFormSections';
 import { RoomBedPicker } from '@/components/residents/RoomBedPicker';
 import { CalendarDatePickerModal } from '@/components/ui/calendar-date-picker-modal';
 import {
-  DestructiveButton,
   ErrorState,
   OwnerHeader,
+  OwnerSharedStyles,
   PrimaryButton,
-  SecondaryButton,
   StatusBadge,
 } from '@/components/ui/owner';
 
@@ -103,34 +110,7 @@ interface RpcResponse {
   profile_id?: string;
 }
 
-const RESIDENT_GENDER_OPTIONS: { value: ResidentGender; label: string }[] = [
-  { value: 'male', label: 'Male' },
-  { value: 'female', label: 'Female' },
-  { value: 'other', label: 'Other' },
-];
-
-function getTodayIsoDate(): string {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function isValidIsoDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [yStr, mStr, dStr] = value.split('-');
-  const year = Number(yStr);
-  const month = Number(mStr);
-  const day = Number(dStr);
-  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
-  const date = new Date(year, month - 1, day);
-  return (
-    date.getFullYear() === year &&
-    date.getMonth() === month - 1 &&
-    date.getDate() === day
-  );
-}
+const getTodayIsoDate = formatLocalIsoDate;
 
 function parseRupeesToPaise(raw: string): { valid: boolean; paise: number } {
   const trimmed = raw.trim();
@@ -430,7 +410,7 @@ export default function EditResidentScreen() {
       setNotes(initialForm.notes);
       setRoomRefreshSignal((n) => n + 1);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       console.error('[EditResident] Error fetching resident:', err);
       setIsLoadError(true);
       setErrorMessage(`Failed to load resident: ${msg}`);
@@ -660,7 +640,7 @@ export default function EditResidentScreen() {
         router.replace('/residents-directory' as unknown as Href);
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       console.error('[EditResident] Update error:', err);
       showFormError(`Update Failed: ${msg}`);
     } finally {
@@ -706,7 +686,7 @@ export default function EditResidentScreen() {
       showToast(successMsg);
       await loadResident();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       showFormError(msg);
     } finally {
       setLinking(false);
@@ -754,7 +734,7 @@ export default function EditResidentScreen() {
       showToast(successMsg);
       await loadResident();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       showFormError(msg);
     } finally {
       setUnlinking(false);
@@ -805,7 +785,7 @@ export default function EditResidentScreen() {
       showToast(`${resident.full_name} deactivated. Historical records preserved.`);
       router.replace('/(tabs)');
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Operation failed. Please try again.');
       showFormError(`Deactivation Failed: ${msg}`);
     } finally {
       setDeactivating(false);
@@ -906,9 +886,9 @@ export default function EditResidentScreen() {
 
                 {/* Full Name */}
                 <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Full Name *</Text>
+                  <Text style={OwnerSharedStyles.inputLabel}>Full Name *</Text>
                   <TextInput
-                    style={styles.textInput}
+                    style={OwnerSharedStyles.textInput}
                     value={fullName}
                     onChangeText={(val) => {
                       setFullName(val);
@@ -921,38 +901,14 @@ export default function EditResidentScreen() {
                   />
                 </View>
 
-                {/* Gender */}
-                <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Gender *</Text>
-                  <View style={styles.chipRow}>
-                    {RESIDENT_GENDER_OPTIONS.map((opt) => {
-                      const isSelected = gender === opt.value;
-                      return (
-                        <Pressable
-                          key={opt.value}
-                          accessibilityRole="radio"
-                          accessibilityState={{ selected: isSelected }}
-                          onPress={() => {
-                            setGender(opt.value);
-                            setErrorMessage(null);
-                            setSuccessMessage(null);
-                          }}
-                          style={[
-                            styles.segmentChip,
-                            isSelected && styles.segmentChipActive,
-                          ]}>
-                          <Text
-                            style={[
-                              styles.segmentChipText,
-                              isSelected && styles.segmentChipTextActive,
-                            ]}>
-                            {opt.label}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </View>
+                <ResidentGenderField
+                  gender={gender}
+                  onSelect={(val) => {
+                    setGender(val);
+                    setErrorMessage(null);
+                    setSuccessMessage(null);
+                  }}
+                />
 
                 {/* Unified Room & Bed Picker */}
                 <View style={styles.pickerGroup}>
@@ -973,118 +929,41 @@ export default function EditResidentScreen() {
                   />
                 </View>
 
-                {/* Phone Number (Required, +91 prefix) */}
-                <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Phone Number *</Text>
-                  <View style={styles.prefixedInputWrap}>
-                    <View style={styles.prefixBadge}>
-                      <Text style={styles.prefixText}>+91</Text>
-                    </View>
-                    <TextInput
-                      style={styles.prefixedTextInput}
-                      value={phoneNumber}
-                      onChangeText={(val) => {
-                        setPhoneNumber(val);
-                        setErrorMessage(null);
-                        setSuccessMessage(null);
-                      }}
-                      placeholder="Enter 10-digit mobile number"
-                      placeholderTextColor={OwnerTheme.colors.textMuted}
-                      keyboardType="phone-pad"
-                      maxLength={16}
-                    />
-                  </View>
-                  <Text style={styles.helperText}>
-                    Enter any 10-digit mobile number (with or without +91).
-                  </Text>
+                <ResidentPhoneField
+                  value={phoneNumber}
+                  onChangeText={(val) => {
+                    setPhoneNumber(val);
+                    setErrorMessage(null);
+                    setSuccessMessage(null);
+                  }}
+                  duplicatePhoneResident={duplicatePhoneResident}
+                />
 
-                  {duplicatePhoneResident && (
-                    <View style={[styles.warningBox, { marginTop: 8 }]}>
-                      <AlertTriangle
-                        size={15}
-                        color={OwnerTheme.colors.warning}
-                        style={{ marginTop: 1 }}
-                      />
-                      <Text style={styles.warningText}>
-                        Duplicate phone warning: Already registered to{' '}
-                        {duplicatePhoneResident.full_name} (Room{' '}
-                        {duplicatePhoneResident.room_number}) in this property.
-                      </Text>
-                    </View>
-                  )}
-                </View>
+                <ResidentJoiningDateField
+                  joiningDate={joiningDate}
+                  onOpenPicker={() => setShowDatePicker(true)}
+                />
 
-                {/* Joining Date */}
-                <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Joining Date *</Text>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel="Select joining date"
-                    onPress={() => setShowDatePicker(true)}
-                    style={({ pressed }) => [
-                      styles.datePickerBtn,
-                      pressed && styles.datePickerBtnPressed,
-                    ]}>
-                    <View style={styles.datePickerBtnLeft}>
-                      <Calendar size={18} color={OwnerTheme.colors.primary} />
-                      <Text style={styles.datePickerBtnText}>
-                        {formatIsoDateDisplay(joiningDate)}
-                      </Text>
-                    </View>
-                    <Text style={styles.datePickerChangeText}>Select</Text>
-                  </Pressable>
-                </View>
-
-                {/* Monthly Rent & Security Deposit */}
-                <View style={styles.twoColRow}>
-                  <View style={[styles.fieldGroup, { flex: 1 }]}>
-                    <Text style={styles.label}>Monthly Rent (₹)</Text>
-                    <View style={styles.prefixedInputWrap}>
-                      <View style={styles.prefixBadge}>
-                        <Text style={styles.prefixText}>₹</Text>
-                      </View>
-                      <TextInput
-                        style={styles.prefixedTextInput}
-                        value={monthlyRent}
-                        onChangeText={(val) => {
-                          setMonthlyRent(val.replace(/[^0-9.]/g, ''));
-                          setErrorMessage(null);
-                          setSuccessMessage(null);
-                        }}
-                        placeholder="8000"
-                        placeholderTextColor={OwnerTheme.colors.textMuted}
-                        keyboardType="decimal-pad"
-                      />
-                    </View>
-                  </View>
-
-                  <View style={[styles.fieldGroup, { flex: 1 }]}>
-                    <Text style={styles.label}>Security Deposit (₹)</Text>
-                    <View style={styles.prefixedInputWrap}>
-                      <View style={styles.prefixBadge}>
-                        <Text style={styles.prefixText}>₹</Text>
-                      </View>
-                      <TextInput
-                        style={styles.prefixedTextInput}
-                        value={depositAmount}
-                        onChangeText={(val) => {
-                          setDepositAmount(val.replace(/[^0-9.]/g, ''));
-                          setErrorMessage(null);
-                          setSuccessMessage(null);
-                        }}
-                        placeholder="10000"
-                        placeholderTextColor={OwnerTheme.colors.textMuted}
-                        keyboardType="decimal-pad"
-                      />
-                    </View>
-                  </View>
-                </View>
+                <ResidentRentDepositRow
+                  monthlyRent={monthlyRent}
+                  depositAmount={depositAmount}
+                  onChangeRent={(val) => {
+                    setMonthlyRent(val);
+                    setErrorMessage(null);
+                    setSuccessMessage(null);
+                  }}
+                  onChangeDeposit={(val) => {
+                    setDepositAmount(val);
+                    setErrorMessage(null);
+                    setSuccessMessage(null);
+                  }}
+                />
 
                 {/* Emergency Contact */}
                 <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Emergency Contact</Text>
+                  <Text style={OwnerSharedStyles.inputLabel}>Emergency Contact</Text>
                   <TextInput
-                    style={styles.textInput}
+                    style={OwnerSharedStyles.textInput}
                     value={emergencyContact}
                     onChangeText={(val) => {
                       setEmergencyContact(val);
@@ -1098,7 +977,7 @@ export default function EditResidentScreen() {
 
                 {/* Private Owner Notes */}
                 <View style={styles.fieldGroup}>
-                  <Text style={styles.label}>Private Owner Notes</Text>
+                  <Text style={OwnerSharedStyles.inputLabel}>Private Owner Notes</Text>
                   <TextInput
                     style={styles.notesInput}
                     value={notes}
@@ -1127,87 +1006,25 @@ export default function EditResidentScreen() {
                 />
               </View>
 
-              {/* Section B: Student Portal Access */}
-              <View style={styles.sectionCard}>
-                <View style={styles.sectionHeader}>
-                  <Text style={styles.sectionTitle}>Student Portal Access</Text>
-                  <StatusBadge
-                    label={isLinked ? 'LINKED' : 'NOT LINKED'}
-                    variant={isLinked ? 'success' : 'warning'}
-                    size="sm"
-                  />
-                </View>
+              <EditResidentPortalSection
+                isLinked={isLinked}
+                linkedProfileName={resident.profile?.full_name}
+                studentEmail={studentEmail}
+                unlinking={unlinking}
+                linking={linking}
+                onChangeEmail={(val) => {
+                  setStudentEmail(val);
+                  setErrorMessage(null);
+                }}
+                onUnlink={handleConfirmUnlink}
+                onLink={handleLinkStudent}
+              />
 
-                {isLinked ? (
-                  <View style={styles.linkedInfoBox}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.linkedAccountName}>
-                        {resident.profile?.full_name || 'Linked Student Account'}
-                      </Text>
-                      <Text style={styles.linkedAccountSub}>
-                        Account is active and linked to this resident profile.
-                      </Text>
-                    </View>
-                    <SecondaryButton
-                      label="Unlink"
-                      onPress={handleConfirmUnlink}
-                      loading={unlinking}
-                      style={styles.unlinkBtn}
-                      textStyle={{ color: OwnerTheme.colors.danger, fontSize: 13 }}
-                    />
-                  </View>
-                ) : (
-                  <View>
-                    <Text style={styles.portalExplanation}>
-                      Link this resident to a registered student account email so
-                      they can access their personal PG app.
-                    </Text>
-                    <View style={styles.fieldGroup}>
-                      <Text style={styles.label}>Student Login Email</Text>
-                      <TextInput
-                        style={styles.textInput}
-                        value={studentEmail}
-                        onChangeText={(val) => {
-                          setStudentEmail(val);
-                          setErrorMessage(null);
-                        }}
-                        placeholder="student@example.com"
-                        placeholderTextColor={OwnerTheme.colors.textMuted}
-                        keyboardType="email-address"
-                        autoCapitalize="none"
-                      />
-                    </View>
-                    <SecondaryButton
-                      label="Link Student Account"
-                      onPress={handleLinkStudent}
-                      loading={linking}
-                    />
-                  </View>
-                )}
-              </View>
-
-              {/* Section C: Danger Zone */}
-              <View style={styles.dangerZoneCard}>
-                <View style={styles.dangerHeader}>
-                  <AlertTriangle size={18} color={OwnerTheme.colors.danger} />
-                  <Text style={styles.dangerTitle}>Danger Zone</Text>
-                </View>
-                <Text style={styles.dangerExplanation}>
-                  Deactivating will remove the resident from the active roster. All
-                  historical payments, receipts, and attendance logs are strictly
-                  preserved.
-                </Text>
-                <DestructiveButton
-                  label={
-                    resident.is_active
-                      ? 'Deactivate Resident'
-                      : 'Resident Already Inactive'
-                  }
-                  onPress={handleConfirmDeactivate}
-                  loading={deactivating}
-                  disabled={!resident.is_active || deactivating}
-                />
-              </View>
+              <EditResidentDangerZone
+                isActive={resident.is_active}
+                deactivating={deactivating}
+                onDeactivate={handleConfirmDeactivate}
+              />
             </>
           ) : null}
 
@@ -1328,22 +1145,6 @@ const styles = StyleSheet.create({
   pickerGroup: {
     marginBottom: 14,
   },
-  label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-    marginBottom: 6,
-  },
-  textInput: {
-    height: 50,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    paddingHorizontal: 14,
-    fontSize: 15,
-    color: OwnerTheme.colors.textPrimary,
-    backgroundColor: '#FFFFFF',
-  },
   notesInput: {
     minHeight: 88,
     borderRadius: OwnerTheme.radius.md,
@@ -1359,168 +1160,5 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: OwnerTheme.colors.textSecondary,
     marginTop: 6,
-  },
-  chipRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  segmentChip: {
-    flex: 1,
-    height: 42,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    backgroundColor: '#FAFAFA',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  segmentChipActive: {
-    borderColor: OwnerTheme.colors.primary,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-  },
-  segmentChipText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  segmentChipTextActive: {
-    color: OwnerTheme.colors.primary,
-    fontWeight: '700',
-  },
-  prefixedInputWrap: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: 50,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    backgroundColor: '#FFFFFF',
-    overflow: 'hidden',
-  },
-  prefixBadge: {
-    height: '100%',
-    paddingHorizontal: 12,
-    backgroundColor: '#F1F5F9',
-    borderRightWidth: 1,
-    borderRightColor: OwnerTheme.colors.border,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  prefixText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  prefixedTextInput: {
-    flex: 1,
-    height: '100%',
-    paddingHorizontal: 12,
-    fontSize: 15,
-    color: OwnerTheme.colors.textPrimary,
-  },
-  twoColRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  datePickerBtn: {
-    height: 50,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    paddingHorizontal: 14,
-    backgroundColor: '#FFFFFF',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  datePickerBtnPressed: {
-    backgroundColor: '#F8FAFC',
-    borderColor: OwnerTheme.colors.primary,
-  },
-  datePickerBtnLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  datePickerBtnText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  datePickerChangeText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.primary,
-  },
-  warningBox: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-    padding: 12,
-    borderRadius: OwnerTheme.radius.md,
-    backgroundColor: OwnerTheme.colors.warningLight,
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-  },
-  warningText: {
-    flex: 1,
-    fontSize: 12,
-    color: '#92400E',
-    lineHeight: 17,
-    fontWeight: '500',
-  },
-  portalExplanation: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-    marginBottom: 14,
-    lineHeight: 18,
-  },
-  linkedInfoBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F8FAFC',
-    borderRadius: OwnerTheme.radius.md,
-    padding: 14,
-    gap: 12,
-  },
-  linkedAccountName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  linkedAccountSub: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-    marginTop: 2,
-  },
-  unlinkBtn: {
-    height: 38,
-    paddingHorizontal: 14,
-    borderColor: '#FECACA',
-    backgroundColor: '#FFF5F5',
-  },
-  dangerZoneCard: {
-    backgroundColor: '#FFF5F5',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: '#FEE2E2',
-    padding: 18,
-  },
-  dangerHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  dangerTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: OwnerTheme.colors.danger,
-  },
-  dangerExplanation: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
-    marginBottom: 16,
-    lineHeight: 18,
   },
 });

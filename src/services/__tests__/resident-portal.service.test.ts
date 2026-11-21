@@ -1,8 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import {
+  clearOfflineQueue,
+  flushOfflineQueue,
+  getOfflineQueue,
+} from '@/lib/offline-queue';
 import { resetPerfMonitor } from '@/lib/perf-monitor';
 import { clearQueryCache } from '@/lib/query-cache';
 import { supabase } from '@/lib/supabase';
+import { defaultOfflineExecutors } from '@/services/offline-executors';
 import {
   fetchResidentAccommodation,
   fetchResidentMultiDayMenus,
@@ -509,6 +515,48 @@ describe('resident-portal.service', () => {
 
       const res = await updateResidentEmergencyContact('res-1', '9876543210');
       expect(res.ok).toBe(false);
+    });
+
+    it('queues set_my_emergency_contact offline when network fails and replays via defaultOfflineExecutors', async () => {
+      await clearOfflineQueue();
+      mockedRpc.mockRejectedValueOnce(new Error('Network request failed'));
+
+      const queuedRes = await updateResidentEmergencyContact(
+        'res-1',
+        'Ramesh 9900112233'
+      );
+      expect(queuedRes.ok).toBe(true);
+      if (queuedRes.ok) {
+        expect(queuedRes.data).toEqual({
+          emergencyContact: 'Ramesh 9900112233',
+          savedLocally: true,
+          queued: true,
+        });
+      }
+
+      const queuedItems = await getOfflineQueue();
+      expect(queuedItems).toHaveLength(1);
+      expect(queuedItems[0].operation).toBe('set_my_emergency_contact');
+      expect(queuedItems[0].payload).toEqual({
+        residentId: 'res-1',
+        value: 'Ramesh 9900112233',
+      });
+
+      mockedRpc.mockResolvedValueOnce({ error: null });
+      const summary = await flushOfflineQueue(defaultOfflineExecutors);
+      expect(summary.succeeded).toBe(1);
+      expect(summary.remainingCount).toBe(0);
+      expect(mockedRpc).toHaveBeenLastCalledWith('set_my_emergency_contact', {
+        p_value: 'Ramesh 9900112233',
+      });
+
+      const storedAfterSync = await AsyncStorage.getItem(
+        '@pgwala_resident_emergency_contact:res-1'
+      );
+      expect(JSON.parse(storedAfterSync!)).toEqual({
+        value: 'Ramesh 9900112233',
+        pendingLocalFallback: false,
+      });
     });
   });
 

@@ -1,7 +1,3 @@
-jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
-);
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getPerfSnapshot, resetPerfMonitor } from '../perf-monitor';
 import {
@@ -13,6 +9,10 @@ import {
   setCached,
   subscribeCache,
 } from '../query-cache';
+
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
 
 describe('query-cache', () => {
   beforeEach(async () => {

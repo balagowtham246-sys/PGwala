@@ -2,14 +2,11 @@ import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Image,
-  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,20 +14,19 @@ import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { OwnerHeader } from '@/components/ui/owner';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import {
-  CheckCircle2,
-  Camera,
-  Check,
-  X,
-  Droplets,
-  Zap,
-  Wifi,
-  Sparkles,
-  Utensils,
-  Armchair,
-  Wrench,
-} from 'lucide-react-native';
+import { CheckCircle2 } from 'lucide-react-native';
 
+import {
+  ComplaintCategory,
+  ComplaintPhotoPreviewModal,
+  ComplaintPriority,
+  ComplaintStatus,
+} from '@/components/complaints/OwnerComplaintsModals';
+import {
+  RaiseComplaintModal,
+  StudentComplaintCard,
+  StudentComplaintItem,
+} from '@/components/complaints/StudentComplaintModals';
 import { useAuth } from '@/context/auth-context';
 import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
@@ -42,39 +38,14 @@ import {
 } from '@/lib/offline-queue';
 import { isLikelyNetworkError } from '@/lib/service-result';
 import { supabase, decodeBase64ToBytes, getSignedComplaintPhotoUrl } from '@/lib/supabase';
-import { formatRoomLabel, toSentenceCaseStatus } from '@/lib/ux-utils';
+import { formatRoomLabel } from '@/lib/ux-utils';
 import {
   ComplaintOfflinePayload,
   defaultOfflineExecutors,
 } from '@/services/offline-executors';
 
-export type ComplaintCategory =
-  | 'plumbing'
-  | 'electrical'
-  | 'wifi_internet'
-  | 'cleaning'
-  | 'food_mess'
-  | 'carpentry_furniture'
-  | 'other';
-
-export type ComplaintPriority = 'low' | 'medium' | 'high' | 'urgent';
-
-export type ComplaintStatus = 'open' | 'in_progress' | 'resolved' | 'rejected';
-
-export interface ComplaintRecord {
-  id: string;
-  property_id: string;
-  resident_id: string;
-  category: ComplaintCategory;
-  priority: ComplaintPriority;
-  status: ComplaintStatus;
-  title: string;
-  description: string;
-  photo_url: string | null;
-  owner_notes: string | null;
-  resolved_at: string | null;
-  created_at: string;
-}
+export type { ComplaintCategory, ComplaintPriority, ComplaintStatus };
+export type ComplaintRecord = StudentComplaintItem;
 
 interface StudentResident {
   id: string;
@@ -85,39 +56,6 @@ interface StudentResident {
     name: string;
   };
 }
-
-const CATEGORY_CONFIG: Record<
-  ComplaintCategory,
-  { label: string; Icon: React.ComponentType<{ size?: number; color?: string }> }
-> = {
-  plumbing: { label: 'Plumbing / Water', Icon: Droplets },
-  electrical: { label: 'Electrical / Lights', Icon: Zap },
-  wifi_internet: { label: 'Wi-Fi & Internet', Icon: Wifi },
-  cleaning: { label: 'Room & Washroom Cleaning', Icon: Sparkles },
-  food_mess: { label: 'Food & Mess Quality', Icon: Utensils },
-  carpentry_furniture: { label: 'Bed & Furniture', Icon: Armchair },
-  other: { label: 'Other Issues', Icon: Wrench },
-};
-
-const PRIORITY_CONFIG: Record<
-  ComplaintPriority,
-  { label: string; color: string; bgColor: string }
-> = {
-  urgent: { label: toSentenceCaseStatus('urgent'), color: '#DC2626', bgColor: '#FEE2E2' },
-  high: { label: toSentenceCaseStatus('high'), color: '#EA580C', bgColor: '#FFEDD5' },
-  medium: { label: toSentenceCaseStatus('medium'), color: '#D97706', bgColor: '#FEF3C7' },
-  low: { label: toSentenceCaseStatus('low'), color: '#64748B', bgColor: '#F1F5F9' },
-};
-
-const STATUS_CONFIG: Record<
-  ComplaintStatus,
-  { label: string; color: string; bgColor: string }
-> = {
-  open: { label: toSentenceCaseStatus('open'), color: '#0284C7', bgColor: '#E0F2FE' },
-  in_progress: { label: toSentenceCaseStatus('in_progress'), color: '#D97706', bgColor: '#FEF3C7' },
-  resolved: { label: toSentenceCaseStatus('resolved'), color: '#16A34A', bgColor: '#DCFCE7' },
-  rejected: { label: toSentenceCaseStatus('rejected'), color: '#DC2626', bgColor: '#FEE2E2' },
-};
 
 export default function StudentComplaintsScreen() {
   const { user } = useAuth();
@@ -543,263 +481,41 @@ export default function StudentComplaintsScreen() {
                 </Text>
               </View>
             ) : (
-              filteredComplaints.map((item) => {
-                const catInfo = CATEGORY_CONFIG[item.category] || CATEGORY_CONFIG.other;
-                const prioInfo = PRIORITY_CONFIG[item.priority] || PRIORITY_CONFIG.medium;
-                const statusInfo = STATUS_CONFIG[item.status] || STATUS_CONFIG.open;
-
-                const formattedDate = new Date(item.created_at).toLocaleDateString('en-IN', {
-                  day: 'numeric',
-                  month: 'short',
-                  year: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                });
-
-                return (
-                  <View key={item.id} style={styles.complaintCard}>
-                    {/* Top Row: Category & Badges */}
-                    <View style={styles.cardHeaderRow}>
-                      <View style={styles.catBadge}>
-                        <catInfo.Icon size={14} color="#475569" />
-                        <Text style={styles.catText}>{catInfo.label}</Text>
-                      </View>
-
-                      <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
-                        <View
-                          style={[
-                            styles.prioBadge,
-                            { backgroundColor: prioInfo.bgColor },
-                          ]}>
-                          <Text style={[styles.prioText, { color: prioInfo.color }]}>
-                            {prioInfo.label}
-                          </Text>
-                        </View>
-                        <View
-                          style={[
-                            styles.statusBadge,
-                            { backgroundColor: statusInfo.bgColor },
-                          ]}>
-                          <Text style={[styles.statusText, { color: statusInfo.color }]}>
-                            {statusInfo.label}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-
-                    {/* Title & Description */}
-                    <Text style={styles.cardTitle}>{item.title}</Text>
-                    <Text style={styles.cardDesc}>{item.description}</Text>
-
-                    <Text style={styles.cardDate}>Reported on {formattedDate}</Text>
-
-                    {/* Attached Photo View */}
-                    {item.photo_url && (
-                      <Pressable
-                        style={[styles.cardPhotoBtn, { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 }]}
-                        onPress={() => handleViewPhoto(item.photo_url!)}>
-                        <Camera size={14} color="#0284C7" />
-                        <Text style={styles.cardPhotoBtnText}>View Attached Photo</Text>
-                      </Pressable>
-                    )}
-
-                    {/* Owner Resolution Box */}
-                    {item.owner_notes && (
-                      <View style={styles.ownerResponseBox}>
-                        <Text style={styles.ownerResponseTitle}>Owner / Management Update:</Text>
-                        <Text style={styles.ownerResponseText}>{item.owner_notes}</Text>
-                        {item.resolved_at && (
-                          <Text style={styles.resolvedDateText}>
-                            Resolved on{' '}
-                            {new Date(item.resolved_at).toLocaleDateString('en-IN', {
-                              day: 'numeric',
-                              month: 'short',
-                              year: 'numeric',
-                            })}
-                          </Text>
-                        )}
-                      </View>
-                    )}
-                  </View>
-                );
-              })
+              filteredComplaints.map((item) => (
+                <StudentComplaintCard
+                  key={item.id}
+                  item={item}
+                  onViewPhoto={(url) => void handleViewPhoto(url)}
+                />
+              ))
             )}
           </>
         )}
       </ScrollView>
 
-      {/* MODAL: Raise New Complaint */}
-      <Modal
+      <RaiseComplaintModal
         visible={showModal}
-        transparent
-        animationType="slide"
-        onRequestClose={() => {
-          if (!submitting) setShowModal(false);
-        }}>
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Raise Complaint / Request</Text>
-            <Text style={styles.modalSub}>
-              Let your PG owner know what needs maintenance or repair in your room.
-            </Text>
+        submitting={submitting}
+        category={category}
+        priority={priority}
+        title={title}
+        description={description}
+        selectedPhotoUri={selectedPhoto?.uri ?? null}
+        onSelectCategory={setCategory}
+        onSelectPriority={setPriority}
+        onChangeTitle={setTitle}
+        onChangeDescription={setDescription}
+        onPickImage={handlePickImage}
+        onRemovePhoto={() => setSelectedPhoto(null)}
+        onSubmit={handleSubmitComplaint}
+        onClose={() => setShowModal(false)}
+      />
 
-            <ScrollView showsVerticalScrollIndicator={false}>
-              {/* Category Selection */}
-              <Text style={styles.inputLabel}>Select Category</Text>
-              <View style={styles.categoryWrap}>
-                {(
-                  Object.keys(CATEGORY_CONFIG) as ComplaintCategory[]
-                ).map((catKey) => {
-                  const isSelected = category === catKey;
-                  const cConfig = CATEGORY_CONFIG[catKey];
-                  return (
-                    <Pressable
-                      key={catKey}
-                      style={[
-                        styles.categoryChip,
-                        isSelected && styles.categoryChipActive,
-                      ]}
-                      onPress={() => setCategory(catKey)}>
-                      <cConfig.Icon size={14} color={isSelected ? '#FFFFFF' : '#475569'} />
-                      <Text
-                        style={[
-                          styles.categoryChipText,
-                          isSelected && styles.categoryChipTextActive,
-                        ]}>
-                        {cConfig.label}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-
-              {/* Priority Toggle */}
-              <Text style={[styles.inputLabel, { marginTop: 12 }]}>Urgency / Priority</Text>
-              <View style={styles.prioToggleRow}>
-                {(['low', 'medium', 'high', 'urgent'] as ComplaintPriority[]).map(
-                  (prioKey) => {
-                    const isSelected = priority === prioKey;
-                    const pConfig = PRIORITY_CONFIG[prioKey];
-                    return (
-                      <Pressable
-                        key={prioKey}
-                        style={[
-                          styles.prioToggleBtn,
-                          isSelected && {
-                            backgroundColor: pConfig.bgColor,
-                            borderColor: pConfig.color,
-                          },
-                        ]}
-                        onPress={() => setPriority(prioKey)}>
-                        <Text
-                          style={[
-                            styles.prioToggleText,
-                            isSelected && { color: pConfig.color, fontWeight: '800' },
-                          ]}>
-                          {pConfig.label}
-                        </Text>
-                      </Pressable>
-                    );
-                  }
-                )}
-              </View>
-
-              {/* Title Input */}
-              <Text style={[styles.inputLabel, { marginTop: 12 }]}>Title *</Text>
-              <TextInput
-                style={styles.modalInput}
-                placeholder="e.g. Geyser not heating water"
-                placeholderTextColor="#94A3B8"
-                value={title}
-                onChangeText={setTitle}
-                maxLength={120}
-              />
-
-              {/* Description Input */}
-              <Text style={[styles.inputLabel, { marginTop: 12 }]}>Description *</Text>
-              <TextInput
-                style={[styles.modalInput, styles.descInput]}
-                placeholder="Describe the issue in detail (e.g. location, when it started)..."
-                placeholderTextColor="#94A3B8"
-                value={description}
-                onChangeText={setDescription}
-                multiline
-                numberOfLines={4}
-              />
-
-              {/* Photo Attachment Section */}
-              <Text style={[styles.inputLabel, { marginTop: 14 }]}>Photo of Issue (Optional)</Text>
-              {selectedPhoto ? (
-                <View style={styles.photoPreviewCard}>
-                  <Image source={{ uri: selectedPhoto.uri }} style={styles.photoPreviewImg} />
-                  <View style={styles.photoPreviewMeta}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                      <Check size={14} color="#059669" />
-                      <Text style={styles.photoAttachedText}>Photo Attached</Text>
-                    </View>
-                    <Pressable
-                      style={styles.photoRemoveBtn}
-                      onPress={() => setSelectedPhoto(null)}>
-                      <Text style={styles.photoRemoveBtnText}>Remove Photo</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              ) : (
-                <Pressable style={styles.photoUploadBtn} onPress={handlePickImage}>
-                  <Camera size={22} color="#64748B" />
-                  <Text style={styles.photoUploadTitle}>Attach Photo</Text>
-                  <Text style={styles.photoUploadSub}>Take a photo or choose from gallery</Text>
-                </Pressable>
-              )}
-            </ScrollView>
-
-            {/* Modal Buttons */}
-            <View style={styles.modalBtnRow}>
-              <Pressable
-                disabled={submitting}
-                style={styles.modalCancelBtn}
-                onPress={() => setShowModal(false)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                disabled={submitting}
-                style={[styles.modalSubmitBtn, submitting && styles.btnDisabled]}
-                onPress={handleSubmitComplaint}>
-                {submitting ? (
-                  <ActivityIndicator color="#FFFFFF" size="small" />
-                ) : (
-                  <Text style={styles.modalSubmitText}>Submit Complaint</Text>
-                )}
-              </Pressable>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Full-Screen Image Viewer Modal */}
-      <Modal
-        visible={Boolean(fullImageUrl || loadingFullImage)}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setFullImageUrl(null)}>
-        <View style={styles.fullImageOverlay}>
-          <Pressable
-            style={[styles.fullImageCloseBtn, { flexDirection: 'row', alignItems: 'center', gap: 6 }]}
-            onPress={() => setFullImageUrl(null)}>
-            <Text style={styles.fullImageCloseText}>Close</Text>
-            <X size={16} color="#FFFFFF" />
-          </Pressable>
-          {loadingFullImage ? (
-            <ActivityIndicator size="large" color="#FFFFFF" />
-          ) : fullImageUrl ? (
-            <Image
-              source={{ uri: fullImageUrl }}
-              style={styles.fullImageView}
-              resizeMode="contain"
-            />
-          ) : null}
-        </View>
-      </Modal>
+      <ComplaintPhotoPreviewModal
+        fullImageUrl={fullImageUrl}
+        loadingFullImage={loadingFullImage}
+        onClose={() => setFullImageUrl(null)}
+      />
 
       <RoleBottomNav activeTab="maintenance" roleOverride="student" />
     </SafeAreaView>
@@ -933,10 +649,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
-  emptyIcon: {
-    fontSize: 32,
-    marginBottom: 8,
-  },
   emptyTitle: {
     fontSize: 16,
     fontWeight: '700',
@@ -948,317 +660,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginTop: 4,
     lineHeight: 18,
-  },
-  complaintCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    marginBottom: 12,
-  },
-  cardHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  catBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
-    gap: 4,
-  },
-  catIcon: {
-    fontSize: 12,
-  },
-  catText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#334155',
-  },
-  prioBadge: {
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  prioText: {
-    fontSize: 9,
-    fontWeight: '800',
-  },
-  statusBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 4,
-  },
-  statusText: {
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0F172A',
-    marginBottom: 4,
-  },
-  cardDesc: {
-    fontSize: 13,
-    color: '#475569',
-    lineHeight: 19,
-  },
-  cardDate: {
-    fontSize: 11,
-    color: '#94A3B8',
-    marginTop: 8,
-  },
-  ownerResponseBox: {
-    backgroundColor: '#F0FDF4',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    padding: 10,
-    marginTop: 10,
-  },
-  ownerResponseTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#166534',
-    marginBottom: 2,
-  },
-  ownerResponseText: {
-    fontSize: 12,
-    color: '#15803D',
-    lineHeight: 18,
-  },
-  resolvedDateText: {
-    fontSize: 10,
-    color: '#166534',
-    marginTop: 4,
-    fontStyle: 'italic',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    padding: 20,
-  },
-  modalContent: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 16,
-    padding: 20,
-    maxHeight: '90%',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#0F172A',
-  },
-  modalSub: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 4,
-    marginBottom: 14,
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#334155',
-    marginBottom: 6,
-  },
-  categoryWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  categoryChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F1F5F9',
-    borderRadius: 8,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    gap: 4,
-  },
-  categoryChipActive: {
-    backgroundColor: '#087FAF',
-    borderColor: '#087FAF',
-  },
-  categoryChipIcon: {
-    fontSize: 12,
-  },
-  categoryChipText: {
-    fontSize: 12,
-    color: '#475569',
-    fontWeight: '600',
-  },
-  categoryChipTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '700',
-  },
-  prioToggleRow: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  prioToggleBtn: {
-    flex: 1,
-    paddingVertical: 7,
-    backgroundColor: '#F8FAFC',
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    alignItems: 'center',
-  },
-  prioToggleText: {
-    fontSize: 10,
-    color: '#64748B',
-    fontWeight: '700',
-  },
-  modalInput: {
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: '#0F172A',
-  },
-  descInput: {
-    height: 90,
-    textAlignVertical: 'top',
-  },
-  modalBtnRow: {
-    flexDirection: 'row',
-    gap: 10,
-    marginTop: 16,
-  },
-  modalCancelBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    backgroundColor: '#F1F5F9',
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalCancelText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#475569',
-  },
-  modalSubmitBtn: {
-    flex: 2,
-    paddingVertical: 12,
-    backgroundColor: '#0284C7',
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  modalSubmitText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  btnDisabled: {
-    opacity: 0.6,
-  },
-  cardPhotoBtn: {
-    marginTop: 8,
-    alignSelf: 'flex-start',
-    backgroundColor: '#F0F9FF',
-    borderWidth: 1,
-    borderColor: '#BAE6FD',
-    borderRadius: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  cardPhotoBtnText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#0284C7',
-  },
-  photoUploadBtn: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: '#BAE6FD',
-    borderStyle: 'dashed',
-    paddingVertical: 14,
-    alignItems: 'center',
-    marginTop: 6,
-  },
-  photoUploadIcon: {
-    fontSize: 26,
-  },
-  photoUploadTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0284C7',
-    marginTop: 3,
-  },
-  photoUploadSub: {
-    fontSize: 11,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  photoPreviewCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    borderRadius: 8,
-    padding: 10,
-    marginTop: 6,
-    gap: 12,
-  },
-  photoPreviewImg: {
-    width: 56,
-    height: 56,
-    borderRadius: 6,
-  },
-  photoPreviewMeta: {
-    flex: 1,
-  },
-  photoAttachedText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#15803D',
-  },
-  photoRemoveBtn: {
-    marginTop: 4,
-  },
-  photoRemoveBtnText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#DC2626',
-  },
-  fullImageOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.92)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  fullImageCloseBtn: {
-    position: 'absolute',
-    top: 50,
-    right: 20,
-    backgroundColor: 'rgba(255,255,255,0.2)',
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 20,
-    zIndex: 10,
-  },
-  fullImageCloseText: {
-    color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  fullImageView: {
-    width: '92%',
-    height: '80%',
   },
 });
 

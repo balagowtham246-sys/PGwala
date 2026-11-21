@@ -1,5 +1,11 @@
+import {
+  compareSemver,
+  getAppVersion,
+  resolveUpdateGuardMode,
+} from '../version-check';
+
 jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock')
 );
 
 jest.mock('expo-constants', () => ({
@@ -7,8 +13,6 @@ jest.mock('expo-constants', () => ({
     version: '1.0.0',
   },
 }));
-
-import { compareSemver, getAppVersion } from '../version-check';
 
 describe('compareSemver', () => {
   it('correctly compares equal versions', () => {
@@ -44,5 +48,64 @@ describe('compareSemver', () => {
 describe('getAppVersion', () => {
   it('returns the configured Expo version', () => {
     expect(getAppVersion()).toBe('1.0.0');
+  });
+});
+
+describe('resolveUpdateGuardMode (expo-updates + native UpdateGuard compatibility)', () => {
+  const baseVersion = {
+    isOutdated: false,
+    isMandatory: false,
+    currentVersion: '1.0.0',
+    minVersion: '1.0.0',
+    latestVersion: '1.0.0',
+    apkDownloadUrl: null,
+    releaseNotes: null,
+  };
+
+  it('prioritizes mandatory_native over ota_ready even when dismissed', () => {
+    expect(
+      resolveUpdateGuardMode({
+        versionResult: { ...baseVersion, isOutdated: true, isMandatory: true },
+        otaReady: true,
+        dismissed: true,
+      })
+    ).toBe('mandatory_native');
+  });
+
+  it('shows ota_ready when an OTA bundle is fetched and no mandatory native upgrade blocks it', () => {
+    expect(
+      resolveUpdateGuardMode({
+        versionResult: { ...baseVersion, isOutdated: true, isMandatory: false },
+        otaReady: true,
+        dismissed: false,
+      })
+    ).toBe('ota_ready');
+  });
+
+  it('falls back to optional_native when outdated non-mandatory and no OTA is ready', () => {
+    expect(
+      resolveUpdateGuardMode({
+        versionResult: { ...baseVersion, isOutdated: true, isMandatory: false },
+        otaReady: false,
+        dismissed: false,
+      })
+    ).toBe('optional_native');
+  });
+
+  it('returns none when dismissed or up to date', () => {
+    expect(
+      resolveUpdateGuardMode({
+        versionResult: baseVersion,
+        otaReady: false,
+        dismissed: false,
+      })
+    ).toBe('none');
+    expect(
+      resolveUpdateGuardMode({
+        versionResult: { ...baseVersion, isOutdated: true, isMandatory: false },
+        otaReady: true,
+        dismissed: true,
+      })
+    ).toBe('none');
   });
 });

@@ -39,6 +39,7 @@ import {
   formatPaiseToRupees,
 } from '@/lib/billing-utils';
 import { triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
+import { flushOfflineQueue } from '@/lib/offline-queue';
 import {
   formatHhMmTo12h,
   formatIsoDateDisplay,
@@ -46,10 +47,12 @@ import {
   normalizeTimeMeridiemLowercase,
   toSentenceCaseStatus,
 } from '@/lib/ux-utils';
+import { defaultOfflineExecutors } from '@/services/offline-executors';
 import {
   EmptyState,
   ErrorState,
   OwnerHeader,
+  OwnerSharedStyles,
   PrimaryButton,
   SecondaryButton,
 } from '@/components/ui/owner';
@@ -113,6 +116,9 @@ export default function ResidentAccommodationScreen() {
         return;
       }
       setErrorMessage(null);
+      if (force) {
+        await flushOfflineQueue(defaultOfflineExecutors);
+      }
       const data =
         !force && sharedResident ? sharedResident : await refreshResident(force);
       if (data) {
@@ -126,8 +132,17 @@ export default function ResidentAccommodationScreen() {
   );
 
   useEffect(() => {
-    if (sharedResident) return;
     let active = true;
+    void flushOfflineQueue(defaultOfflineExecutors).then((summary) => {
+      if (active && summary.succeeded > 0) {
+        void refreshResident(true);
+      }
+    });
+    if (sharedResident) {
+      return () => {
+        active = false;
+      };
+    }
     const timer = setTimeout(() => {
       if (active) {
         void loadAccommodation(false);
@@ -137,7 +152,7 @@ export default function ResidentAccommodationScreen() {
       active = false;
       clearTimeout(timer);
     };
-  }, [sharedResident, loadAccommodation]);
+  }, [sharedResident, loadAccommodation, refreshResident]);
 
   const handleStartEditEmergency = () => {
     triggerSelectionHaptic();
@@ -171,7 +186,11 @@ export default function ResidentAccommodationScreen() {
       patchResident({ emergencyContact: res.data.emergencyContact });
       setIsEditingEmergency(false);
       triggerSuccessHaptic();
-      showToast('Emergency contact updated');
+      showToast(
+        res.data.queued
+          ? 'Emergency contact saved offline — will sync automatically'
+          : 'Emergency contact updated'
+      );
     } finally {
       setSavingEmergency(false);
     }
@@ -403,7 +422,7 @@ export default function ResidentAccommodationScreen() {
                   {isEditingEmergency && (
                     <View style={styles.emergencyEditForm}>
                       <TextInput
-                        style={styles.emergencyInput}
+                        style={OwnerSharedStyles.textInput}
                         value={emergencyDraft}
                         onChangeText={setEmergencyDraft}
                         keyboardType="phone-pad"
@@ -780,16 +799,6 @@ const styles = StyleSheet.create({
   },
   emergencyEditForm: {
     gap: 10,
-  },
-  emergencyInput: {
-    height: 46,
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    backgroundColor: OwnerTheme.colors.surfaceElevated,
-    paddingHorizontal: 12,
-    fontSize: 14,
-    color: OwnerTheme.colors.textPrimary,
   },
   emergencyActionsRow: {
     flexDirection: 'row',

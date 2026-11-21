@@ -42,10 +42,11 @@ import {
   PropertyGenderType,
 } from '@/lib/ux-utils';
 import {
+  ErrorState,
   OwnerHeader,
+  OwnerSharedStyles,
   PrimaryButton,
   SecondaryButton,
-  ErrorState,
 } from '@/components/ui/owner';
 
 const GENDER_OPTIONS: { value: PropertyGenderType; label: string }[] = [
@@ -251,9 +252,9 @@ function PropertyEditForm({
       </View>
 
       <View style={styles.fieldGroup}>
-        <Text style={styles.label}>PG Name *</Text>
+        <Text style={OwnerSharedStyles.inputLabel}>PG Name *</Text>
         <TextInput
-          style={styles.textInput}
+          style={OwnerSharedStyles.textInput}
           value={propName}
           onChangeText={setPropName}
           placeholder="e.g. Shalom Boys PG"
@@ -262,7 +263,7 @@ function PropertyEditForm({
       </View>
 
       <View style={styles.fieldGroup}>
-        <Text style={styles.label}>Property Gender Type</Text>
+        <Text style={OwnerSharedStyles.inputLabel}>Property Gender Type</Text>
         <GenderSelector
           value={genderType}
           onChange={setGenderType}
@@ -271,9 +272,9 @@ function PropertyEditForm({
       </View>
 
       <View style={styles.fieldGroup}>
-        <Text style={styles.label}>Total Beds</Text>
+        <Text style={OwnerSharedStyles.inputLabel}>Total Beds</Text>
         <TextInput
-          style={styles.textInput}
+          style={OwnerSharedStyles.textInput}
           value={totalBeds}
           onChangeText={(val) => setTotalBeds(val.replace(/[^0-9]/g, ''))}
           placeholder="e.g. 40"
@@ -284,9 +285,9 @@ function PropertyEditForm({
       </View>
 
       <View style={styles.fieldGroup}>
-        <Text style={styles.label}>Address / Location</Text>
+        <Text style={OwnerSharedStyles.inputLabel}>Address / Location</Text>
         <TextInput
-          style={[styles.textInput, styles.textArea]}
+          style={[OwnerSharedStyles.textInput, OwnerSharedStyles.textArea]}
           value={propAddress}
           onChangeText={setPropAddress}
           placeholder="e.g. No. 12, Near University Campus, Main Road"
@@ -305,9 +306,12 @@ function PropertyEditForm({
       </View>
 
       <View style={styles.fieldGroup}>
-        <Text style={styles.label}>UPI ID</Text>
+        <Text style={OwnerSharedStyles.inputLabel}>UPI ID</Text>
         <TextInput
-          style={[styles.textInput, upiError ? styles.textInputError : null]}
+          style={[
+            OwnerSharedStyles.textInput,
+            upiError ? styles.textInputError : null,
+          ]}
           value={upiId}
           onChangeText={handleChangeUpiId}
           onBlur={() => validateUpiField(upiId)}
@@ -328,9 +332,9 @@ function PropertyEditForm({
       </View>
 
       <View style={styles.fieldGroup}>
-        <Text style={styles.label}>UPI Payee Name</Text>
+        <Text style={OwnerSharedStyles.inputLabel}>UPI Payee Name</Text>
         <TextInput
-          style={styles.textInput}
+          style={OwnerSharedStyles.textInput}
           value={upiPayeeName}
           onChangeText={setUpiPayeeName}
           placeholder="Optional (defaults to PG name)"
@@ -347,9 +351,9 @@ function PropertyEditForm({
       </View>
 
       <View style={styles.fieldGroup}>
-        <Text style={styles.label}>Wi-Fi Name</Text>
+        <Text style={OwnerSharedStyles.inputLabel}>Wi-Fi Name</Text>
         <TextInput
-          style={styles.textInput}
+          style={OwnerSharedStyles.textInput}
           value={wifiSsid}
           onChangeText={setWifiSsid}
           autoCapitalize="none"
@@ -361,9 +365,9 @@ function PropertyEditForm({
       </View>
 
       <View style={styles.fieldGroup}>
-        <Text style={styles.label}>Wi-Fi Password</Text>
+        <Text style={OwnerSharedStyles.inputLabel}>Wi-Fi Password</Text>
         <TextInput
-          style={styles.textInput}
+          style={OwnerSharedStyles.textInput}
           value={wifiPassword}
           onChangeText={setWifiPassword}
           autoCapitalize="none"
@@ -377,7 +381,7 @@ function PropertyEditForm({
       <View style={styles.fieldGroup}>
         <View style={styles.labelWithIconRow}>
           <Clock size={13} color={OwnerTheme.colors.textSecondary} />
-          <Text style={[styles.label, { marginBottom: 0 }]}>
+          <Text style={[OwnerSharedStyles.inputLabel, { marginBottom: 0 }]}>
             Gate Curfew Time
           </Text>
         </View>
@@ -399,14 +403,14 @@ function PropertyEditForm({
                   setCurfewError(null);
                 }}
                 style={[
-                  styles.presetChip,
-                  isActive && styles.presetChipActive,
+                  OwnerSharedStyles.pillChip,
+                  isActive && OwnerSharedStyles.pillChipActive,
                   saving && { opacity: 0.6 },
                 ]}>
                 <Text
                   style={[
-                    styles.presetChipText,
-                    isActive && styles.presetChipTextActive,
+                    OwnerSharedStyles.pillText,
+                    isActive && OwnerSharedStyles.pillTextActive,
                   ]}>
                   {preset.label}
                 </Text>
@@ -418,7 +422,7 @@ function PropertyEditForm({
         <View style={styles.curfewInputRow}>
           <TextInput
             style={[
-              styles.textInput,
+              OwnerSharedStyles.textInput,
               styles.curfewInput,
               curfewError ? styles.textInputError : null,
             ]}
@@ -742,16 +746,20 @@ export default function OwnerPropertiesScreen() {
         animationType="fade"
         onRequestClose={closeAddModal}>
         <KeyboardAvoidingView
-          style={styles.modalOverlay}
+          style={OwnerSharedStyles.modalOverlay}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <Pressable
             style={StyleSheet.absoluteFill}
             accessibilityLabel="Close add property modal"
             onPress={closeAddModal}
           />
-          <View style={styles.modalCard}>
+          <View
+            style={[
+              OwnerSharedStyles.modalCard,
+              { maxWidth: 420, width: '100%', alignSelf: 'center' },
+            ]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add New PG Property</Text>
+              <Text style={OwnerSharedStyles.modalTitle}>Add New PG Property</Text>
               <Pressable hitSlop={8} onPress={closeAddModal}>
                 <X size={20} color={OwnerTheme.colors.textSecondary} />
               </Pressable>
@@ -762,9 +770,9 @@ export default function OwnerPropertiesScreen() {
               keyboardShouldPersistTaps="handled"
               style={{ maxHeight: 460 }}>
               <View style={styles.fieldGroup}>
-                <Text style={styles.label}>PG Name *</Text>
+                <Text style={OwnerSharedStyles.inputLabel}>PG Name *</Text>
                 <TextInput
-                  style={styles.textInput}
+                  style={OwnerSharedStyles.textInput}
                   value={newPgName}
                   onChangeText={setNewPgName}
                   placeholder="e.g. Shalom Girls PG"
@@ -773,7 +781,9 @@ export default function OwnerPropertiesScreen() {
               </View>
 
               <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Property Gender Type</Text>
+                <Text style={OwnerSharedStyles.inputLabel}>
+                  Property Gender Type
+                </Text>
                 <GenderSelector
                   value={newPgGender}
                   onChange={setNewPgGender}
@@ -782,9 +792,9 @@ export default function OwnerPropertiesScreen() {
               </View>
 
               <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Total Beds</Text>
+                <Text style={OwnerSharedStyles.inputLabel}>Total Beds</Text>
                 <TextInput
-                  style={styles.textInput}
+                  style={OwnerSharedStyles.textInput}
                   value={newPgTotalBeds}
                   onChangeText={(val) =>
                     setNewPgTotalBeds(val.replace(/[^0-9]/g, ''))
@@ -797,9 +807,14 @@ export default function OwnerPropertiesScreen() {
               </View>
 
               <View style={styles.fieldGroup}>
-                <Text style={styles.label}>Address / Location (Optional)</Text>
+                <Text style={OwnerSharedStyles.inputLabel}>
+                  Address / Location (Optional)
+                </Text>
                 <TextInput
-                  style={[styles.textInput, styles.textArea]}
+                  style={[
+                    OwnerSharedStyles.textInput,
+                    OwnerSharedStyles.textArea,
+                  ]}
                   value={newPgAddress}
                   onChangeText={setNewPgAddress}
                   placeholder="e.g. 45 Green Avenue, Anna Nagar, Chennai"
@@ -971,22 +986,6 @@ const styles = StyleSheet.create({
   fieldGroup: {
     marginTop: 10,
   },
-  label: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-    marginBottom: 6,
-  },
-  textInput: {
-    height: 50,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    borderRadius: OwnerTheme.radius.md,
-    paddingHorizontal: 14,
-    fontSize: 15,
-    color: OwnerTheme.colors.textPrimary,
-    backgroundColor: '#FAFAFA',
-  },
   textInputError: {
     borderColor: OwnerTheme.colors.danger,
     backgroundColor: '#FEF2F2',
@@ -1031,27 +1030,6 @@ const styles = StyleSheet.create({
     gap: 8,
     marginBottom: 10,
   },
-  presetChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: OwnerTheme.radius.full,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    backgroundColor: '#FAFAFA',
-  },
-  presetChipActive: {
-    borderColor: OwnerTheme.colors.primary,
-    backgroundColor: OwnerTheme.colors.primaryLight,
-  },
-  presetChipText: {
-    fontSize: 12.5,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-  },
-  presetChipTextActive: {
-    color: OwnerTheme.colors.primary,
-    fontWeight: '700',
-  },
   curfewInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1074,12 +1052,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: OwnerTheme.colors.primary,
-  },
-  textArea: {
-    height: undefined,
-    minHeight: 84,
-    paddingTop: 12,
-    paddingBottom: 12,
   },
   genderRow: {
     flexDirection: 'row',
@@ -1128,32 +1100,11 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     flex: 1,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  modalCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    padding: 20,
-    width: '100%',
-    maxWidth: 420,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-  },
   modalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 8,
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
   },
   modalBtnRow: {
     flexDirection: 'row',

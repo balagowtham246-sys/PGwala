@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { Disc3, X } from 'lucide-react-native';
 
+import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
 import {
   WashingMachineRequestStatus,
   WashingMachineUnitData,
@@ -83,12 +84,17 @@ export function MachineBookingModal({
     freeCount === 0 &&
     !isUserWashing;
 
+  const isBusy = Boolean(requestingAccess || actionLoading || queueActionLoading);
+  useModalBackHandler(visible, onClose, isBusy);
+
   return (
     <Modal
       visible={visible}
       transparent
       animationType="fade"
-      onRequestClose={onClose}>
+      onRequestClose={() => {
+        if (!isBusy) onClose();
+      }}>
       <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
           {/* Header */}

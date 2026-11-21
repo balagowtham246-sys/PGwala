@@ -7,6 +7,12 @@
     "icon": "./assets/images/icon.png",
     "scheme": "pgwala",
     "userInterfaceStyle": "light",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/520b4250-8803-4607-b208-83368b515b50"
+    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.pgwala.app"
@@ -15,10 +21,8 @@
       "package": "com.pgwala.app",
       "versionCode": 1,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "backgroundColor": "#2546F0",
+        "foregroundImage": "./assets/images/android-icon-foreground.png"
       },
       "softwareKeyboardLayoutMode": "resize"
     },

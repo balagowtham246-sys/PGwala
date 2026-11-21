@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
-  Modal,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -21,9 +20,11 @@ import {
   X,
 } from 'lucide-react-native';
 
+import { GateHistoryModal } from '@/components/student-gate/GateHistoryModal';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { supabase } from '@/lib/supabase';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import {
@@ -80,18 +81,6 @@ function formatEventTime(isoString: string): string {
     });
   } catch {
     return isoString;
-  }
-}
-
-function formatEventDate(isoString: string): string {
-  try {
-    const d = new Date(isoString);
-    return d.toLocaleDateString('en-IN', {
-      day: 'numeric',
-      month: 'short',
-    });
-  } catch {
-    return '';
   }
 }
 
@@ -251,7 +240,7 @@ export default function StudentInOutScreen() {
       setLogs(sortLogsDescending(logsData ?? []));
       setReferenceTimeMs(Date.now());
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const msg = extractErrorMessage(err, 'Could not load gate logs.');
       console.error('[StudentInOut] Error fetching data:', err);
       setErrorMessage(msg);
     } finally {
@@ -732,178 +721,16 @@ export default function StudentInOutScreen() {
         <View style={{ height: 40 }} />
       </ScrollView>
 
-      {/* Full History Modal */}
-      <Modal
+      <GateHistoryModal
         visible={fullHistoryVisible}
-        animationType="slide"
-        onRequestClose={() => setFullHistoryVisible(false)}>
-        <SafeAreaView style={styles.fullModalSafe}>
-          <View style={styles.modalHeaderRow}>
-            <Text style={styles.modalTitle}>Gate Event History</Text>
-            <Pressable
-              hitSlop={8}
-              onPress={() => setFullHistoryVisible(false)}
-              style={styles.modalCloseBtn}>
-              <X size={20} color={OwnerTheme.colors.textPrimary} />
-            </Pressable>
-          </View>
-
-          {/* Filters Bar in Modal */}
-          <View style={styles.modalFiltersBox}>
-            <View style={styles.modalFilterRow}>
-              <Text style={styles.filterGroupLabel}>Direction:</Text>
-              {(['ALL', 'IN', 'OUT'] as const).map((dir) => (
-                <Pressable
-                  key={dir}
-                  style={[
-                    styles.filterChip,
-                    historyDirectionFilter === dir && styles.filterChipActive,
-                  ]}
-                  onPress={() => setHistoryDirectionFilter(dir)}>
-                  <Text
-                    style={[
-                      styles.filterChipText,
-                      historyDirectionFilter === dir &&
-                        styles.filterChipTextActive,
-                    ]}>
-                    {dir === 'ALL'
-                      ? 'All'
-                      : dir === 'IN'
-                      ? 'Checked in'
-                      : 'Checked out'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-
-            <View style={styles.modalFilterRow}>
-              <Text style={styles.filterGroupLabel}>Timeframe:</Text>
-              {(['ALL', 'TODAY', 'WEEK'] as const).map((timeOpt) => (
-                <Pressable
-                  key={timeOpt}
-                  style={[
-                    styles.filterChip,
-                    historyDateFilter === timeOpt && styles.filterChipActive,
-                  ]}
-                  onPress={() => setHistoryDateFilter(timeOpt)}>
-                  <Text
-                    style={[
-                      styles.filterChipText,
-                      historyDateFilter === timeOpt &&
-                        styles.filterChipTextActive,
-                    ]}>
-                    {timeOpt === 'ALL'
-                      ? 'All'
-                      : timeOpt === 'TODAY'
-                      ? 'Today'
-                      : 'Past 7 Days'}
-                  </Text>
-                </Pressable>
-              ))}
-            </View>
-          </View>
-
-          {/* History Records List */}
-          <ScrollView
-            contentContainerStyle={styles.historyModalScroll}
-            showsVerticalScrollIndicator={false}>
-            {filteredHistoryLogs.length === 0 ? (
-              <EmptyState
-                title="No events match this filter"
-                description="Try clearing filters to view more gate logs."
-              />
-            ) : (
-              groupLogsByLocalDay(filteredHistoryLogs).map((group) => (
-                <View key={group.dateKey}>
-                  <Text style={styles.modalHistoryDayLabel}>{group.dateTitle}</Text>
-                  {group.items.map((item) => {
-                    const resident = residentMap.get(item.resident_id);
-                    const isEntry = item.direction === 'IN';
-                    return (
-                      <View key={item.id} style={styles.modalHistoryCard}>
-                        <View style={styles.modalHistoryHeader}>
-                          <View
-                            style={[
-                              styles.historyItemIcon,
-                              {
-                                backgroundColor: isEntry
-                                  ? OwnerTheme.colors.successLight
-                                  : OwnerTheme.colors.warningLight,
-                              },
-                            ]}>
-                            {isEntry ? (
-                              <LogIn size={14} color={OwnerTheme.colors.success} />
-                            ) : (
-                              <LogOut
-                                size={14}
-                                color={OwnerTheme.colors.warning}
-                              />
-                            )}
-                          </View>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.modalHistName}>
-                              {resident ? resident.full_name : 'Resident'}
-                            </Text>
-                            <Text style={styles.modalHistRoom}>
-                              Room {resident?.room_number || '-'}
-                            </Text>
-                          </View>
-                          <View style={{ alignItems: 'flex-end' }}>
-                            <StatusBadge
-                              label={isEntry ? 'Checked in' : 'Checked out'}
-                              variant={isEntry ? 'success' : 'warning'}
-                              size="sm"
-                            />
-                            <Text style={styles.modalHistTime}>
-                              {formatEventDate(item.event_time)} •{' '}
-                              {formatEventTime(item.event_time)}
-                            </Text>
-                          </View>
-                        </View>
-
-                        {item.purpose ? (
-                          <View style={styles.modalDetailSubRow}>
-                            <Text style={styles.modalDetailSubLabel}>Purpose: </Text>
-                            <Text style={styles.modalDetailSubVal}>
-                              {item.purpose}
-                            </Text>
-                          </View>
-                        ) : null}
-
-                        {item.expected_return_time ? (
-                          <View style={styles.modalDetailSubRow}>
-                            <Text style={styles.modalDetailSubLabel}>
-                              Expected return:{' '}
-                            </Text>
-                            <Text style={styles.modalDetailSubVal}>
-                              {item.expected_return_time}
-                            </Text>
-                          </View>
-                        ) : null}
-
-                        {!isEntry && (
-                          <View style={styles.modalDetailSubRow}>
-                            <Text style={styles.modalDetailSubLabel}>Dinner: </Text>
-                            <Text
-                              style={[
-                                styles.modalDetailSubVal,
-                                item.food_required
-                                  ? { color: OwnerTheme.colors.success }
-                                  : { color: OwnerTheme.colors.textMuted },
-                              ]}>
-                              {item.food_required ? 'Required' : 'Not required'}
-                            </Text>
-                          </View>
-                        )}
-                      </View>
-                    );
-                  })}
-                </View>
-              ))
-            )}
-          </ScrollView>
-        </SafeAreaView>
-      </Modal>
+        historyDirectionFilter={historyDirectionFilter}
+        historyDateFilter={historyDateFilter}
+        filteredHistoryLogs={filteredHistoryLogs}
+        residentMap={residentMap}
+        onSelectDirection={setHistoryDirectionFilter}
+        onSelectTimeframe={setHistoryDateFilter}
+        onClose={() => setFullHistoryVisible(false)}
+      />
 
       <RoleBottomNav activeTab="gate" roleOverride="owner" />
     </SafeAreaView>
@@ -1093,15 +920,6 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 2,
   },
-  modalHistoryDayLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-    marginTop: 8,
-    marginBottom: 6,
-  },
   historyItemRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1139,114 +957,5 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 13,
     color: OwnerTheme.colors.textSecondary,
-  },
-  // Full History Modal
-  fullModalSafe: {
-    flex: 1,
-    backgroundColor: OwnerTheme.colors.background,
-  },
-  modalHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: OwnerTheme.colors.border,
-    backgroundColor: '#FFFFFF',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  modalCloseBtn: {
-    padding: 6,
-  },
-  modalFiltersBox: {
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: OwnerTheme.colors.border,
-    gap: 8,
-  },
-  modalFilterRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  filterGroupLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
-    minWidth: 70,
-  },
-  filterChip: {
-    paddingVertical: 5,
-    paddingHorizontal: 12,
-    borderRadius: OwnerTheme.radius.full,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    backgroundColor: '#F8FAFC',
-  },
-  filterChipActive: {
-    backgroundColor: OwnerTheme.colors.primary,
-    borderColor: OwnerTheme.colors.primary,
-  },
-  filterChipText: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-    fontWeight: '500',
-  },
-  filterChipTextActive: {
-    color: '#FFFFFF',
-    fontWeight: '600',
-  },
-  historyModalScroll: {
-    padding: 16,
-    gap: 10,
-  },
-  modalHistoryCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.md,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    padding: 12,
-  },
-  modalHistoryHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  modalHistName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
-  },
-  modalHistRoom: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-  },
-  modalHistTime: {
-    fontSize: 11,
-    color: OwnerTheme.colors.textMuted,
-    marginTop: 2,
-  },
-  modalDetailSubRow: {
-    flexDirection: 'row',
-    marginTop: 6,
-    paddingTop: 6,
-    borderTopWidth: 1,
-    borderTopColor: OwnerTheme.colors.borderLight,
-  },
-  modalDetailSubLabel: {
-    fontSize: 12,
-    color: OwnerTheme.colors.textSecondary,
-  },
-  modalDetailSubVal: {
-    fontSize: 12,
-    fontWeight: '500',
-    color: OwnerTheme.colors.textPrimary,
   },
 });

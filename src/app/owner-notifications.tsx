@@ -24,6 +24,7 @@ import {
 
 import { OwnerTheme } from '@/constants/theme';
 import { useToast } from '@/context/toast-context';
+import { extractErrorMessage } from '@/lib/error-utils';
 import {
   HIGH_CONTRAST_SWITCH_COLORS,
   OwnerHeader,
@@ -238,10 +239,10 @@ export default function OwnerNotificationsScreen() {
 
       setTestNotice('Test notification triggered on this device.');
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : 'Could not trigger test notification on this device.';
+      const msg = extractErrorMessage(
+        err,
+        'Could not trigger test notification on this device.'
+      );
       setTestNotice(msg);
       Alert.alert('Notification Test Failed', msg);
     } finally {

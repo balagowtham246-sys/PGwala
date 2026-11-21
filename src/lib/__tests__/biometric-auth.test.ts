@@ -1,3 +1,12 @@
+import {
+  clearBiometricCredentials,
+  getBiometricAvailability,
+  getSavedBiometricCredentials,
+  isBiometricSignInEnabled,
+  saveBiometricCredentials,
+  setBiometricSignInEnabled,
+} from '../biometric-auth';
+
 const mockStore = new Map<string, string>();
 
 jest.mock('expo-secure-store', () => ({
@@ -17,15 +26,6 @@ jest.mock('expo-local-authentication', () => ({
   authenticateAsync: jest.fn(async () => ({ success: true })),
   AuthenticationType: { FINGERPRINT: 1, FACIAL_RECOGNITION: 2 },
 }));
-
-import {
-  clearBiometricCredentials,
-  getBiometricAvailability,
-  getSavedBiometricCredentials,
-  isBiometricSignInEnabled,
-  saveBiometricCredentials,
-  setBiometricSignInEnabled,
-} from '../biometric-auth';
 
 describe('biometric-auth', () => {
   beforeEach(() => {

@@ -1,7 +1,3 @@
-jest.mock('@react-native-async-storage/async-storage', () =>
-  require('@react-native-async-storage/async-storage/jest/async-storage-mock')
-);
-
 import { resetPerfMonitor } from '@/lib/perf-monitor';
 import { clearQueryCache } from '@/lib/query-cache';
 import { supabase } from '@/lib/supabase';
@@ -14,6 +10,10 @@ import {
   rejectStudentPaymentReport,
   submitStudentPaymentProof,
 } from '../billing.service';
+
+jest.mock('@react-native-async-storage/async-storage', () =>
+  jest.requireActual('@react-native-async-storage/async-storage/jest/async-storage-mock')
+);
 
 jest.mock('@/lib/supabase', () => ({
   decodeBase64ToBytes: jest.fn(() => new Uint8Array([1, 2, 3])),
