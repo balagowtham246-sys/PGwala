@@ -323,6 +323,9 @@ export default function StudentGateHistoryScreen() {
     manualRefreshing,
   ]);
 
+  const refetchGate = gateQuery.refetch;
+  const mutateMovement = movementMutation.mutateAsync;
+
   const loadData = useCallback(async () => {
     if (!userId) return;
     if (!resident) {
@@ -341,8 +344,8 @@ export default function StudentGateHistoryScreen() {
       }
       return;
     }
-    await gateQuery.refetch();
-  }, [userId, resident, refreshResident, gateQuery]);
+    await refetchGate();
+  }, [userId, resident, refreshResident, refetchGate]);
 
   const loadMoreLogs = () => {
     if (!gateQuery.hasNextPage || gateQuery.isFetchingNextPage) return;
@@ -385,7 +388,7 @@ export default function StudentGateHistoryScreen() {
         triggerSuccessHaptic();
       }
       try {
-        const outcome = await movementMutation.mutateAsync({
+        const outcome = await mutateMovement({
           residentId: resident?.id,
           input: {
             direction: targetDirection,
@@ -421,7 +424,7 @@ export default function StudentGateHistoryScreen() {
         savingRef.current = false;
       }
     },
-    [movementMutation, resident, showToast, userId]
+    [mutateMovement, resident, showToast, userId]
   );
 
   useEffect(() => {
@@ -791,7 +794,7 @@ export default function StudentGateHistoryScreen() {
         subtitle={headerSubtitle}
         showBack
         onBack={() =>
-          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+          router.canGoBack() ? router.back() : router.replace('/resident-dashboard')
         }
       />
 

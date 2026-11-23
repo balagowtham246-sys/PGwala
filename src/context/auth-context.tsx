@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/lib/supabase';
 import { clearUserSessionState } from '@/lib/session-cleanup';
@@ -39,7 +47,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const lastUserIdRef = useRef<string | null>(null);
 
   // Fetch the role and profile from public.profiles for the authenticated user
-  const fetchProfile = async (userId: string) => {
+  const fetchProfile = useCallback(async (userId: string) => {
     try {
       const { data, error } = await supabase
         .from('profiles')
@@ -64,11 +72,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
       return null;
     }
-  };
+  }, []);
 
-  const refreshProfile = async () => {
-    if (user?.id) {
-      await fetchProfile(user.id);
+  const refreshProfile = useCallback(async () => {
+    const currentUid = lastUserIdRef.current;
+    if (currentUid) {
+      await fetchProfile(currentUid);
       try {
         const { data: userData, error: userError } = await supabase.auth.getUser();
         if (!userError && userData?.user) {
@@ -78,7 +87,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         console.warn('[AuthContext] Failed to refresh auth user metadata:', e);
       }
     }
-  };
+  }, [fetchProfile]);
 
   useEffect(() => {
     // 1. Initial session load
@@ -139,9 +148,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.unsubscribe();
     };
-  }, []);
+  }, [fetchProfile]);
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     try {
       await unregisterPushToken();
       await supabase.auth.signOut();
@@ -154,18 +163,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(null);
       setProfile(null);
     }
-  };
+  }, []);
+
+  const contextValue = useMemo<AuthContextType>(
+    () => ({
+      session,
+      user,
+      profile,
+      isLoading,
+      signOut,
+      refreshProfile,
+    }),
+    [session, user, profile, isLoading, signOut, refreshProfile]
+  );
 
   return (
-    <AuthContext.Provider
-      value={{
-        session,
-        user,
-        profile,
-        isLoading,
-        signOut,
-        refreshProfile,
-      }}>
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

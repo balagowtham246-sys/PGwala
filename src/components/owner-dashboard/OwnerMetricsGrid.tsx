@@ -5,6 +5,7 @@ import { LogIn, LogOut, Receipt, Wrench } from 'lucide-react-native';
 
 import { StatisticCard } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
+import { useResidentTabs } from '@/context/resident-tabs-context';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import type { OwnerDashboardStats } from '@/services/dashboard.service';
@@ -14,11 +15,20 @@ interface OwnerMetricsGridProps {
 }
 
 export function OwnerMetricsGrid({ stats }: OwnerMetricsGridProps) {
+  const { isInsidePager, navigateToTab } = useResidentTabs();
   const pendingRentPaise = Math.max(0, stats.rentTotalPaise - stats.rentCollectedPaise);
   const hasAttentionItems =
     stats.pendingProofsCount > 0 ||
     stats.studentsOutside > 0 ||
     stats.openComplaintsCount > 0;
+
+  const openOwnerTab = (tab: 'bill' | 'maintenance' | 'gate', fallbackRoute: string) => {
+    if (isInsidePager) {
+      navigateToTab(tab);
+    } else {
+      router.push(fallbackRoute as any);
+    }
+  };
 
   return (
     <>
@@ -34,7 +44,7 @@ export function OwnerMetricsGrid({ stats }: OwnerMetricsGridProps) {
               <Pressable
                 accessibilityRole="button"
                 style={[styles.attentionChip, styles.attentionChipPrimary]}
-                onPress={() => router.push('/billing-management')}>
+                onPress={() => openOwnerTab('bill', '/billing-management')}>
                 <Text style={[styles.attentionChipText, styles.attentionTextPrimary]}>
                   {stats.pendingProofsCount} proof
                   {stats.pendingProofsCount > 1 ? 's' : ''} to verify
@@ -45,7 +55,7 @@ export function OwnerMetricsGrid({ stats }: OwnerMetricsGridProps) {
               <Pressable
                 accessibilityRole="button"
                 style={[styles.attentionChip, styles.attentionChipWarning]}
-                onPress={() => router.push('/student-in-out')}>
+                onPress={() => openOwnerTab('gate', '/resident-in-out')}>
                 <Text style={[styles.attentionChipText, styles.attentionTextWarning]}>
                   {stats.studentsOutside} outside PG
                 </Text>
@@ -55,7 +65,7 @@ export function OwnerMetricsGrid({ stats }: OwnerMetricsGridProps) {
               <Pressable
                 accessibilityRole="button"
                 style={[styles.attentionChip, styles.attentionChipWarning]}
-                onPress={() => router.push('/owner-complaints')}>
+                onPress={() => openOwnerTab('maintenance', '/owner-complaints')}>
                 <Text style={[styles.attentionChipText, styles.attentionTextWarning]}>
                   {stats.openComplaintsCount} open issue
                   {stats.openComplaintsCount > 1 ? 's' : ''}
@@ -81,7 +91,7 @@ export function OwnerMetricsGrid({ stats }: OwnerMetricsGridProps) {
                 ? `${stats.pendingProofsCount} proof${stats.pendingProofsCount > 1 ? 's' : ''} pending`
                 : `${formatPaiseToRupees(stats.rentCollectedPaise)} collected`
             }
-            onPress={() => router.push('/billing-management')}
+            onPress={() => openOwnerTab('bill', '/billing-management')}
             style={styles.gateStatHalfCard}
           />
           <StatisticCard
@@ -94,7 +104,7 @@ export function OwnerMetricsGrid({ stats }: OwnerMetricsGridProps) {
             }
             icon={Wrench}
             sublabel={stats.openComplaintsCount > 0 ? 'Needs attention' : 'All resolved'}
-            onPress={() => router.push('/owner-complaints')}
+            onPress={() => openOwnerTab('maintenance', '/owner-complaints')}
             style={styles.gateStatHalfCard}
           />
         </View>
@@ -105,7 +115,7 @@ export function OwnerMetricsGrid({ stats }: OwnerMetricsGridProps) {
             accentColor={OwnerTheme.colors.success}
             icon={LogIn}
             sublabel={`of ${stats.totalResidents} active`}
-            onPress={() => router.push('/student-in-out')}
+            onPress={() => openOwnerTab('gate', '/resident-in-out')}
             style={styles.gateStatHalfCard}
           />
           <StatisticCard
@@ -114,7 +124,7 @@ export function OwnerMetricsGrid({ stats }: OwnerMetricsGridProps) {
             accentColor={OwnerTheme.colors.warning}
             icon={LogOut}
             sublabel="Checked out"
-            onPress={() => router.push('/student-in-out')}
+            onPress={() => openOwnerTab('gate', '/resident-in-out')}
             style={styles.gateStatHalfCard}
           />
         </View>

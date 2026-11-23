@@ -1,15 +1,17 @@
+import { useAuth } from '@/context/auth-context';
+import { extractErrorMessage } from '@/lib/error-utils';
+import { supabase } from '@/lib/supabase';
+import { inferPropertyGender, PropertyGenderType } from '@/lib/ux-utils';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, {
   createContext,
   useCallback,
   useContext,
   useEffect,
+  useMemo,
+  useRef,
   useState,
 } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { supabase } from '@/lib/supabase';
-import { useAuth } from '@/context/auth-context';
-import { extractErrorMessage } from '@/lib/error-utils';
-import { inferPropertyGender, PropertyGenderType } from '@/lib/ux-utils';
 
 export interface PropertyItem {
   id: string;
@@ -66,12 +68,12 @@ const PropertyContext = createContext<PropertyContextType>({
   properties: [],
   selectedProperty: null,
   selectedPropertyId: null,
-  selectProperty: async () => {},
+  selectProperty: async () => { },
   addProperty: async () => {
     throw new Error('PropertyContext not initialized');
   },
-  updateProperty: async () => {},
-  refreshProperties: async () => {},
+  updateProperty: async () => { },
+  refreshProperties: async () => { },
   loadingProperties: true,
 });
 
@@ -112,16 +114,27 @@ function resolveUpdatedMetaText(
     : normalizeOptionalText(existingVal);
 }
 
-async function readLocalPropertyMeta(
-  propertyId: string
-): Promise<PropertyMetaInput | null> {
+async function readLocalPropertyMetaBatch(
+  propertyIds: string[]
+): Promise<Map<string, PropertyMetaInput>> {
+  const result = new Map<string, PropertyMetaInput>();
+  if (propertyIds.length === 0) return result;
   try {
-    const raw = await AsyncStorage.getItem(`${STORAGE_PROPERTY_META_PREFIX}${propertyId}`);
-    if (!raw) return null;
-    return JSON.parse(raw) as PropertyMetaInput;
+    const keys = propertyIds.map((id) => `${STORAGE_PROPERTY_META_PREFIX}${id}`);
+    const entries = await AsyncStorage.multiGet(keys);
+    for (let i = 0; i < entries.length; i += 1) {
+      const raw = entries[i]?.[1];
+      if (!raw) continue;
+      try {
+        result.set(propertyIds[i], JSON.parse(raw) as PropertyMetaInput);
+      } catch {
+        // Ignore corrupt entry
+      }
+    }
   } catch {
-    return null;
+    // Non-fatal fallback read
   }
+  return result;
 }
 
 async function writeLocalPropertyMeta(
@@ -187,72 +200,81 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         rawRows = (richRes.data as PropertyItem[]) ?? [];
       }
 
-      // Fetch active resident counts across all properties for occupancy badges
+      // Fetch active resident counts across all properties (SQL GROUP BY RPC fast path, fallback to row scan)
       const propIds = rawRows.map((p) => p.id);
       const occupancyMap = new Map<string, number>();
       if (propIds.length > 0) {
-        const { data: resRows } = await supabase
-          .from('residents')
-          .select('property_id')
-          .in('property_id', propIds)
-          .eq('is_active', true);
+        const rpcCounts = await supabase.rpc('get_owner_property_occupancy_counts');
+        if (!rpcCounts.error && Array.isArray(rpcCounts.data)) {
+          for (const row of rpcCounts.data as {
+            property_id: string;
+            active_resident_count: number | string;
+          }[]) {
+            occupancyMap.set(row.property_id, Number(row.active_resident_count) || 0);
+          }
+        } else {
+          const { data: resRows } = await supabase
+            .from('residents')
+            .select('property_id')
+            .in('property_id', propIds)
+            .eq('is_active', true);
 
-        if (resRows) {
-          for (const row of resRows) {
-            const pid = row.property_id as string;
-            occupancyMap.set(pid, (occupancyMap.get(pid) ?? 0) + 1);
+          if (resRows) {
+            for (const row of resRows) {
+              const pid = row.property_id as string;
+              occupancyMap.set(pid, (occupancyMap.get(pid) ?? 0) + 1);
+            }
           }
         }
       }
 
-      const hydratedList: PropertyItem[] = await Promise.all(
-        rawRows.map(async (p) => {
-          const localMeta = await readLocalPropertyMeta(p.id);
-          const preferLocal = Boolean(localMeta?.prefer_local);
-          const dbGender = preferLocal
+      const localMetaMap = await readLocalPropertyMetaBatch(propIds);
+      const hydratedList: PropertyItem[] = rawRows.map((p) => {
+        const localMeta = localMetaMap.get(p.id) ?? null;
+        const preferLocal = Boolean(localMeta?.prefer_local);
+        const dbGender = preferLocal
+          ? null
+          : p.gender_type === 'coed' && !localMeta?.explicit_gender
             ? null
-            : p.gender_type === 'coed' && !localMeta?.explicit_gender
-              ? null
-              : p.gender_type;
-          const resolvedGender = inferPropertyGender(
-            p.name,
-            dbGender ?? localMeta?.gender_type ?? null
-          );
-          const resolvedBeds = preferLocal
-            ? localMeta?.total_beds ?? p.total_beds ?? 0
-            : typeof p.total_beds === 'number' && p.total_beds > 0
-              ? p.total_beds
-              : localMeta?.total_beds ?? 0;
+            : p.gender_type;
+        const resolvedGender = inferPropertyGender(
+          p.name,
+          dbGender ?? localMeta?.gender_type ?? null
+        );
+        const resolvedBeds = preferLocal
+          ? localMeta?.total_beds ?? p.total_beds ?? 0
+          : typeof p.total_beds === 'number' && p.total_beds > 0
+            ? p.total_beds
+            : localMeta?.total_beds ?? 0;
 
-          return {
-            ...p,
-            gender_type: resolvedGender,
-            total_beds: resolvedBeds,
-            upi_id: resolveHydratedMetaText(p.upi_id, localMeta?.upi_id, preferLocal),
-            upi_payee_name: resolveHydratedMetaText(
-              p.upi_payee_name,
-              localMeta?.upi_payee_name,
-              preferLocal
-            ),
-            wifi_ssid: resolveHydratedMetaText(
-              p.wifi_ssid,
-              localMeta?.wifi_ssid,
-              preferLocal
-            ),
-            wifi_password: resolveHydratedMetaText(
-              p.wifi_password,
-              localMeta?.wifi_password,
-              preferLocal
-            ),
-            curfew_time: resolveHydratedMetaText(
-              p.curfew_time,
-              localMeta?.curfew_time,
-              preferLocal
-            ),
-            active_resident_count: occupancyMap.get(p.id) ?? 0,
-          };
-        })
-      );
+        return {
+          ...p,
+          gender_type: resolvedGender,
+          total_beds: resolvedBeds,
+          upi_id: resolveHydratedMetaText(p.upi_id, localMeta?.upi_id, preferLocal),
+          upi_payee_name: resolveHydratedMetaText(
+            p.upi_payee_name,
+            localMeta?.upi_payee_name,
+            preferLocal
+          ),
+          wifi_ssid: resolveHydratedMetaText(
+            p.wifi_ssid,
+            localMeta?.wifi_ssid,
+            preferLocal
+          ),
+          wifi_password: resolveHydratedMetaText(
+            p.wifi_password,
+            localMeta?.wifi_password,
+            preferLocal
+          ),
+          curfew_time: resolveHydratedMetaText(
+            p.curfew_time,
+            localMeta?.curfew_time,
+            preferLocal
+          ),
+          active_resident_count: occupancyMap.get(p.id) ?? 0,
+        };
+      });
 
       setProperties(hydratedList);
 
@@ -288,143 +310,96 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
     };
   }, [fetchProperties]);
 
-  const selectProperty = async (id: string) => {
+  const propertiesRef = useRef<PropertyItem[]>(properties);
+  useEffect(() => {
+    propertiesRef.current = properties;
+  }, [properties]);
+
+  const selectProperty = useCallback(async (id: string) => {
     setSelectedPropertyId(id);
     await AsyncStorage.setItem(STORAGE_ACTIVE_PROPERTY_KEY, id);
-  };
+  }, []);
 
-  const addProperty = async (
-    name: string,
-    address?: string,
-    meta?: PropertyMetaInput
-  ): Promise<PropertyItem> => {
-    if (!user?.id) throw new Error('You must be signed in as an owner.');
-    const trimmedName = name.trim();
-    if (!trimmedName) throw new Error('Property name cannot be empty.');
+  const addProperty = useCallback(
+    async (
+      name: string,
+      address?: string,
+      meta?: PropertyMetaInput
+    ): Promise<PropertyItem> => {
+      if (!ownerUserId) throw new Error('You must be signed in as an owner.');
+      const trimmedName = name.trim();
+      if (!trimmedName) throw new Error('Property name cannot be empty.');
 
-    const genderType = inferPropertyGender(trimmedName, meta?.gender_type ?? null);
-    const totalBeds =
-      typeof meta?.total_beds === 'number' && Number.isFinite(meta.total_beds)
-        ? Math.max(0, Math.round(meta.total_beds))
-        : 0;
-    const upiId = normalizeOptionalText(meta?.upi_id);
-    const upiPayeeName = normalizeOptionalText(meta?.upi_payee_name);
-    const wifiSsid = normalizeOptionalText(meta?.wifi_ssid);
-    const wifiPassword = normalizeOptionalText(meta?.wifi_password);
-    const curfewTime = normalizeOptionalText(meta?.curfew_time);
+      const genderType = inferPropertyGender(trimmedName, meta?.gender_type ?? null);
+      const totalBeds =
+        typeof meta?.total_beds === 'number' && Number.isFinite(meta.total_beds)
+          ? Math.max(0, Math.round(meta.total_beds))
+          : 0;
+      const upiId = normalizeOptionalText(meta?.upi_id);
+      const upiPayeeName = normalizeOptionalText(meta?.upi_payee_name);
+      const wifiSsid = normalizeOptionalText(meta?.wifi_ssid);
+      const wifiPassword = normalizeOptionalText(meta?.wifi_password);
+      const curfewTime = normalizeOptionalText(meta?.curfew_time);
 
-    let inserted: PropertyItem | null = null;
+      let inserted: PropertyItem | null = null;
 
-    const richInsert = await supabase
-      .from('properties')
-      .insert({
-        owner_id: user.id,
-        name: trimmedName,
-        address: address?.trim() || null,
-        is_active: true,
-        gender_type: genderType,
-        total_beds: totalBeds,
-        upi_id: upiId,
-        upi_payee_name: upiPayeeName,
-        wifi_ssid: wifiSsid,
-        wifi_password: wifiPassword,
-        curfew_time: curfewTime,
-      })
-      .select(
-        'id, name, address, owner_id, is_active, gender_type, total_beds, upi_id, upi_payee_name, wifi_ssid, wifi_password, curfew_time'
-      )
-      .single();
-
-    if (richInsert.error) {
-      // Fallback to core columns whenever rich schema columns/grants are not yet applied on DB.
-      const basicInsert = await supabase
+      const richInsert = await supabase
         .from('properties')
         .insert({
-          owner_id: user.id,
+          owner_id: ownerUserId,
           name: trimmedName,
           address: address?.trim() || null,
           is_active: true,
+          gender_type: genderType,
+          total_beds: totalBeds,
+          upi_id: upiId,
+          upi_payee_name: upiPayeeName,
+          wifi_ssid: wifiSsid,
+          wifi_password: wifiPassword,
+          curfew_time: curfewTime,
         })
-        .select('id, name, address, owner_id, is_active')
+        .select(
+          'id, name, address, owner_id, is_active, gender_type, total_beds, upi_id, upi_payee_name, wifi_ssid, wifi_password, curfew_time'
+        )
         .single();
 
-      if (basicInsert.error) {
-        throw new Error(extractErrorMessage(basicInsert.error, 'Could not add property.'));
+      if (richInsert.error) {
+        // Fallback to core columns whenever rich schema columns/grants are not yet applied on DB.
+        const basicInsert = await supabase
+          .from('properties')
+          .insert({
+            owner_id: ownerUserId,
+            name: trimmedName,
+            address: address?.trim() || null,
+            is_active: true,
+          })
+          .select('id, name, address, owner_id, is_active')
+          .single();
+
+        if (basicInsert.error) {
+          throw new Error(extractErrorMessage(basicInsert.error, 'Could not add property.'));
+        }
+        inserted = basicInsert.data as PropertyItem;
+      } else {
+        inserted = richInsert.data as PropertyItem;
       }
-      inserted = basicInsert.data as PropertyItem;
-    } else {
-      inserted = richInsert.data as PropertyItem;
-    }
 
-    if (!inserted) throw new Error('Failed to create new property.');
+      if (!inserted) throw new Error('Failed to create new property.');
 
-    await writeLocalPropertyMeta(inserted.id, {
-      gender_type: genderType,
-      total_beds: totalBeds,
-      explicit_gender: Boolean(meta?.gender_type),
-      prefer_local: Boolean(richInsert.error),
-      upi_id: upiId,
-      upi_payee_name: upiPayeeName,
-      wifi_ssid: wifiSsid,
-      wifi_password: wifiPassword,
-      curfew_time: curfewTime,
-    });
+      await writeLocalPropertyMeta(inserted.id, {
+        gender_type: genderType,
+        total_beds: totalBeds,
+        explicit_gender: Boolean(meta?.gender_type),
+        prefer_local: Boolean(richInsert.error),
+        upi_id: upiId,
+        upi_payee_name: upiPayeeName,
+        wifi_ssid: wifiSsid,
+        wifi_password: wifiPassword,
+        curfew_time: curfewTime,
+      });
 
-    const newProp: PropertyItem = {
-      ...inserted,
-      gender_type: genderType,
-      total_beds: totalBeds,
-      upi_id: upiId,
-      upi_payee_name: upiPayeeName,
-      wifi_ssid: wifiSsid,
-      wifi_password: wifiPassword,
-      curfew_time: curfewTime,
-      active_resident_count: 0,
-    };
-
-    setProperties((prev) => [...prev, newProp]);
-    await selectProperty(newProp.id);
-    return newProp;
-  };
-
-  const updateProperty = async (
-    id: string,
-    name: string,
-    address?: string,
-    meta?: PropertyMetaInput
-  ) => {
-    if (!user?.id) throw new Error('You must be signed in as an owner.');
-    const trimmedName = name.trim();
-    if (!trimmedName) throw new Error('Property name cannot be empty.');
-
-    const existing = properties.find((p) => p.id === id);
-    const genderType =
-      meta?.gender_type ??
-      inferPropertyGender(trimmedName, existing?.gender_type ?? null);
-    const totalBeds =
-      typeof meta?.total_beds === 'number' && Number.isFinite(meta.total_beds)
-        ? Math.max(0, Math.round(meta.total_beds))
-        : existing?.total_beds ?? 0;
-    const upiId = resolveUpdatedMetaText(meta?.upi_id, existing?.upi_id);
-    const upiPayeeName = resolveUpdatedMetaText(
-      meta?.upi_payee_name,
-      existing?.upi_payee_name
-    );
-    const wifiSsid = resolveUpdatedMetaText(meta?.wifi_ssid, existing?.wifi_ssid);
-    const wifiPassword = resolveUpdatedMetaText(
-      meta?.wifi_password,
-      existing?.wifi_password
-    );
-    const curfewTime = resolveUpdatedMetaText(
-      meta?.curfew_time,
-      existing?.curfew_time
-    );
-
-    const richUpdate = await supabase
-      .from('properties')
-      .update({
-        name: trimmedName,
-        address: address?.trim() || null,
+      const newProp: PropertyItem = {
+        ...inserted,
         gender_type: genderType,
         total_beds: totalBeds,
         upi_id: upiId,
@@ -432,42 +407,98 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
         wifi_ssid: wifiSsid,
         wifi_password: wifiPassword,
         curfew_time: curfewTime,
-      })
-      .eq('id', id)
-      .eq('owner_id', user.id);
+        active_resident_count: 0,
+      };
 
-    if (richUpdate.error) {
-      // Fallback to core columns (name, address) so edits succeed even before new column GRANT/ALTER runs.
-      const basicUpdate = await supabase
+      setProperties((prev) => [...prev, newProp]);
+      await selectProperty(newProp.id);
+      return newProp;
+    },
+    [ownerUserId, selectProperty]
+  );
+
+  const updateProperty = useCallback(
+    async (
+      id: string,
+      name: string,
+      address?: string,
+      meta?: PropertyMetaInput
+    ) => {
+      if (!ownerUserId) throw new Error('You must be signed in as an owner.');
+      const trimmedName = name.trim();
+      if (!trimmedName) throw new Error('Property name cannot be empty.');
+
+      const existing = propertiesRef.current.find((p) => p.id === id);
+      const genderType =
+        meta?.gender_type ??
+        inferPropertyGender(trimmedName, existing?.gender_type ?? null);
+      const totalBeds =
+        typeof meta?.total_beds === 'number' && Number.isFinite(meta.total_beds)
+          ? Math.max(0, Math.round(meta.total_beds))
+          : existing?.total_beds ?? 0;
+      const upiId = resolveUpdatedMetaText(meta?.upi_id, existing?.upi_id);
+      const upiPayeeName = resolveUpdatedMetaText(
+        meta?.upi_payee_name,
+        existing?.upi_payee_name
+      );
+      const wifiSsid = resolveUpdatedMetaText(meta?.wifi_ssid, existing?.wifi_ssid);
+      const wifiPassword = resolveUpdatedMetaText(
+        meta?.wifi_password,
+        existing?.wifi_password
+      );
+      const curfewTime = resolveUpdatedMetaText(
+        meta?.curfew_time,
+        existing?.curfew_time
+      );
+
+      const richUpdate = await supabase
         .from('properties')
         .update({
           name: trimmedName,
           address: address?.trim() || null,
+          gender_type: genderType,
+          total_beds: totalBeds,
+          upi_id: upiId,
+          upi_payee_name: upiPayeeName,
+          wifi_ssid: wifiSsid,
+          wifi_password: wifiPassword,
+          curfew_time: curfewTime,
         })
         .eq('id', id)
-        .eq('owner_id', user.id);
+        .eq('owner_id', ownerUserId);
 
-      if (basicUpdate.error) {
-        throw new Error(extractErrorMessage(basicUpdate.error, 'Failed to update property details.'));
+      if (richUpdate.error) {
+        // Fallback to core columns (name, address) so edits succeed even before new column GRANT/ALTER runs.
+        const basicUpdate = await supabase
+          .from('properties')
+          .update({
+            name: trimmedName,
+            address: address?.trim() || null,
+          })
+          .eq('id', id)
+          .eq('owner_id', ownerUserId);
+
+        if (basicUpdate.error) {
+          throw new Error(extractErrorMessage(basicUpdate.error, 'Failed to update property details.'));
+        }
       }
-    }
 
-    await writeLocalPropertyMeta(id, {
-      gender_type: genderType,
-      total_beds: totalBeds,
-      explicit_gender: Boolean(meta?.gender_type),
-      prefer_local: Boolean(richUpdate.error),
-      upi_id: upiId,
-      upi_payee_name: upiPayeeName,
-      wifi_ssid: wifiSsid,
-      wifi_password: wifiPassword,
-      curfew_time: curfewTime,
-    });
+      await writeLocalPropertyMeta(id, {
+        gender_type: genderType,
+        total_beds: totalBeds,
+        explicit_gender: Boolean(meta?.gender_type),
+        prefer_local: Boolean(richUpdate.error),
+        upi_id: upiId,
+        upi_payee_name: upiPayeeName,
+        wifi_ssid: wifiSsid,
+        wifi_password: wifiPassword,
+        curfew_time: curfewTime,
+      });
 
-    setProperties((prev) =>
-      prev.map((p) =>
-        p.id === id
-          ? {
+      setProperties((prev) =>
+        prev.map((p) =>
+          p.id === id
+            ? {
               ...p,
               name: trimmedName,
               address: address?.trim() || null,
@@ -479,26 +510,42 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
               wifi_password: wifiPassword,
               curfew_time: curfewTime,
             }
-          : p
-      )
-    );
-  };
+            : p
+        )
+      );
+    },
+    [ownerUserId]
+  );
 
-  const selectedProperty =
-    properties.find((p) => p.id === selectedPropertyId) ?? (properties[0] || null);
+  const selectedProperty = useMemo(
+    () => properties.find((p) => p.id === selectedPropertyId) ?? (properties[0] || null),
+    [properties, selectedPropertyId]
+  );
+
+  const contextValue = useMemo<PropertyContextType>(
+    () => ({
+      properties,
+      selectedProperty,
+      selectedPropertyId: selectedProperty?.id || null,
+      selectProperty,
+      addProperty,
+      updateProperty,
+      refreshProperties: fetchProperties,
+      loadingProperties,
+    }),
+    [
+      properties,
+      selectedProperty,
+      selectProperty,
+      addProperty,
+      updateProperty,
+      fetchProperties,
+      loadingProperties,
+    ]
+  );
 
   return (
-    <PropertyContext.Provider
-      value={{
-        properties,
-        selectedProperty,
-        selectedPropertyId: selectedProperty?.id || null,
-        selectProperty,
-        addProperty,
-        updateProperty,
-        refreshProperties: fetchProperties,
-        loadingProperties,
-      }}>
+    <PropertyContext.Provider value={contextValue}>
       {children}
     </PropertyContext.Provider>
   );

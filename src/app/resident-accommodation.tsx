@@ -246,7 +246,7 @@ export default function ResidentAccommodationScreen() {
         subtitle="Resident profile and PG details"
         showBack
         onBack={() =>
-          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+          router.canGoBack() ? router.back() : router.replace('/resident-dashboard')
         }
       />
 
@@ -303,7 +303,7 @@ export default function ResidentAccommodationScreen() {
                 </View>
                 <Pressable
                   style={styles.editLinkBtn}
-                  onPress={() => router.push('/student-profile-edit')}>
+                  onPress={() => router.push('/resident-profile-edit')}>
                   <Text style={styles.editLinkText}>Edit Phone or Password ›</Text>
                 </Pressable>
               </View>

@@ -597,6 +597,10 @@ describe('residents.service', () => {
         started_at: null,
       });
       expect(wmReqUpdateMock).toHaveBeenCalledWith({ status: 'rejected' });
+      expect(supabase.rpc).toHaveBeenCalledWith('invalidate_resident_push_tokens', {
+        p_property_id: 'prop-1',
+        p_resident_id: 'res-wm',
+      });
     });
   });
 

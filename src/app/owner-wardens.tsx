@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,26 +13,51 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Building2, Eye, EyeOff, UserCog, X } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
+import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
-import { invokeEdgeFunction } from '@/lib/edge-functions';
-import { extractErrorMessage } from '@/lib/error-utils';
-import { OwnerHeader, PrimaryButton, SecondaryButton, DestructiveButton } from '@/components/ui/owner';
-
-interface WardenInfo {
-  profile_id: string;
-  full_name: string;
-  email: string | null;
-  phone_number: string | null;
-}
+import { useToast } from '@/context/toast-context';
+import { queryKeys } from '@/lib/query-keys';
+import {
+  assignPropertyWarden,
+  fetchOwnerWardens,
+  OwnerWardensMap,
+  removePropertyWarden,
+} from '@/services/wardens.service';
+import {
+  DestructiveButton,
+  OwnerHeader,
+  PrimaryButton,
+  SecondaryButton,
+  SkeletonBlock,
+} from '@/components/ui/owner';
 
 export default function OwnerWardensScreen() {
+  const qc = useQueryClient();
+  const { user } = useAuth();
   const { properties } = useProperty();
-  const [wardens, setWardens] = useState<Record<string, WardenInfo | null>>({});
-  const [loading, setLoading] = useState(true);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const { showToast } = useToast();
+  const userId = user?.id ?? 'owner';
+  const propertyIds = useMemo(() => properties.map((p) => p.id), [properties]);
+
+  const wardensQuery = useQuery<OwnerWardensMap>({
+    queryKey: queryKeys.wardens.owner(userId),
+    enabled: propertyIds.length > 0,
+    staleTime: 60_000,
+    queryFn: async () => {
+      const res = await fetchOwnerWardens(propertyIds);
+      if (!res.ok) throw res.error;
+      return res.data;
+    },
+  });
+
+  const wardens = wardensQuery.data ?? {};
+  const loading = wardensQuery.isPending && !wardensQuery.data && propertyIds.length > 0;
+  const errorMessage = wardensQuery.isError ? wardensQuery.error.message : null;
+  const [refreshing, setRefreshing] = useState(false);
 
   const [modalPropertyId, setModalPropertyId] = useState<string | null>(null);
   const [name, setName] = useState('');
@@ -41,52 +66,17 @@ export default function OwnerWardensScreen() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [removingPropertyId, setRemovingPropertyId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
-  const fetchWardensMap = useCallback(async () => {
-    const entries = await Promise.all(
-      properties.map(async (p) => {
-        const res = await invokeEdgeFunction<{ warden: WardenInfo | null }>('manage-warden', {
-          action: 'get',
-          property_id: p.id,
-        });
-        return [p.id, res.warden] as const;
-      })
-    );
-    return Object.fromEntries(entries);
-  }, [properties]);
-
-  const loadWardens = useCallback(async () => {
-    setLoading(true);
-    setErrorMessage(null);
+  const handleRefresh = async () => {
+    setRefreshing(true);
     try {
-      const next = await fetchWardensMap();
-      setWardens(next);
-    } catch (err) {
-      setErrorMessage(extractErrorMessage(err, 'Could not load wardens.'));
+      await wardensQuery.refetch();
     } finally {
-      setLoading(false);
+      setRefreshing(false);
     }
-  }, [fetchWardensMap]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetchWardensMap()
-      .then((next) => {
-        if (cancelled) return;
-        setWardens(next);
-        setErrorMessage(null);
-        setLoading(false);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setErrorMessage(extractErrorMessage(err, 'Could not load wardens.'));
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [fetchWardensMap]);
+  };
 
   const openModal = (propertyId: string) => {
     setModalPropertyId(propertyId);
@@ -108,20 +98,29 @@ export default function OwnerWardensScreen() {
 
     setSaving(true);
     setFormError(null);
+    const targetPropertyId = modalPropertyId;
     try {
-      await invokeEdgeFunction('manage-warden', {
-        action: 'create_and_assign',
-        property_id: modalPropertyId,
-        full_name: trimmedName,
+      const res = await assignPropertyWarden({
+        propertyId: targetPropertyId,
+        fullName: trimmedName,
         email: trimmedEmail,
-        phone_number: phone.trim() || undefined,
-        temporary_password: password,
+        phoneNumber: phone.trim() || undefined,
+        temporaryPassword: password,
       });
+      if (!res.ok) {
+        setFormError(res.error.message);
+        return;
+      }
+      // Instant local cache update (no slow refetch round-trip)
+      qc.setQueryData<OwnerWardensMap>(queryKeys.wardens.owner(userId), (prev) => ({
+        ...(prev ?? {}),
+        [targetPropertyId]: res.data,
+      }));
       setModalPropertyId(null);
-      await loadWardens();
-      Alert.alert('Warden assigned', 'Share the email and temporary password with the warden. They will be asked to change it on first login.');
-    } catch (err) {
-      setFormError(extractErrorMessage(err, 'Could not assign warden.'));
+      Alert.alert(
+        'Warden assigned',
+        'Share the email and temporary password with the warden. They will be asked to change it on first login.'
+      );
     } finally {
       setSaving(false);
     }
@@ -134,11 +133,23 @@ export default function OwnerWardensScreen() {
         text: 'Remove',
         style: 'destructive',
         onPress: async () => {
+          const prevMap = qc.getQueryData<OwnerWardensMap>(queryKeys.wardens.owner(userId));
+          setRemovingPropertyId(propertyId);
+          // Optimistically clear warden in UI immediately
+          qc.setQueryData<OwnerWardensMap>(queryKeys.wardens.owner(userId), (prev) => ({
+            ...(prev ?? {}),
+            [propertyId]: null,
+          }));
           try {
-            await invokeEdgeFunction('manage-warden', { action: 'remove', property_id: propertyId });
-            await loadWardens();
-          } catch (err) {
-            Alert.alert('Could not remove', extractErrorMessage(err, 'Please try again.'));
+            const res = await removePropertyWarden(propertyId);
+            if (!res.ok) {
+              qc.setQueryData(queryKeys.wardens.owner(userId), prevMap);
+              Alert.alert('Could not remove', res.error.message);
+              return;
+            }
+            showToast(`${wardenName} removed`);
+          } finally {
+            setRemovingPropertyId(null);
           }
         },
       },
@@ -149,15 +160,21 @@ export default function OwnerWardensScreen() {
     <SafeAreaView style={styles.safeArea}>
       <OwnerHeader title="Wardens" subtitle="Assign a warden to each property" showBack />
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => void handleRefresh()}
+            colors={[OwnerTheme.colors.primary]}
+          />
+        }>
         {errorMessage && <Text style={styles.errorText}>{errorMessage}</Text>}
-
-        {loading && properties.length > 0 ? (
-          <ActivityIndicator style={{ marginTop: 32 }} color={OwnerTheme.colors.primary} />
-        ) : null}
 
         {properties.map((p) => {
           const warden = wardens[p.id];
+          const isRemoving = removingPropertyId === p.id;
           return (
             <View key={p.id} style={styles.card}>
               <View style={styles.cardHeader}>
@@ -167,30 +184,41 @@ export default function OwnerWardensScreen() {
                 </Text>
               </View>
 
-              {warden ? (
+              {loading ? (
+                <View style={styles.wardenBox}>
+                  <SkeletonBlock width={24} height={24} borderRadius={12} />
+                  <View style={{ flex: 1, gap: 6 }}>
+                    <SkeletonBlock width="48%" height={14} />
+                    <SkeletonBlock width="68%" height={11} />
+                  </View>
+                </View>
+              ) : warden ? (
                 <View style={styles.wardenBox}>
                   <UserCog size={18} color={OwnerTheme.colors.textSecondary} />
                   <View style={{ flex: 1 }}>
                     <Text style={styles.wardenName}>{warden.full_name}</Text>
                     <Text style={styles.wardenMeta} numberOfLines={1}>
-                      {warden.email ?? 'No email'}
-                      {warden.phone_number ? ` • ${warden.phone_number}` : ''}
+                      {warden.email || warden.phone_number
+                        ? [warden.email, warden.phone_number].filter(Boolean).join(' • ')
+                        : 'Assigned warden'}
                     </Text>
                   </View>
                 </View>
               ) : (
-                <Text style={styles.noWarden}>{loading ? 'Loading…' : 'No warden assigned'}</Text>
+                <Text style={styles.noWarden}>No warden assigned</Text>
               )}
 
               <View style={styles.actions}>
                 <SecondaryButton
                   label={warden ? 'Change warden' : 'Assign warden'}
                   onPress={() => openModal(p.id)}
+                  disabled={loading || isRemoving}
                   style={{ flex: 1 }}
                 />
                 {warden ? (
                   <DestructiveButton
                     label="Remove"
+                    loading={isRemoving}
                     onPress={() => handleRemove(p.id, warden.full_name)}
                     style={{ flex: 1 }}
                   />

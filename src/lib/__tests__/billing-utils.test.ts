@@ -9,6 +9,8 @@ import {
   getOverdueDays,
   formatDueStatus,
   buildWhatsAppReminderUrl,
+  buildMonthlyRentSummaryText,
+  buildMonthlyRentCsv,
 } from '../billing-utils';
 
 describe('billing-utils', () => {
@@ -239,6 +241,54 @@ describe('billing-utils', () => {
       expect(url).toBe('https://wa.me/919876543210?text=Rent%20due');
       expect(buildWhatsAppReminderUrl(null, 'Rent due')).toBeNull();
       expect(buildWhatsAppReminderUrl('12345', 'Rent due')).toBeNull();
+    });
+  });
+
+  describe('monthly rent report export formatters', () => {
+    const sampleBills = [
+      {
+        full_name: 'Arun Kumar',
+        room_number: '101',
+        phone_number: '9876543210',
+        rent_paise: 800000,
+        wm_paise: 50000,
+        total_paise: 850000,
+        status: 'settled',
+      },
+      {
+        full_name: 'Karthik, Raj',
+        room_number: '102',
+        phone_number: '9876543211',
+        rent_paise: 750000,
+        wm_paise: 0,
+        total_paise: 750000,
+        status: 'unpaid',
+      },
+    ];
+
+    it('builds a WhatsApp-ready monthly rent summary with pending resident list', () => {
+      const text = buildMonthlyRentSummaryText({
+        propertyName: 'Sunrise PG',
+        monthLabel: 'November 2026',
+        rentBills: sampleBills,
+      });
+      expect(text).toContain('*Sunrise PG — Rent Report (November 2026)*');
+      expect(text).toContain('Expected: ₹16,000');
+      expect(text).toContain('Collected: ₹8,500 (1/2 paid)');
+      expect(text).toContain('Pending: ₹7,500 (1 unpaid)');
+      expect(text).toContain('Room 102 — Karthik, Raj: ₹7,500');
+    });
+
+    it('builds RFC-4180 escaped CSV rows', () => {
+      const csv = buildMonthlyRentCsv({
+        propertyName: 'Sunrise PG',
+        monthLabel: 'November 2026',
+        rentBills: sampleBills,
+      });
+      const lines = csv.split('\n');
+      expect(lines).toHaveLength(3);
+      expect(lines[1]).toBe('Sunrise PG,November 2026,101,Arun Kumar,9876543210,8000,500,8500,Paid');
+      expect(lines[2]).toBe('Sunrise PG,November 2026,102,"Karthik, Raj",9876543211,7500,0,7500,Pending');
     });
   });
 });

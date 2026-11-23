@@ -116,9 +116,19 @@ export function TodaysMenuPreview({
             ) : null}
           </View>
         ) : (
-          <Text style={styles.noMenuText}>
-            No menu published for {MEAL_CONFIG[activeMealTab].title.toLowerCase()} today.
-          </Text>
+          <View style={styles.emptyMealRow}>
+            <View style={styles.emptyMealIcon}>
+              <Utensils size={14} color={OwnerTheme.colors.textMuted} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.noMenuText}>
+                No menu published for {MEAL_CONFIG[activeMealTab].title.toLowerCase()} yet
+              </Text>
+              <Pressable hitSlop={6} onPress={onPressFullMenu}>
+                <Text style={styles.emptyMealLink}>View full week ›</Text>
+              </Pressable>
+            </View>
+          </View>
         )}
       </View>
     </View>
@@ -200,7 +210,7 @@ const styles = StyleSheet.create({
   mealDetailBox: {
     marginTop: 10,
     padding: 10,
-    backgroundColor: '#FAFAFA',
+    backgroundColor: OwnerTheme.colors.surfaceElevated,
     borderRadius: OwnerTheme.radius.sm,
     borderWidth: 1,
     borderColor: OwnerTheme.colors.borderLight,
@@ -248,6 +258,26 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: OwnerTheme.colors.textSecondary,
     fontStyle: 'italic',
+  },
+  emptyMealRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 4,
+  },
+  emptyMealIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: OwnerTheme.colors.borderLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyMealLink: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
+    marginTop: 2,
   },
   noMenuText: {
     fontSize: 12,

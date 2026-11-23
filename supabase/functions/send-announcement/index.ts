@@ -25,6 +25,15 @@ const corsHeaders = {
 const EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
 const AUDIENCES = ['all', 'room'] as const;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const IDEMPOTENCY_TTL_MS = 5 * 60 * 1000;
+const recentIdempotencyCache = new Map<string, { expiresAt: number; payload: Record<string, unknown> }>();
+
+function pruneIdempotencyCache(nowMs: number) {
+  if (recentIdempotencyCache.size < 200) return;
+  for (const [k, v] of recentIdempotencyCache.entries()) {
+    if (v.expiresAt <= nowMs) recentIdempotencyCache.delete(k);
+  }
+}
 
 function json(status: number, payload: Record<string, unknown>) {
   return new Response(JSON.stringify(payload), {
@@ -88,6 +97,12 @@ serve(async (req) => {
     const audience = String(body.audience ?? 'all').trim();
     const rawRoom = body.room_number != null ? String(body.room_number) : '';
     const normalizedRoom = audience === 'room' ? normalizeRoomCode(rawRoom) : null;
+    const rawIdempotencyKey =
+      typeof body.idempotency_key === 'string' ? body.idempotency_key.trim() : '';
+    const idempotencyKey =
+      rawIdempotencyKey.length >= 8 && rawIdempotencyKey.length <= 80
+        ? rawIdempotencyKey
+        : null;
 
     if (!UUID_RE.test(requestedPropertyId)) {
       return json(400, { success: false, code: 'BAD_REQUEST', error: 'property_id is required.' });
@@ -161,6 +176,34 @@ serve(async (req) => {
 
     if (!property || !property.is_active) {
       return json(403, { success: false, code: 'FORBIDDEN', error: 'Property is not active.' });
+    }
+
+    // ---- Idempotency deduplication (prevents duplicate push notifications on retries) ----
+    const dedupCacheKey = idempotencyKey ? `${caller.id}:${idempotencyKey}` : null;
+    if (dedupCacheKey) {
+      const nowMs = Date.now();
+      pruneIdempotencyCache(nowMs);
+      const cached = recentIdempotencyCache.get(dedupCacheKey);
+      if (cached && cached.expiresAt > nowMs) {
+        return json(200, { ...cached.payload, duplicate: true });
+      }
+      const { data: existingAnn } = await admin
+        .from('announcements')
+        .select('id, recipient_count')
+        .eq('owner_id', caller.id)
+        .eq('idempotency_key', idempotencyKey)
+        .maybeSingle();
+      if (existingAnn) {
+        return json(200, {
+          success: true,
+          duplicate: true,
+          targeted: existingAnn.recipient_count ?? 0,
+          push_sent: 0,
+          push_failed: 0,
+          in_app_only: 0,
+          dispatch_status: 'deduplicated',
+        });
+      }
     }
 
     // ---- Resolve eligible recipients from DB (never trusts client lists) ----
@@ -305,14 +348,24 @@ serve(async (req) => {
     const dispatchStatus =
       pushable === 0 ? 'no_push' : sent === pushable ? 'sent' : sent > 0 ? 'partial' : 'failed';
 
-    return json(200, {
+    const responsePayload: Record<string, unknown> = {
       success: true,
+      duplicate: false,
       targeted: profileIds.length,
       push_sent: sent,
       push_failed: failed,
       in_app_only: noTokenCount,
       dispatch_status: dispatchStatus,
-    });
+    };
+
+    if (dedupCacheKey) {
+      recentIdempotencyCache.set(dedupCacheKey, {
+        expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
+        payload: responsePayload,
+      });
+    }
+
+    return json(200, responsePayload);
   } catch (err: unknown) {
     console.error(
       '[send-announcement] unexpected error:',

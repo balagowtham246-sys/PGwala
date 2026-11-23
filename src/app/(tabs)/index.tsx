@@ -4,7 +4,6 @@ import {
   Bell,
   Building2,
   ChevronDown,
-  Disc3,
   User,
   Utensils,
 } from 'lucide-react-native';
@@ -25,21 +24,18 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   AddPropertyModal,
   PropertySwitcherModal,
-  WmUnitsModal,
 } from '@/components/owner-dashboard/OwnerDashboardModals';
 import { OwnerMetricsGrid } from '@/components/owner-dashboard/OwnerMetricsGrid';
 import { OwnerQuickActions } from '@/components/owner-dashboard/OwnerQuickActions';
 import { RecentActivitySection } from '@/components/owner-dashboard/RecentActivitySection';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
-import { ErrorState } from '@/components/ui/owner';
+import { DashboardSkeleton, ErrorState } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useResidentTabs } from '@/context/resident-tabs-context';
 import {
   useOwnerDashboardQuery,
-  useOwnerReleaseWmMutation,
-  useOwnerSetWmOutOfOrderMutation,
   useOwnerUnreadInboxQuery,
 } from '@/hooks/use-dashboards';
 import { invalidatePrefix } from '@/lib/query-cache';
@@ -101,16 +97,11 @@ export default function OwnerDashboard() {
   const [newPropAddress, setNewPropAddress] = useState('');
   const [creatingProperty, setCreatingProperty] = useState(false);
 
-  // Live Washing Machine Status Modal State
-  const [wmModalVisible, setWmModalVisible] = useState(false);
-
   const hasFocusedOnceRef = useRef(false);
 
   const canQueryOwner = !authLoading && Boolean(userId) && profileRole === 'owner';
   const dashboardQuery = useOwnerDashboardQuery(selectedPropertyId, canQueryOwner);
   const inboxQuery = useOwnerUnreadInboxQuery(userId, selectedPropertyId, canQueryOwner);
-  const releaseWmMutation = useOwnerReleaseWmMutation();
-  const outOfOrderWmMutation = useOwnerSetWmOutOfOrderMutation();
 
   const dash = dashboardQuery.data;
   const loading =
@@ -139,32 +130,19 @@ export default function OwnerDashboard() {
     () => dash?.todayMenus ?? createEmptyOwnerMenus(),
     [dash?.todayMenus]
   );
-  const wmSummary = useMemo(
-    () =>
-      dash?.wmSummary ?? {
-        totalCount: 0,
-        inUseCount: 0,
-        freeCount: 0,
-        outOfOrderCount: 0,
-      },
-    [dash?.wmSummary]
-  );
-  const wmUnits = useMemo(() => dash?.wmUnits ?? [], [dash?.wmUnits]);
   const recentActivities = useMemo(
     () => dash?.recentActivities ?? [],
     [dash?.recentActivities]
   );
   const unreadInboxCount = canQueryOwner && selectedPropertyId ? (inboxQuery.data ?? 0) : 0;
-  const busyMachineId = releaseWmMutation.isPending
-    ? releaseWmMutation.variables.machineId
-    : outOfOrderWmMutation.isPending
-      ? outOfOrderWmMutation.variables.machineId
-      : null;
+
+  const refetchDashboard = dashboardQuery.refetch;
+  const refetchInbox = inboxQuery.refetch;
 
   const loadDashboardData = useCallback(async () => {
     if (!canQueryOwner || !selectedPropertyId) return;
-    await dashboardQuery.refetch();
-  }, [canQueryOwner, selectedPropertyId, dashboardQuery]);
+    await refetchDashboard();
+  }, [canQueryOwner, selectedPropertyId, refetchDashboard]);
 
   useEffect(() => {
     if (authLoading) return;
@@ -181,9 +159,9 @@ export default function OwnerDashboard() {
       if (forceInvalidate) {
         await invalidatePrefix('inbox:');
       }
-      await inboxQuery.refetch();
+      await refetchInbox();
     },
-    [canQueryOwner, selectedPropertyId, inboxQuery]
+    [canQueryOwner, selectedPropertyId, refetchInbox]
   );
 
   // Refetch stale operational status, menu, and unread notifications on return
@@ -209,78 +187,6 @@ export default function OwnerDashboard() {
     } else {
       router.push('/food-menu');
     }
-  };
-
-  const handleOwnerReleaseWm = (machineId: string, machineName: string) => {
-    if (!selectedPropertyId) return;
-    Alert.alert(
-      'Free Up Machine',
-      `Are you sure you want to free up ${machineName}? This will end the current resident's session.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Free Up',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await releaseWmMutation.mutateAsync({
-                propertyId: selectedPropertyId,
-                machineId,
-              });
-            } catch (err) {
-              Alert.alert(
-                'Error',
-                err instanceof Error ? err.message : 'Failed to release washing machine.'
-              );
-            }
-          },
-        },
-      ]
-    );
-  };
-
-  const handleOwnerSetOutOfOrder = (
-    machineId: string,
-    machineName: string,
-    outOfOrder: boolean,
-    isInUse: boolean
-  ) => {
-    if (!selectedPropertyId) return;
-
-    const applyChange = async () => {
-      try {
-        await outOfOrderWmMutation.mutateAsync({
-          propertyId: selectedPropertyId,
-          machineId,
-          outOfOrder,
-        });
-      } catch (err) {
-        Alert.alert(
-          'Error',
-          err instanceof Error
-            ? err.message
-            : 'Failed to update washing machine status.'
-        );
-      }
-    };
-
-    if (outOfOrder) {
-      Alert.alert(
-        'Mark Out of Order',
-        `Mark ${machineName} as out of order?${isInUse ? " This will end the current resident's session." : ''}`,
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Mark Out of Order',
-            style: 'destructive',
-            onPress: applyChange,
-          },
-        ]
-      );
-      return;
-    }
-
-    void applyChange();
   };
 
   const [isScreenFocused, setIsScreenFocused] = useState(true);
@@ -414,10 +320,6 @@ export default function OwnerDashboard() {
     );
   }
 
-  const outOfOrderCount =
-    wmSummary.outOfOrderCount ??
-    wmUnits.filter((u) => u.status === 'out_of_order').length;
-  const hasWmAttention = wmSummary.inUseCount > 0 || outOfOrderCount > 0;
   const featuredMealKey = getFeaturedMealKey(todayMenus);
   const featuredMenu = todayMenus[featuredMealKey];
   const featuredMealTitle = MEAL_CONFIG[featuredMealKey].title;
@@ -497,129 +399,62 @@ export default function OwnerDashboard() {
           <ErrorState message={errorMessage} onRetry={loadDashboardData} />
         )}
 
-        {/* Priority Area 0 & 1: Needs Attention Strip + 4-Card Operational KPI Grid */}
-        <OwnerMetricsGrid stats={stats} />
-
-        {/* Priority Area 1b: Washing Machines */}
-        {hasWmAttention ? (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="View washing machine usage"
-            style={({ pressed }) => [
-              styles.wmSummaryCard,
-              pressed && styles.cardPressed,
-            ]}
-            onPress={() => setWmModalVisible(true)}>
-            <View style={styles.wmSummaryLeft}>
-              <View style={styles.wmIconBadge}>
-                <Disc3 size={18} color="#0284C7" />
-              </View>
-              <View style={{ flex: 1, minWidth: 0 }}>
-                <View style={styles.wmSummaryTitleRow}>
-                  <Text style={styles.wmSummaryTitle}>Washing Machines</Text>
-                  {wmSummary.inUseCount > 0 && (
-                    <View style={styles.wmActiveChip}>
-                      <Text style={styles.wmActiveChipText}>
-                        {wmSummary.inUseCount === 1
-                          ? toSentenceCaseStatus('in_use')
-                          : `${wmSummary.inUseCount} in use`}
-                      </Text>
-                    </View>
-                  )}
-                  {outOfOrderCount > 0 && (
-                    <View style={styles.wmOutOfOrderChip}>
-                      <Text style={styles.wmOutOfOrderChipText}>
-                        {outOfOrderCount === 1
-                          ? toSentenceCaseStatus('out_of_order')
-                          : `${outOfOrderCount} out of order`}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.wmSummarySub}>
-                  {outOfOrderCount > 0
-                    ? `${wmSummary.inUseCount} active · ${wmSummary.freeCount} free · ${outOfOrderCount} out of order`
-                    : `${wmSummary.inUseCount} active · ${wmSummary.freeCount} available of ${wmSummary.totalCount} units`}
-                </Text>
-              </View>
-            </View>
-            <View style={styles.wmSummaryRight}>
-              <Text style={styles.wmViewUsageBtnText}>View Usage ›</Text>
-            </View>
-          </Pressable>
+        {loading && !dash ? (
+          <DashboardSkeleton />
         ) : (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Washing machines all free"
-            style={({ pressed }) => [
-              styles.wmCompactChipRow,
-              pressed && styles.cardPressed,
-            ]}
-            onPress={() => setWmModalVisible(true)}>
-            <View style={styles.wmCompactLeft}>
-              <View style={styles.wmCompactIconBadge}>
-                <Disc3 size={16} color="#0284C7" />
-              </View>
-              <Text style={styles.wmCompactTitle}>Washing Machines</Text>
-              <View style={styles.wmAllFreeChip}>
-                <Text style={styles.wmAllFreeChipText}>
-                  {wmSummary.totalCount > 0
-                    ? `${toSentenceCaseStatus('free')} (${wmSummary.totalCount})`
-                    : toSentenceCaseStatus('free')}
-                </Text>
-              </View>
-            </View>
-            <Text style={styles.wmViewUsageBtnText}>Details ›</Text>
-          </Pressable>
-        )}
+          <>
+            {/* Priority Area 0 & 1: Needs Attention Strip + 4-Card Operational KPI Grid */}
+            <OwnerMetricsGrid stats={stats} />
 
-        {/* Priority Area 2: Compact Single-Row Food Menu Card */}
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Manage today's food menu"
-          style={({ pressed }) => [styles.menuCompactCard, pressed && styles.cardPressed]}
-          onPress={handleOpenFoodMenu}>
-          <View style={styles.menuIconContainer}>
-            <Utensils size={16} color={OwnerTheme.colors.primary} />
-          </View>
-          <Text style={styles.menuCompactSummary} numberOfLines={1}>
-            <Text style={styles.menuCompactLabel}>{featuredMealTitle}: </Text>
-            {featuredMenu ? featuredMenu.items : 'Not set'}
-          </Text>
-          {featuredMenu && (
-            <View
-              style={[
-                styles.menuStatusPill,
-                featuredMenu.is_published
-                  ? styles.menuStatusPillPublished
-                  : styles.menuStatusPillDraft,
-              ]}>
-              <Text
-                style={[
-                  styles.menuStatusPillText,
-                  featuredMenu.is_published
-                    ? styles.menuStatusTextPublished
-                    : styles.menuStatusTextDraft,
-                ]}>
-                {toSentenceCaseStatus(featuredMenu.is_published ? 'published' : 'draft')}
+            {/* Priority Area 2: Compact Single-Row Food Menu Card */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Manage today's food menu"
+              style={({ pressed }) => [styles.menuCompactCard, pressed && styles.cardPressed]}
+              onPress={handleOpenFoodMenu}>
+              <View style={styles.menuIconContainer}>
+                <Utensils size={16} color={OwnerTheme.colors.primary} />
+              </View>
+              <Text style={styles.menuCompactSummary} numberOfLines={1}>
+                <Text style={styles.menuCompactLabel}>{featuredMealTitle}: </Text>
+                {featuredMenu ? featuredMenu.items : 'Not set'}
               </Text>
-            </View>
-          )}
-          <Text style={styles.menuManageText}>Manage ›</Text>
-        </Pressable>
+              {featuredMenu && (
+                <View
+                  style={[
+                    styles.menuStatusPill,
+                    featuredMenu.is_published
+                      ? styles.menuStatusPillPublished
+                      : styles.menuStatusPillDraft,
+                  ]}>
+                  <Text
+                    style={[
+                      styles.menuStatusPillText,
+                      featuredMenu.is_published
+                        ? styles.menuStatusTextPublished
+                        : styles.menuStatusTextDraft,
+                    ]}>
+                    {toSentenceCaseStatus(featuredMenu.is_published ? 'published' : 'draft')}
+                  </Text>
+                </View>
+              )}
+              <Text style={styles.menuManageText}>Manage ›</Text>
+            </Pressable>
 
-        {/* Priority Area 3: Residents Insights & Announcements */}
-        <OwnerQuickActions
-          totalResidents={stats.totalResidents}
-          studentsInside={stats.studentsInside}
-          unpaidResidentsCount={stats.unpaidResidentsCount ?? 0}
-          totalBeds={selectedProperty?.total_beds ?? 0}
-          rentCollectedPaise={stats.rentCollectedPaise}
-          rentTotalPaise={stats.rentTotalPaise}
-        />
+            {/* Priority Area 3: Residents Insights & Announcements */}
+            <OwnerQuickActions
+              totalResidents={stats.totalResidents}
+              studentsInside={stats.studentsInside}
+              unpaidResidentsCount={stats.unpaidResidentsCount ?? 0}
+              totalBeds={selectedProperty?.total_beds ?? 0}
+              rentCollectedPaise={stats.rentCollectedPaise}
+              rentTotalPaise={stats.rentTotalPaise}
+            />
 
-        {/* Priority Area 4: Recent Gate Movements */}
-        <RecentActivitySection loading={loading} activities={recentActivities} />
+            {/* Priority Area 4: Recent Gate Movements */}
+            <RecentActivitySection loading={loading} activities={recentActivities} />
+          </>
+        )}
       </ScrollView>
 
       <PropertySwitcherModal
@@ -641,18 +476,6 @@ export default function OwnerDashboard() {
         onChangeAddress={setNewPropAddress}
         onCreate={handleCreateProperty}
         onClose={() => setShowAddPropertyModal(false)}
-      />
-
-      <WmUnitsModal
-        visible={wmModalVisible}
-        propertyName={selectedProperty?.name || 'Live Usage'}
-        wmSummary={wmSummary}
-        wmUnits={wmUnits}
-        outOfOrderCount={outOfOrderCount}
-        busyMachineId={busyMachineId}
-        onRelease={handleOwnerReleaseWm}
-        onSetOutOfOrder={handleOwnerSetOutOfOrder}
-        onClose={() => setWmModalVisible(false)}
       />
 
       <RoleBottomNav activeTab="home" roleOverride="owner" />

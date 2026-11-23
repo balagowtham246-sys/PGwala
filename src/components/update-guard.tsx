@@ -29,35 +29,39 @@ export function UpdateGuard() {
     let active = true;
     const platform: 'android' | 'ios' = Platform.OS === 'ios' ? 'ios' : 'android';
 
-    void (async () => {
-      const nativeRes = await checkAppVersion(platform);
-      if (!active) return;
+    // Defer version & OTA checks so cold start Auth/Property/Dashboard queries get priority
+    const startupTimer = setTimeout(() => {
+      void (async () => {
+        const nativeRes = await checkAppVersion(platform);
+        if (!active) return;
 
-      if (nativeRes.isOutdated) {
-        setVersionState(nativeRes);
-        if (nativeRes.isMandatory) {
+        if (nativeRes.isOutdated) {
+          setVersionState(nativeRes);
+          if (nativeRes.isMandatory) {
+            return;
+          }
+        }
+
+        if (Platform.OS === 'web' || __DEV__ || !Updates.isEnabled) {
           return;
         }
-      }
 
-      if (Platform.OS === 'web' || __DEV__ || !Updates.isEnabled) {
-        return;
-      }
-
-      try {
-        const updateCheck = await Updates.checkForUpdateAsync();
-        if (!active || !updateCheck.isAvailable) return;
-        const fetched = await Updates.fetchUpdateAsync();
-        if (active && fetched.isNew) {
-          setOtaReady(true);
+        try {
+          const updateCheck = await Updates.checkForUpdateAsync();
+          if (!active || !updateCheck.isAvailable) return;
+          const fetched = await Updates.fetchUpdateAsync();
+          if (active && fetched.isNew) {
+            setOtaReady(true);
+          }
+        } catch {
+          // Offline or transient update-server failures stay silent.
         }
-      } catch {
-        // Offline or transient update-server failures stay silent.
-      }
-    })();
+      })();
+    }, 3500);
 
     return () => {
       active = false;
+      clearTimeout(startupTimer);
     };
   }, []);
 

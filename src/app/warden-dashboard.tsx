@@ -1,12 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   KeyboardAvoidingView,
   Platform,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { AlertTriangle, Check, Megaphone, Send, Settings } from 'lucide-react-native';
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Megaphone, Send, Settings, X } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -73,6 +73,8 @@ export default function WardenDashboardScreen() {
 
   const [formError, setFormError] = useState<string | null>(null);
   const [result, setResult] = useState<AlertSendSummary | null>(null);
+  const [showMoreOptions, setShowMoreOptions] = useState(false);
+  const [dismissedTempBanner, setDismissedTempBanner] = useState(false);
 
   const sendingRef = useRef(false);
   const keyRef = useRef<string | null>(null);
@@ -121,10 +123,10 @@ export default function WardenDashboardScreen() {
     triggerSelectionHaptic();
     setRooms((prev) => (prev.includes(room) ? prev.filter((r) => r !== room) : [...prev, room]));
   };
-  const toggleResident = (id: string) => {
+  const toggleResident = useCallback((id: string) => {
     triggerSelectionHaptic();
     setResidentIds((prev) => (prev.includes(id) ? prev.filter((r) => r !== id) : [...prev, id]));
-  };
+  }, []);
 
   const doSend = async () => {
     if (sendingRef.current || sendAlertMutation.isPending || !property) return;
@@ -195,6 +197,31 @@ export default function WardenDashboardScreen() {
     </Pressable>
   );
 
+  const renderAudienceResident = useCallback(
+    ({ item: r }: { item: (typeof filteredResidents)[number] }) => {
+      const active = residentIds.includes(r.resident_id);
+      return (
+        <Pressable
+          style={[styles.residentRow, active && styles.residentRowActive]}
+          onPress={() => toggleResident(r.resident_id)}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.residentName}>{r.full_name}</Text>
+            <Text style={styles.residentRoom}>Room {r.room_number}</Text>
+          </View>
+          <View style={[styles.checkbox, active && styles.checkboxActive]}>
+            {active && <Check size={14} color="#FFFFFF" />}
+          </View>
+        </Pressable>
+      );
+    },
+    [residentIds, toggleResident]
+  );
+
+  const audienceKeyExtractor = useCallback(
+    (item: (typeof filteredResidents)[number]) => item.resident_id,
+    []
+  );
+
   if (loading) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
@@ -229,210 +256,246 @@ export default function WardenDashboardScreen() {
       <OwnerHeader title="Food Alerts" subtitle={property.name} rightAction={headerActions} />
 
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView
+        <FlatList
+          data={showMoreOptions && audience === 'residents' ? filteredResidents : []}
+          keyExtractor={audienceKeyExtractor}
+          renderItem={renderAudienceResident}
           contentContainerStyle={styles.content}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}>
-          {mustChangePassword && (
-            <Pressable style={styles.banner} onPress={() => router.push('/student-profile-edit')}>
-              <AlertTriangle size={18} color="#B45309" />
-              <Text style={styles.bannerText}>You are using a temporary password. Tap to set a new one.</Text>
-            </Pressable>
-          )}
-
-          {/* Meal */}
-          <Text style={styles.label}>Meal</Text>
-          <View style={styles.row}>
-            {MEAL_OPTIONS.map((m) => {
-              const active = meal === m.key;
-              return (
-                <Pressable
-                  key={m.key}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  style={[styles.bigChip, active && styles.bigChipActive]}
-                  onPress={() => {
-                    triggerSelectionHaptic();
-                    setMeal(m.key);
-                  }}>
-                  <Text style={[styles.bigChipText, active && styles.bigChipTextActive]}>{m.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          {/* Status */}
-          <Text style={styles.label}>Food status</Text>
-          <View style={styles.row}>
-            {STATUS_OPTIONS.map((s) => {
-              const active = status === s.key;
-              const c = STATUS_COLORS[s.key];
-              return (
-                <Pressable
-                  key={s.key}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  style={[
-                    styles.bigChip,
-                    active && { backgroundColor: c.bg, borderColor: c.border },
-                  ]}
-                  onPress={() => {
-                    triggerSelectionHaptic();
-                    setStatus(s.key);
-                  }}>
-                  <Text style={[styles.bigChipText, active && { color: c.fg }]}>{s.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          {/* Recipients */}
-          <Text style={styles.label}>Send to</Text>
-          <View style={styles.row}>
-            {(
-              [
-                ['all', 'Everyone'],
-                ['rooms', 'Rooms'],
-                ['residents', 'Residents'],
-              ] as [FoodAudienceType, string][]
-            ).map(([key, label]) => {
-              const active = audience === key;
-              return (
-                <Pressable
-                  key={key}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  style={[styles.segment, active && styles.segmentActive]}
-                  onPress={() => {
-                    triggerSelectionHaptic();
-                    setAudience(key);
-                  }}>
-                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-
-          {audience === 'rooms' && (
-            <View style={styles.wrap}>
-              {roomList.length === 0 ? (
-                <Text style={styles.hint}>No eligible residents yet.</Text>
-              ) : (
-                roomList.map((room) => {
-                  const active = rooms.includes(room);
-                  return (
-                    <Pressable
-                      key={room}
-                      style={[styles.pill, active && styles.pillActive]}
-                      onPress={() => toggleRoom(room)}>
-                      <Text style={[styles.pillText, active && styles.pillTextActive]}>Room {room}</Text>
-                    </Pressable>
-                  );
-                })
-              )}
-            </View>
-          )}
-
-          {audience === 'residents' && (
+          initialNumToRender={12}
+          maxToRenderPerBatch={12}
+          windowSize={7}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
+          ListHeaderComponent={
             <View>
-              <TextInput
-                style={styles.search}
-                placeholder="Search name or room"
-                value={search}
-                onChangeText={setSearch}
-                autoCapitalize="none"
-              />
-              {filteredResidents.length === 0 ? (
-                <Text style={styles.hint}>No residents found.</Text>
-              ) : (
-                filteredResidents.map((r) => {
-                  const active = residentIds.includes(r.resident_id);
+              {mustChangePassword && !dismissedTempBanner && (
+                <View style={styles.banner}>
+                  <Pressable
+                    style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 10 }}
+                    onPress={() => router.push('/resident-profile-edit')}>
+                    <AlertTriangle size={18} color="#B45309" />
+                    <Text style={styles.bannerText}>Using temporary password. Tap to change.</Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Dismiss password reminder"
+                    hitSlop={8}
+                    onPress={() => setDismissedTempBanner(true)}>
+                    <X size={16} color="#92400E" />
+                  </Pressable>
+                </View>
+              )}
+
+              {/* Meal */}
+              <Text style={styles.label}>1. Choose Meal</Text>
+              <View style={styles.row}>
+                {MEAL_OPTIONS.map((m) => {
+                  const active = meal === m.key;
                   return (
                     <Pressable
-                      key={r.resident_id}
-                      style={[styles.residentRow, active && styles.residentRowActive]}
-                      onPress={() => toggleResident(r.resident_id)}>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.residentName}>{r.full_name}</Text>
-                        <Text style={styles.residentRoom}>Room {r.room_number}</Text>
-                      </View>
-                      <View style={[styles.checkbox, active && styles.checkboxActive]}>
-                        {active && <Check size={14} color="#FFFFFF" />}
-                      </View>
+                      key={m.key}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      style={[styles.bigChip, active && styles.bigChipActive]}
+                      onPress={() => {
+                        triggerSelectionHaptic();
+                        setMeal(m.key);
+                      }}>
+                      <Text style={[styles.bigChipText, active && styles.bigChipTextActive]}>{m.label}</Text>
                     </Pressable>
                   );
-                })
+                })}
+              </View>
+
+              {/* Status */}
+              <Text style={styles.label}>2. Food Status</Text>
+              <View style={styles.row}>
+                {STATUS_OPTIONS.map((s) => {
+                  const active = status === s.key;
+                  const c = STATUS_COLORS[s.key];
+                  return (
+                    <Pressable
+                      key={s.key}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active }}
+                      style={[
+                        styles.bigChip,
+                        active && { backgroundColor: c.bg, borderColor: c.border },
+                      ]}
+                      onPress={() => {
+                        triggerSelectionHaptic();
+                        setStatus(s.key);
+                      }}>
+                      <Text style={[styles.bigChipText, active && { color: c.fg }]}>{s.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              <Text style={styles.targetedText}>
+                Sending to {audience === 'all' ? 'all' : targeted}{' '}
+                {targeted === 1 ? 'resident' : `residents (${targeted})`}
+              </Text>
+
+              {/* Collapsible Advanced Options (Rooms / Specific Residents / Custom Message) */}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ expanded: showMoreOptions }}
+                style={styles.moreOptionsBtn}
+                onPress={() => {
+                  triggerSelectionHaptic();
+                  setShowMoreOptions((prev) => !prev);
+                }}>
+                <Text style={styles.moreOptionsText}>
+                  {showMoreOptions
+                    ? 'Hide extra options'
+                    : 'More options (specific rooms or message)'}
+                </Text>
+                {showMoreOptions ? (
+                  <ChevronUp size={16} color={OwnerTheme.colors.textSecondary} />
+                ) : (
+                  <ChevronDown size={16} color={OwnerTheme.colors.textSecondary} />
+                )}
+              </Pressable>
+
+              {showMoreOptions && (
+                <>
+                  {/* Recipients */}
+                  <Text style={styles.label}>Send to</Text>
+                  <View style={styles.row}>
+                    {(
+                      [
+                        ['all', 'Everyone'],
+                        ['rooms', 'Rooms'],
+                        ['residents', 'Residents'],
+                      ] as [FoodAudienceType, string][]
+                    ).map(([key, label]) => {
+                      const active = audience === key;
+                      return (
+                        <Pressable
+                          key={key}
+                          accessibilityRole="button"
+                          accessibilityState={{ selected: active }}
+                          style={[styles.segment, active && styles.segmentActive]}
+                          onPress={() => {
+                            triggerSelectionHaptic();
+                            setAudience(key);
+                          }}>
+                          <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+
+                  {audience === 'rooms' && (
+                    <View style={styles.wrap}>
+                      {roomList.length === 0 ? (
+                        <Text style={styles.hint}>No eligible residents yet.</Text>
+                      ) : (
+                        roomList.map((room) => {
+                          const active = rooms.includes(room);
+                          return (
+                            <Pressable
+                              key={room}
+                              style={[styles.pill, active && styles.pillActive]}
+                              onPress={() => toggleRoom(room)}>
+                              <Text style={[styles.pillText, active && styles.pillTextActive]}>Room {room}</Text>
+                            </Pressable>
+                          );
+                        })
+                      )}
+                    </View>
+                  )}
+
+                  {audience === 'residents' && (
+                    <View>
+                      <TextInput
+                        style={styles.search}
+                        placeholder="Search name or room"
+                        value={search}
+                        onChangeText={setSearch}
+                        autoCapitalize="none"
+                      />
+                      {filteredResidents.length === 0 && (
+                        <Text style={styles.hint}>No residents found.</Text>
+                      )}
+                    </View>
+                  )}
+                </>
               )}
             </View>
-          )}
+          }
+          ListFooterComponent={
+            <View>
+              {showMoreOptions && (
+                <>
+                  {/* Message */}
+                  <Text style={styles.label}>Message (optional)</Text>
+                  <TextInput
+                    style={styles.messageInput}
+                    placeholder={status === 'delayed' ? 'e.g. Dinner delayed by 20 minutes' : 'Short announcement'}
+                    value={message}
+                    onChangeText={setMessage}
+                    maxLength={MAX_ALERT_MESSAGE_LENGTH}
+                    multiline
+                  />
+                  <Text style={styles.counter}>
+                    {message.length}/{MAX_ALERT_MESSAGE_LENGTH}
+                  </Text>
+                </>
+              )}
 
-          <Text style={styles.targetedText}>
-            Will reach {targeted} resident{targeted === 1 ? '' : 's'} who opted in for meals
-          </Text>
+              {formError && (
+                <View style={styles.errorBox}>
+                  <Text style={styles.errorText}>{formError}</Text>
+                </View>
+              )}
 
-          {/* Message */}
-          <Text style={styles.label}>Message (optional)</Text>
-          <TextInput
-            style={styles.messageInput}
-            placeholder={status === 'delayed' ? 'e.g. Dinner delayed by 20 minutes' : 'Short announcement'}
-            value={message}
-            onChangeText={setMessage}
-            maxLength={MAX_ALERT_MESSAGE_LENGTH}
-            multiline
-          />
-          <Text style={styles.counter}>
-            {message.length}/{MAX_ALERT_MESSAGE_LENGTH}
-          </Text>
+              {result && (
+                <View style={styles.resultBox}>
+                  <Check size={20} color="#166534" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.resultTitle}>{describeSendResult(result).title}</Text>
+                    <Text style={styles.resultText}>{describeSendResult(result).detail}</Text>
+                  </View>
+                </View>
+              )}
 
-          {formError && (
-            <View style={styles.errorBox}>
-              <Text style={styles.errorText}>{formError}</Text>
+              {/* Recent */}
+              {recent.length > 0 && (
+                <>
+                  <Text style={[styles.label, { marginTop: 24 }]}>Recent alerts</Text>
+                  {recent.map((a) => {
+                    const c = STATUS_COLORS[a.status];
+                    return (
+                      <Pressable
+                        key={a.id}
+                        style={styles.recentRow}
+                        onPress={() => {
+                          setMeal(a.meal_type);
+                          setStatus(a.status === 'ready' ? 'delayed' : 'ready');
+                          setResult(null);
+                        }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.recentTitle}>{alertHeadline(a.meal_type, a.status)}</Text>
+                          <Text style={styles.recentMeta}>
+                            {formatAlertTime(a.created_at)} • {a.recipients_count} resident
+                            {a.recipients_count === 1 ? '' : 's'}
+                          </Text>
+                        </View>
+                        <View style={[styles.statusPill, { backgroundColor: c.bg }]}>
+                          <Text style={[styles.statusPillText, { color: c.fg }]}>{statusLabel(a.status)}</Text>
+                        </View>
+                      </Pressable>
+                    );
+                  })}
+                  <Text style={styles.hint}>Tap a recent alert to prepare a follow-up for that meal.</Text>
+                </>
+              )}
             </View>
-          )}
-
-          {result && (
-            <View style={styles.resultBox}>
-              <Check size={20} color="#166534" />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.resultTitle}>{describeSendResult(result).title}</Text>
-                <Text style={styles.resultText}>{describeSendResult(result).detail}</Text>
-              </View>
-            </View>
-          )}
-
-          {/* Recent */}
-          {recent.length > 0 && (
-            <>
-              <Text style={[styles.label, { marginTop: 24 }]}>Recent alerts</Text>
-              {recent.map((a) => {
-                const c = STATUS_COLORS[a.status];
-                return (
-                  <Pressable
-                    key={a.id}
-                    style={styles.recentRow}
-                    onPress={() => {
-                      setMeal(a.meal_type);
-                      setStatus(a.status === 'ready' ? 'delayed' : 'ready');
-                      setResult(null);
-                    }}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.recentTitle}>{alertHeadline(a.meal_type, a.status)}</Text>
-                      <Text style={styles.recentMeta}>
-                        {formatAlertTime(a.created_at)} • {a.recipients_count} resident
-                        {a.recipients_count === 1 ? '' : 's'}
-                      </Text>
-                    </View>
-                    <View style={[styles.statusPill, { backgroundColor: c.bg }]}>
-                      <Text style={[styles.statusPillText, { color: c.fg }]}>{statusLabel(a.status)}</Text>
-                    </View>
-                  </Pressable>
-                );
-              })}
-              <Text style={styles.hint}>Tap a recent alert to prepare a follow-up for that meal.</Text>
-            </>
-          )}
-        </ScrollView>
+          }
+        />
 
         <View style={styles.footer}>
           <Pressable
@@ -535,7 +598,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   checkboxActive: { backgroundColor: OwnerTheme.colors.primary, borderColor: OwnerTheme.colors.primary },
-  targetedText: { fontSize: 13, color: OwnerTheme.colors.textSecondary, marginTop: 12 },
+  targetedText: { fontSize: 13, color: OwnerTheme.colors.textSecondary, marginTop: 14, fontWeight: '500' },
+  moreOptionsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#FFFFFF',
+  },
+  moreOptionsText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
   messageInput: {
     minHeight: 76,
     borderRadius: 12,

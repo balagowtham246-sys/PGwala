@@ -113,7 +113,7 @@ export default function WardenSettingsScreen() {
             <Pressable
               accessibilityRole="button"
               style={styles.settingsRow}
-              onPress={() => router.push('/student-profile-edit')}>
+              onPress={() => router.push('/resident-profile-edit')}>
               <View style={[styles.iconWrap, { backgroundColor: colors.successLight }]}>
                 <ShieldCheck size={18} color={colors.success} />
               </View>

@@ -15,7 +15,6 @@ import * as Notifications from 'expo-notifications';
 import {
   Bell,
   CheckCircle2,
-  MessageSquare,
   Moon,
   Send,
   ShieldAlert,
@@ -347,7 +346,7 @@ export default function OwnerNotificationsScreen() {
             Choose how departure and operational alerts are delivered to you.
           </Text>
 
-          <View style={styles.settingRow}>
+          <View style={[styles.settingRow, styles.lastRow]}>
             <View style={styles.settingTextCol}>
               <View style={styles.labelWithIcon}>
                 <Smartphone size={14} color={OwnerTheme.colors.textSecondary} />
@@ -360,45 +359,6 @@ export default function OwnerNotificationsScreen() {
             <Switch
               value={prefs.deliveryChannels.push}
               onValueChange={(val) => updateChannel('push', val)}
-              trackColor={HIGH_CONTRAST_SWITCH_COLORS}
-              thumbColor={SWITCH_THUMB_COLOR}
-            />
-          </View>
-
-          <View style={styles.settingRow}>
-            <View style={styles.settingTextCol}>
-              <View style={styles.labelWithIcon}>
-                <MessageSquare
-                  size={14}
-                  color={OwnerTheme.colors.textSecondary}
-                />
-                <Text style={styles.settingLabel}>WhatsApp</Text>
-              </View>
-              <Text style={styles.settingHint}>
-                Send departure summaries to your registered WhatsApp number
-              </Text>
-            </View>
-            <Switch
-              value={prefs.deliveryChannels.whatsapp}
-              onValueChange={(val) => updateChannel('whatsapp', val)}
-              trackColor={HIGH_CONTRAST_SWITCH_COLORS}
-              thumbColor={SWITCH_THUMB_COLOR}
-            />
-          </View>
-
-          <View style={[styles.settingRow, styles.lastRow]}>
-            <View style={styles.settingTextCol}>
-              <View style={styles.labelWithIcon}>
-                <Send size={14} color={OwnerTheme.colors.textSecondary} />
-                <Text style={styles.settingLabel}>SMS</Text>
-              </View>
-              <Text style={styles.settingHint}>
-                Fallback SMS alerts when mobile internet is unavailable
-              </Text>
-            </View>
-            <Switch
-              value={prefs.deliveryChannels.sms}
-              onValueChange={(val) => updateChannel('sms', val)}
               trackColor={HIGH_CONTRAST_SWITCH_COLORS}
               thumbColor={SWITCH_THUMB_COLOR}
             />

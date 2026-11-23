@@ -2,7 +2,6 @@ import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Linking,
   RefreshControl,
@@ -20,7 +19,8 @@ import {
 } from '@/components/student-billing/PaymentProofModal';
 import { StudentChargeList } from '@/components/student-billing/StudentChargeList';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
-import { OwnerHeader } from '@/components/ui/owner';
+import { BillingSkeleton, OwnerHeader } from '@/components/ui/owner';
+import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useResident } from '@/context/resident-context';
 import { useToast } from '@/context/toast-context';
@@ -245,7 +245,7 @@ export default function SimplifiedStudentBillingScreen() {
         subtitle={headerSubtitle}
         showBack
         onBack={() =>
-          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+          router.canGoBack() ? router.back() : router.replace('/resident-dashboard')
         }
       />
 
@@ -256,14 +256,11 @@ export default function SimplifiedStudentBillingScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={() => void handleRefresh()}
-            colors={['#0284C7']}
+            colors={[OwnerTheme.colors.primary]}
           />
         }>
         {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
-            <Text style={styles.loadingText}>Loading your bills...</Text>
-          </View>
+          <BillingSkeleton />
         ) : (
           <>
             <StudentChargeList
@@ -331,7 +328,7 @@ export default function SimplifiedStudentBillingScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: OwnerTheme.colors.background,
   },
   scrollContent: {
     padding: 16,

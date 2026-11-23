@@ -39,11 +39,9 @@ export function useSubmitPaymentProofMutation() {
       }
       return result.data;
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }

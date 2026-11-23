@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -10,6 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import Constants from 'expo-constants';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import {
@@ -43,6 +44,8 @@ export default function LoginScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [savedCreds, setSavedCreds] = useState<SavedBiometricCredentials | null>(null);
+  const [focusedField, setFocusedField] = useState<'email' | 'password' | null>(null);
+  const passwordInputRef = useRef<React.ComponentRef<typeof TextInput>>(null);
 
   useEffect(() => {
     let active = true;
@@ -202,11 +205,15 @@ export default function LoginScreen() {
           showsVerticalScrollIndicator={false}>
           {/* Brand Header */}
           <View style={styles.brandContainer}>
-            <View style={styles.logoBadge}>
-              <Text style={styles.logoBadgeText}>PG</Text>
+            <View style={styles.logoHalo}>
+              <View style={styles.logoBadge}>
+                <Text style={styles.logoBadgeText}>PG</Text>
+              </View>
             </View>
             <Text style={styles.appTitle}>PGwala</Text>
-            <Text style={styles.appSubtitle}>Run your PG effortlessly</Text>
+            <Text style={styles.appSubtitle}>
+              Smart PG management for owners, residents &amp; wardens
+            </Text>
           </View>
 
           {/* Login Card */}
@@ -228,12 +235,20 @@ export default function LoginScreen() {
             <View style={styles.fieldGroup}>
               <Text style={styles.fieldLabel}>Email Address</Text>
               <TextInput
-                style={styles.input}
+                style={[
+                  styles.input,
+                  focusedField === 'email' && styles.inputFocused,
+                ]}
                 placeholder="you@example.com"
                 placeholderTextColor={OwnerTheme.colors.textMuted}
                 autoCapitalize="none"
                 autoCorrect={false}
                 keyboardType="email-address"
+                returnKeyType="next"
+                blurOnSubmit={false}
+                onFocus={() => setFocusedField('email')}
+                onBlur={() => setFocusedField((prev) => (prev === 'email' ? null : prev))}
+                onSubmitEditing={() => passwordInputRef.current?.focus()}
                 value={email}
                 onChangeText={(text) => {
                   setEmail(text);
@@ -253,14 +268,23 @@ export default function LoginScreen() {
                   </Text>
                 </Pressable>
               </View>
-              <View style={styles.passwordInputContainer}>
+              <View
+                style={[
+                  styles.passwordInputContainer,
+                  focusedField === 'password' && styles.inputFocused,
+                ]}>
                 <TextInput
+                  ref={passwordInputRef}
                   style={styles.passwordInput}
                   placeholder="Enter your password"
                   placeholderTextColor={OwnerTheme.colors.textMuted}
                   secureTextEntry={!showPassword}
                   autoCapitalize="none"
                   autoCorrect={false}
+                  returnKeyType="done"
+                  onFocus={() => setFocusedField('password')}
+                  onBlur={() => setFocusedField((prev) => (prev === 'password' ? null : prev))}
+                  onSubmitEditing={() => void handleSignIn()}
                   value={password}
                   onChangeText={(text) => {
                     setPassword(text);
@@ -269,6 +293,8 @@ export default function LoginScreen() {
                   editable={!loading}
                 />
                 <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={showPassword ? 'Hide password' : 'Show password'}
                   hitSlop={8}
                   style={styles.eyeBtn}
                   onPress={() => setShowPassword(!showPassword)}>
@@ -308,6 +334,9 @@ export default function LoginScreen() {
             <Text style={styles.footerText}>
               Need an account? Contact your PG owner or management.
             </Text>
+            <Text style={styles.versionText}>
+              PGwala v{Constants.expoConfig?.version || '1.0.0'}
+            </Text>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -336,6 +365,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 24,
   },
+  logoHalo: {
+    width: 68,
+    height: 68,
+    borderRadius: 20,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
   logoBadge: {
     width: 52,
     height: 52,
@@ -343,7 +381,6 @@ const styles = StyleSheet.create({
     backgroundColor: OwnerTheme.colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
-    marginBottom: 10,
     ...OwnerTheme.shadow,
   },
   logoBadgeText: {
@@ -476,7 +513,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     fontSize: 15,
     color: OwnerTheme.colors.textPrimary,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: OwnerTheme.colors.surfaceElevated,
+  },
+  inputFocused: {
+    borderColor: OwnerTheme.colors.primary,
+    borderWidth: 1.5,
+    backgroundColor: '#FFFFFF',
   },
   passwordInputContainer: {
     flexDirection: 'row',
@@ -485,7 +527,7 @@ const styles = StyleSheet.create({
     borderRadius: OwnerTheme.radius.md,
     borderWidth: 1,
     borderColor: OwnerTheme.colors.border,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: OwnerTheme.colors.surfaceElevated,
     paddingRight: 10,
   },
   passwordInput: {
@@ -501,10 +543,17 @@ const styles = StyleSheet.create({
   footer: {
     marginTop: 20,
     alignItems: 'center',
+    gap: 6,
   },
   footerText: {
     fontSize: 12,
     color: OwnerTheme.colors.textMuted,
     textAlign: 'center',
+  },
+  versionText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textMuted,
+    opacity: 0.75,
   },
 });

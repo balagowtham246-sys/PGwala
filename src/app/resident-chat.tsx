@@ -97,7 +97,7 @@ export default function StudentChatScreen() {
         new Date().toISOString()
       ).catch(() => {});
 
-      // Fetch recent chat history
+      // Fetch latest 100 chat messages (newest first in DB, reversed for chronological display)
       const { data: msgData, error: msgError } = await supabase
         .from('property_chat_messages')
         .select(`
@@ -115,14 +115,14 @@ export default function StudentChatScreen() {
           )
         `)
         .eq('property_id', curResident.property_id)
-        .order('created_at', { ascending: true })
+        .order('created_at', { ascending: false })
         .limit(100);
 
       if (msgError) {
         console.warn('[StudentChat] History fetch warning:', msgError.message);
         setMessages([]);
       } else {
-        const formatted: ChatMessage[] = (msgData || []).map((m: any) => {
+        const formatted: ChatMessage[] = [...(msgData || [])].reverse().map((m: any) => {
           const resObj = Array.isArray(m.resident) ? m.resident[0] : m.resident;
           const sName = getChatSenderDisplayName(m.sender_name, resObj?.full_name);
           const sRoom = m.sender_room || resObj?.room_number || '';

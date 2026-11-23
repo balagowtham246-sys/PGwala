@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   ActivityIndicator,
+  DimensionValue,
   Pressable,
   StyleSheet,
   Text,
@@ -8,6 +9,14 @@ import {
   ViewStyle,
   TextStyle,
 } from 'react-native';
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from 'react-native-reanimated';
 import { router } from 'expo-router';
 import {
   ArrowLeft,
@@ -16,10 +25,11 @@ import {
   LucideIcon,
 } from 'lucide-react-native';
 import { OwnerTheme } from '@/constants/theme';
+import { useResidentTabs } from '@/context/resident-tabs-context';
 
 export const HIGH_CONTRAST_SWITCH_COLORS = {
   false: '#CBD5E1',
-  true: '#0284C7',
+  true: OwnerTheme.colors.primary,
 } as const;
 
 export const SWITCH_THUMB_COLOR = '#FFFFFF';
@@ -47,6 +57,9 @@ export function OwnerHeader({
   containerStyle,
   onSubtitlePress,
 }: OwnerHeaderProps) {
+  const { isInsidePager } = useResidentTabs();
+  const shouldShowBack = showBack && !isInsidePager;
+
   const handleBack = () => {
     if (onBack) {
       onBack();
@@ -60,7 +73,7 @@ export function OwnerHeader({
   return (
     <View style={[styles.headerContainer, containerStyle]}>
       <View style={styles.headerLeft}>
-        {showBack && (
+        {shouldShowBack && (
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Go back"
@@ -73,7 +86,7 @@ export function OwnerHeader({
             <ArrowLeft size={18} color={OwnerTheme.colors.textPrimary} />
           </Pressable>
         )}
-        <View style={styles.headerTitleInlineRow}>
+        <View style={styles.headerTitleCol}>
           <Text style={styles.headerTitle} numberOfLines={1}>
             {title}
           </Text>
@@ -90,7 +103,7 @@ export function OwnerHeader({
               </Pressable>
             ) : (
               <Text style={styles.headerSubtitleInline} numberOfLines={1}>
-                · {subtitle}
+                {subtitle}
               </Text>
             )
           ) : null}
@@ -627,11 +640,9 @@ const styles = StyleSheet.create({
   backButtonPressed: {
     backgroundColor: '#F1F5F9',
   },
-  headerTitleInlineRow: {
+  headerTitleCol: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
+    justifyContent: 'center',
     minWidth: 0,
   },
   headerTitle: {
@@ -639,19 +650,18 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     letterSpacing: -0.3,
     color: OwnerTheme.colors.textPrimary,
-    flexShrink: 0,
   },
   headerSubtitlePill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    flexShrink: 1,
+    marginTop: 1,
   },
   headerSubtitleInline: {
     fontSize: 12,
     fontWeight: '500',
     color: OwnerTheme.colors.textSecondary,
-    flexShrink: 1,
+    marginTop: 1,
   },
   headerRight: {
     flexDirection: 'row',
@@ -1090,6 +1100,175 @@ export const OwnerSharedStyles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
+  },
+});
+
+/* ==========================================================================
+   Skeleton Loaders (Motion-safe placeholders for Home & Billing)
+   ========================================================================== */
+interface SkeletonBlockProps {
+  width?: DimensionValue;
+  height: number;
+  borderRadius?: number;
+  style?: ViewStyle;
+}
+
+export function SkeletonBlock({
+  width = '100%',
+  height,
+  borderRadius = 8,
+  style,
+}: SkeletonBlockProps) {
+  const reducedMotion = useReducedMotion();
+  const opacity = useSharedValue(0.6);
+
+  useEffect(() => {
+    if (reducedMotion) {
+      opacity.value = 0.7;
+      return;
+    }
+    opacity.value = withRepeat(
+      withTiming(1, { duration: 850, easing: Easing.inOut(Easing.ease) }),
+      -1,
+      true
+    );
+  }, [opacity, reducedMotion]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: opacity.value,
+  }));
+
+  return (
+    <Animated.View
+      style={[
+        {
+          width,
+          height,
+          borderRadius,
+          backgroundColor: '#E2E8F0',
+        },
+        animatedStyle,
+        style,
+      ]}
+    />
+  );
+}
+
+export function DashboardSkeleton() {
+  return (
+    <View style={skeletonStyles.wrap}>
+      <View style={skeletonStyles.gridRow}>
+        <View style={skeletonStyles.kpiCard}>
+          <SkeletonBlock width="55%" height={12} />
+          <SkeletonBlock width="70%" height={24} style={{ marginTop: 10 }} />
+          <SkeletonBlock width="45%" height={10} style={{ marginTop: 8 }} />
+        </View>
+        <View style={skeletonStyles.kpiCard}>
+          <SkeletonBlock width="55%" height={12} />
+          <SkeletonBlock width="50%" height={24} style={{ marginTop: 10 }} />
+          <SkeletonBlock width="45%" height={10} style={{ marginTop: 8 }} />
+        </View>
+      </View>
+      <View style={skeletonStyles.gridRow}>
+        <View style={skeletonStyles.kpiCard}>
+          <SkeletonBlock width="60%" height={12} />
+          <SkeletonBlock width="40%" height={24} style={{ marginTop: 10 }} />
+          <SkeletonBlock width="50%" height={10} style={{ marginTop: 8 }} />
+        </View>
+        <View style={skeletonStyles.kpiCard}>
+          <SkeletonBlock width="50%" height={12} />
+          <SkeletonBlock width="40%" height={24} style={{ marginTop: 10 }} />
+          <SkeletonBlock width="55%" height={10} style={{ marginTop: 8 }} />
+        </View>
+      </View>
+      <View style={skeletonStyles.stripCard}>
+        <SkeletonBlock width={32} height={32} borderRadius={16} />
+        <View style={{ flex: 1, gap: 6 }}>
+          <SkeletonBlock width="62%" height={13} />
+          <SkeletonBlock width="42%" height={10} />
+        </View>
+      </View>
+      <View style={skeletonStyles.stripCard}>
+        <SkeletonBlock width={32} height={32} borderRadius={16} />
+        <View style={{ flex: 1, gap: 6 }}>
+          <SkeletonBlock width="50%" height={13} />
+          <SkeletonBlock width="72%" height={10} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+export function BillingSkeleton() {
+  return (
+    <View style={skeletonStyles.wrap}>
+      <View style={skeletonStyles.heroCard}>
+        <SkeletonBlock width="45%" height={16} />
+        <SkeletonBlock width="65%" height={12} style={{ marginTop: 8 }} />
+      </View>
+      {[0, 1, 2].map((idx) => (
+        <View key={idx} style={skeletonStyles.billRowCard}>
+          <View style={skeletonStyles.billRowTop}>
+            <View style={{ flex: 1, gap: 6 }}>
+              <SkeletonBlock width="52%" height={14} />
+              <SkeletonBlock width="36%" height={11} />
+            </View>
+            <SkeletonBlock width={68} height={24} borderRadius={12} />
+          </View>
+          <SkeletonBlock width="100%" height={10} style={{ marginTop: 12 }} />
+        </View>
+      ))}
+    </View>
+  );
+}
+
+const skeletonStyles = StyleSheet.create({
+  wrap: {
+    gap: 10,
+    paddingVertical: 4,
+  },
+  gridRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  kpiCard: {
+    flex: 1,
+    backgroundColor: OwnerTheme.colors.card,
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 14,
+    minHeight: 88,
+  },
+  stripCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: OwnerTheme.colors.card,
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 14,
+  },
+  heroCard: {
+    backgroundColor: OwnerTheme.colors.card,
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 16,
+  },
+  billRowCard: {
+    backgroundColor: OwnerTheme.colors.card,
+    borderRadius: OwnerTheme.radius.card,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    padding: 14,
+  },
+  billRowTop: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
 });
 

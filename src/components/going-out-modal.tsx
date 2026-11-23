@@ -42,6 +42,14 @@ interface GoingOutModalProps {
   onConfirm: (payload: GoingOutSubmitPayload) => Promise<void> | void;
 }
 
+function getSmartDefaultReturnTime(now: Date = new Date()): string {
+  const hour = now.getHours();
+  if (hour >= 22 || hour < 5) return 'Tomorrow morning';
+  if (hour >= 20) return 'Late Night (~11:30 pm)';
+  if (hour >= 18) return 'Night (~10:00 pm)';
+  return 'Evening (~8:00 pm)';
+}
+
 /**
  * Modern, shared Going Out of PG bottom sheet used by both Home and Gate tabs.
  */
@@ -54,9 +62,16 @@ export function GoingOutModal({
 }: GoingOutModalProps) {
   const [purpose, setPurpose] = useState('College');
   const [customPurpose, setCustomPurpose] = useState('');
-  const [returnTime, setReturnTime] = useState('Evening (~8:00 pm)');
+  const [selectedReturnTime, setSelectedReturnTime] = useState<string | null>(null);
   const [customReturnTime, setCustomReturnTime] = useState('');
   const [foodRequired, setFoodRequired] = useState(true);
+
+  const returnTime = selectedReturnTime ?? getSmartDefaultReturnTime();
+
+  const handleClose = () => {
+    setSelectedReturnTime(null);
+    onClose();
+  };
 
   const effectiveReturn =
     returnTime === 'Custom' ? customReturnTime.trim() : returnTime;
@@ -65,13 +80,14 @@ export function GoingOutModal({
     Boolean(curfewTime && formattedCurfew) &&
     isReturnAfterCurfew(effectiveReturn, curfewTime);
 
-  useModalBackHandler(visible, onClose, saving);
+  useModalBackHandler(visible, handleClose, saving);
 
   const handleConfirmPress = () => {
     const finalPurpose =
       purpose === 'Other' ? customPurpose.trim() || 'Personal / Other' : purpose;
     const finalReturn =
       returnTime === 'Custom' ? customReturnTime.trim() || 'Later' : returnTime;
+    setSelectedReturnTime(null);
     void onConfirm({
       purpose: finalPurpose,
       expectedReturnTime: finalReturn,
@@ -85,12 +101,12 @@ export function GoingOutModal({
       transparent
       animationType="slide"
       onRequestClose={() => {
-        if (!saving) onClose();
+        if (!saving) handleClose();
       }}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         style={styles.overlay}>
-        <Pressable style={styles.backdrop} onPress={onClose} />
+        <Pressable style={styles.backdrop} onPress={handleClose} />
         <View style={styles.sheet}>
           <View style={styles.handleBar} />
           <View style={styles.header}>
@@ -104,7 +120,7 @@ export function GoingOutModal({
               accessibilityLabel="Close"
               hitSlop={10}
               style={styles.closeBtn}
-              onPress={onClose}>
+              onPress={handleClose}>
               <X size={18} color={OwnerTheme.colors.textSecondary} />
             </Pressable>
           </View>
@@ -155,10 +171,10 @@ export function GoingOutModal({
                   <Pressable
                     key={opt}
                     style={[styles.chip, selected && styles.chipSelected]}
-                    onPress={() => {
-                      triggerSelectionHaptic();
-                      setReturnTime(opt);
-                    }}>
+                      onPress={() => {
+                        triggerSelectionHaptic();
+                        setSelectedReturnTime(opt);
+                      }}>
                     <Text style={[styles.chipText, selected && styles.chipTextSelected]}>
                       {opt}
                     </Text>
@@ -209,7 +225,7 @@ export function GoingOutModal({
           <View style={styles.footer}>
             <Pressable
               style={styles.cancelBtn}
-              onPress={onClose}
+              onPress={handleClose}
               disabled={saving}>
               <Text style={styles.cancelText}>Cancel</Text>
             </Pressable>

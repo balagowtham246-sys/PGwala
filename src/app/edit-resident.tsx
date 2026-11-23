@@ -199,16 +199,14 @@ export default function EditResidentScreen() {
       if (error) throw error;
       const res = data as RpcResponse | null;
       if (!res?.success) {
-        throw new Error(res?.error || 'Failed to link student account.');
+        throw new Error(res?.error || 'Failed to link resident account.');
       }
       return res;
     },
-    onSuccess: async () => {
+    onSuccess: () => {
       setSavedUpdatedAtOverride(null);
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+      void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 
@@ -220,16 +218,14 @@ export default function EditResidentScreen() {
       if (error) throw error;
       const res = data as RpcResponse | null;
       if (!res?.success) {
-        throw new Error(res?.error || 'Failed to unlink student account.');
+        throw new Error(res?.error || 'Failed to unlink resident account.');
       }
       return res;
     },
-    onSuccess: async () => {
+    onSuccess: () => {
       setSavedUpdatedAtOverride(null);
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+      void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 
@@ -680,7 +676,7 @@ export default function EditResidentScreen() {
 
     const trimmedEmail = studentEmail.trim().toLowerCase();
     if (!trimmedEmail) {
-      showFormError('Please enter the student account email address.');
+      showFormError('Please enter the resident account email address.');
       return;
     }
 
@@ -699,7 +695,7 @@ export default function EditResidentScreen() {
         email: trimmedEmail,
       });
 
-      const successMsg = res.message || 'Student account linked successfully.';
+      const successMsg = res.message || 'Resident account linked successfully.';
       setSuccessMessage(successMsg);
       setStudentEmail('');
       showToast(successMsg);
@@ -714,8 +710,8 @@ export default function EditResidentScreen() {
     if (!resident) return;
 
     Alert.alert(
-      'Unlink Student Account?',
-      `Are you sure you want to unlink the student account from ${resident.full_name} (Room ${resident.room_number})?\n\n• The student will no longer have access to this room in their portal.\n• Historical billing and gate logs remain untouched.`,
+      'Unlink Resident Account?',
+      `Are you sure you want to unlink the resident account from ${resident.full_name} (Room ${resident.room_number})?\n\n• The resident will no longer have access to this room in their portal.\n• Historical billing and gate logs remain untouched.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -736,7 +732,7 @@ export default function EditResidentScreen() {
     try {
       const res = await unlinkStudentMutation.mutateAsync(resident.id);
 
-      const successMsg = res.message || 'Student account unlinked successfully.';
+      const successMsg = res.message || 'Resident account unlinked successfully.';
       setSuccessMessage(successMsg);
       showToast(successMsg);
     } catch (err: unknown) {

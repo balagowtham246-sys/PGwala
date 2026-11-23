@@ -116,6 +116,12 @@ serve(async (req) => {
       if (current) {
         const { error } = await admin.from('property_wardens').update({ is_active: false }).eq('id', current.id);
         if (error) return json(500, { success: false, code: 'DB_ERROR', error: 'Could not remove warden.' });
+        // Invalidate removed warden's push tokens so they stop receiving property notifications
+        await admin
+          .from('push_tokens')
+          .update({ is_valid: false })
+          .eq('profile_id', current.warden_profile_id)
+          .eq('is_valid', true);
       }
       return json(200, { success: true, message: 'Warden removed.' });
     }
@@ -188,6 +194,14 @@ serve(async (req) => {
         if (current) await admin.from('property_wardens').update({ is_active: true }).eq('id', current.id);
         await rollback();
         return json(500, { success: false, code: 'DB_ERROR', error: 'Could not assign warden.' });
+      }
+
+      if (current) {
+        await admin
+          .from('push_tokens')
+          .update({ is_valid: false })
+          .eq('profile_id', current.warden_profile_id)
+          .eq('is_valid', true);
       }
 
       return json(200, {

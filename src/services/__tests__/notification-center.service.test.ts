@@ -160,7 +160,7 @@ describe('notification-center.service', () => {
         subtitle: 'Entered the PG premises',
         timestamp: '2026-11-20T12:30:00.000Z',
         isRead: false,
-        routeTarget: '/student-in-out',
+        routeTarget: '/resident-in-out',
         residentId: undefined,
         residentName: 'Priya',
         roomNumber: 'Room D',

@@ -1,5 +1,7 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Receipt } from 'lucide-react-native';
+import { OwnerTheme } from '@/constants/theme';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
 import { isValidUpiId } from '@/lib/upi';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
@@ -134,23 +136,33 @@ export function StudentChargeList({
       <View
         style={[
           styles.heroStatusCard,
-          totalDuePaise === 0 ? styles.heroStatusClear : styles.heroStatusDue,
+          !hasAnyCurrentBill
+            ? styles.heroStatusNeutral
+            : totalDuePaise === 0
+            ? styles.heroStatusClear
+            : styles.heroStatusDue,
         ]}>
         <Text
           style={[
             styles.heroStatusAmount,
-            totalDuePaise === 0
+            !hasAnyCurrentBill
+              ? styles.heroStatusAmountNeutral
+              : totalDuePaise === 0
               ? styles.heroStatusAmountClear
               : styles.heroStatusAmountDue,
           ]}>
-          {totalDuePaise === 0
+          {!hasAnyCurrentBill
+            ? 'Bill not generated yet'
+            : totalDuePaise === 0
             ? 'All dues settled'
             : isAllUnderReview
             ? `${formatPaiseToRupees(pendingReviewPaise)} under review`
             : `${formatPaiseToRupees(actionableDuePaise)} due`}
         </Text>
         <Text style={styles.heroStatusSub}>
-          {totalDuePaise === 0
+          {!hasAnyCurrentBill
+            ? 'Your PG owner has not generated this month’s bill yet'
+            : totalDuePaise === 0
             ? 'No pending dues for this month'
             : isAllUnderReview
             ? 'Payment proof submitted • Awaiting owner review'
@@ -323,9 +335,12 @@ export function StudentChargeList({
         </View>
       ) : (
         <View style={styles.emptyCard}>
-          <Text style={styles.emptyTitle}>No Active Bills</Text>
+          <View style={styles.emptyIconCircle}>
+            <Receipt size={22} color={OwnerTheme.colors.primary} />
+          </View>
+          <Text style={styles.emptyTitle}>No Active Bills Yet</Text>
           <Text style={styles.emptySubtitle}>
-            Your owner has not generated any bills for this month yet. Check
+            Your PG owner has not generated any bills for this month yet. Check
             back soon!
           </Text>
         </View>
@@ -346,6 +361,10 @@ const styles = StyleSheet.create({
     backgroundColor: '#F0FDF4',
     borderColor: '#BBF7D0',
   },
+  heroStatusNeutral: {
+    backgroundColor: '#F8FAFC',
+    borderColor: '#CBD5E1',
+  },
   heroStatusDue: {
     backgroundColor: '#FFFBEB',
     borderColor: '#FDE68A',
@@ -356,6 +375,9 @@ const styles = StyleSheet.create({
   },
   heroStatusAmountClear: {
     color: '#15803D',
+  },
+  heroStatusAmountNeutral: {
+    color: '#334155',
   },
   heroStatusAmountDue: {
     color: '#B45309',
@@ -380,7 +402,7 @@ const styles = StyleSheet.create({
     color: '#64748B',
   },
   heroPayBtn: {
-    backgroundColor: '#0284C7',
+    backgroundColor: OwnerTheme.colors.primary,
     borderRadius: 8,
     paddingVertical: 8,
     alignItems: 'center',
@@ -397,7 +419,7 @@ const styles = StyleSheet.create({
   heroSecondaryLinkText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#0284C7',
+    color: OwnerTheme.colors.primary,
   },
   billCard: {
     backgroundColor: '#FFFFFF',
@@ -557,11 +579,20 @@ const styles = StyleSheet.create({
   },
   emptyCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 14,
+    borderRadius: OwnerTheme.radius.card,
     padding: 24,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: OwnerTheme.colors.border,
     alignItems: 'center',
+  },
+  emptyIconCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: OwnerTheme.colors.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
   },
   emptyTitle: {
     fontSize: 15,

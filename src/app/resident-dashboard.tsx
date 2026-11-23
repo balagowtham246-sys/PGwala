@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   AppState,
   Linking,
@@ -21,6 +20,7 @@ import { AlertCircle, ChevronRight, ClipboardList, Clock, Megaphone } from 'luci
 
 import { BottomTabInset, OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
+import { useResidentTabs } from '@/context/resident-tabs-context';
 import { useToast } from '@/context/toast-context';
 import {
   useStudentDashboardQuery,
@@ -50,6 +50,7 @@ import {
 import { RESIDENT_NOTICES_CACHE_PREFIX } from '@/services/resident-notices.service';
 import { WashingMachineCard } from '@/components/washing-machine-card';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { DashboardSkeleton } from '@/components/ui/owner';
 import { FoodStatusBanner } from '@/components/food-status-banner';
 import { GoingOutModal, GoingOutSubmitPayload } from '@/components/going-out-modal';
 import { ResidentStatusHeader } from '@/components/student-dashboard/ResidentStatusHeader';
@@ -111,6 +112,7 @@ async function scheduleReturnReminderNotification(
 export default function ResidentDashboardScreen() {
   const qc = useQueryClient();
   const { user, profile, refreshProfile } = useAuth();
+  const { isInsidePager, navigateToTab } = useResidentTabs();
   const { showToast } = useToast();
   const userId = user?.id;
 
@@ -159,21 +161,24 @@ export default function ResidentDashboardScreen() {
     latestUnreadAnnouncement: null,
   };
 
+  const refetchNotices = noticesQuery.refetch;
+  const refetchDashboard = dashboardQuery.refetch;
+
   const loadUnreadNotices = useCallback(
     async (forceInvalidate = false) => {
       if (!userId || !residentPropertyId) return;
       if (forceInvalidate) {
         await invalidatePrefix(RESIDENT_NOTICES_CACHE_PREFIX);
       }
-      await noticesQuery.refetch();
+      await refetchNotices();
     },
-    [userId, residentPropertyId, noticesQuery]
+    [userId, residentPropertyId, refetchNotices]
   );
 
   const loadResidentData = useCallback(async () => {
     if (!userId) return;
-    await dashboardQuery.refetch();
-  }, [userId, dashboardQuery]);
+    await refetchDashboard();
+  }, [userId, refetchDashboard]);
 
   const flushOfflineAndSync = useCallback(async () => {
     const summary = await flushOfflineQueue(defaultOfflineExecutors);
@@ -484,10 +489,10 @@ export default function ResidentDashboardScreen() {
               (prev) => (prev ? { ...prev, hasUnreadChat: false } : prev)
             );
           }
-          router.push('/student-chat');
+          router.push('/resident-chat');
         }}
-        onPressNotices={() => router.push('/student-announcements' as Href)}
-        onPressSettings={() => router.push('/student-settings')}
+        onPressNotices={() => router.push('/resident-announcements' as Href)}
+        onPressSettings={() => router.push('/resident-settings')}
       />
 
       <ScrollView
@@ -517,7 +522,7 @@ export default function ResidentDashboardScreen() {
                 styles.tempPasswordBanner,
                 pressed && { opacity: 0.8 },
               ]}
-              onPress={() => router.push('/student-profile-edit')}>
+              onPress={() => router.push('/resident-profile-edit')}>
               <AlertCircle size={18} color="#92400E" />
               <View style={{ flex: 1 }}>
                 <Text style={styles.tempPasswordTitle}>
@@ -559,10 +564,7 @@ export default function ResidentDashboardScreen() {
         )}
 
         {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
-            <Text style={styles.loadingText}>Loading accommodation details...</Text>
-          </View>
+          <DashboardSkeleton />
         ) : resident ? (
           <>
             {/* Simple Greeting */}
@@ -586,7 +588,7 @@ export default function ResidentDashboardScreen() {
                   styles.noticePreviewCard,
                   pressed && styles.btnPressed,
                 ]}
-                onPress={() => router.push('/student-announcements' as Href)}>
+                onPress={() => router.push('/resident-announcements' as Href)}>
                 <View style={styles.noticePreviewIconWrap}>
                   <Megaphone size={16} color={OwnerTheme.colors.primary} />
                 </View>
@@ -609,6 +611,7 @@ export default function ResidentDashboardScreen() {
             <ResidentQuickTiles
               pendingDuesPaise={pendingDuesPaise}
               pendingReviewPaise={pendingReviewPaise}
+              currentMonthBillGenerated={dashData?.currentMonthBillGenerated}
               latestMovement={latestMovement}
               savingMovement={savingMovement}
               washingMachineSlot={
@@ -620,7 +623,13 @@ export default function ResidentDashboardScreen() {
                   style={{ flex: 1 }}
                 />
               }
-              onPressRentDue={() => router.push('/student-billing')}
+              onPressRentDue={() => {
+                if (isInsidePager) {
+                  navigateToTab('bill');
+                } else {
+                  router.push('/resident-billing');
+                }
+              }}
               onOpenGoingOut={() => setGoingOutModalVisible(true)}
               onMarkBackIn={handleMarkBackIn}
             />
@@ -662,7 +671,13 @@ export default function ResidentDashboardScreen() {
               menus={menus}
               activeMealTab={activeMealTab}
               onSelectMealTab={setActiveMealTab}
-              onPressFullMenu={() => router.push('/student-menu')}
+              onPressFullMenu={() => {
+                if (isInsidePager) {
+                  navigateToTab('menu');
+                } else {
+                  router.push('/resident-menu');
+                }
+              }}
             />
           </>
         ) : (

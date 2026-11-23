@@ -114,39 +114,28 @@ async function readLocalPropertyMeta(propertyId: string): Promise<{
   }
 }
 
-async function readLocalMealTime(
-  propertyId: string,
-  menuDate: string,
-  mealType: MealType
-): Promise<string | null> {
-  try {
-    const raw = await AsyncStorage.getItem(
-      `${STORAGE_MEAL_TIME_PREFIX}${propertyId}:${menuDate}:${mealType}`
-    );
-    if (!raw) return null;
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    if (trimmed.startsWith('{') || trimmed.startsWith('"')) {
-      try {
-        const parsed: unknown = JSON.parse(trimmed);
-        if (typeof parsed === 'string') return cleanText(parsed);
-        if (parsed && typeof parsed === 'object') {
-          const obj = parsed as {
-            meal_time?: unknown;
-            mealTime?: unknown;
-            value?: unknown;
-          };
-          const val = obj.meal_time ?? obj.mealTime ?? obj.value;
-          return typeof val === 'string' ? cleanText(val) : null;
-        }
-      } catch {
-        // Fall back to raw trimmed string
+function parseLocalMealTime(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('{') || trimmed.startsWith('"')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed);
+      if (typeof parsed === 'string') return cleanText(parsed);
+      if (parsed && typeof parsed === 'object') {
+        const obj = parsed as {
+          meal_time?: unknown;
+          mealTime?: unknown;
+          value?: unknown;
+        };
+        const val = obj.meal_time ?? obj.mealTime ?? obj.value;
+        return typeof val === 'string' ? cleanText(val) : null;
       }
+    } catch {
+      // Fall back to raw trimmed string
     }
-    return trimmed;
-  } catch {
-    return null;
   }
+  return trimmed;
 }
 
 interface PropertyJoinRow {
@@ -446,27 +435,47 @@ export async function fetchResidentMultiDayMenus(
       rows = (richRes.data as ResidentMenuSlot[]) ?? [];
     }
 
-    const hydratedRows = await Promise.all(
-      rows.map(async (item) => {
-        const dbMealTime = cleanText(item.meal_time);
-        if (dbMealTime) {
-          return { ...item, meal_time: dbMealTime };
-        }
-        if (
-          item.meal_type === 'breakfast' ||
+    const missingTimeKeys: string[] = [];
+    for (const item of rows) {
+      if (
+        !cleanText(item.meal_time) &&
+        (item.meal_type === 'breakfast' ||
           item.meal_type === 'lunch' ||
-          item.meal_type === 'dinner'
-        ) {
-          const localMealTime = await readLocalMealTime(
-            propertyId,
-            item.menu_date,
-            item.meal_type
-          );
-          return { ...item, meal_time: localMealTime };
+          item.meal_type === 'dinner')
+      ) {
+        missingTimeKeys.push(
+          `${STORAGE_MEAL_TIME_PREFIX}${propertyId}:${item.menu_date}:${item.meal_type}`
+        );
+      }
+    }
+
+    const localTimeMap = new Map<string, string | null>();
+    if (missingTimeKeys.length > 0) {
+      try {
+        const entries = await AsyncStorage.multiGet(missingTimeKeys);
+        for (const [key, raw] of entries) {
+          localTimeMap.set(key, parseLocalMealTime(raw));
         }
-        return { ...item, meal_time: null };
-      })
-    );
+      } catch {
+        // Non-fatal fallback read
+      }
+    }
+
+    const hydratedRows = rows.map((item) => {
+      const dbMealTime = cleanText(item.meal_time);
+      if (dbMealTime) {
+        return { ...item, meal_time: dbMealTime };
+      }
+      if (
+        item.meal_type === 'breakfast' ||
+        item.meal_type === 'lunch' ||
+        item.meal_type === 'dinner'
+      ) {
+        const key = `${STORAGE_MEAL_TIME_PREFIX}${propertyId}:${item.menu_date}:${item.meal_type}`;
+        return { ...item, meal_time: localTimeMap.get(key) ?? null };
+      }
+      return { ...item, meal_time: null };
+    });
 
     const byDate: Record<string, DayMenuMap> = {};
     for (const dateIso of datesIso) {

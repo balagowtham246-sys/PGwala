@@ -215,6 +215,29 @@ async function readLocalResidentMeta(residentId: string): Promise<LocalResidentM
   }
 }
 
+async function readLocalResidentMetaBatch(
+  residentIds: string[]
+): Promise<Map<string, LocalResidentMeta>> {
+  const result = new Map<string, LocalResidentMeta>();
+  if (residentIds.length === 0) return result;
+  try {
+    const keys = residentIds.map((id) => `${STORAGE_RESIDENT_BED_PREFIX}${id}`);
+    const entries = await AsyncStorage.multiGet(keys);
+    for (let i = 0; i < entries.length; i += 1) {
+      const raw = entries[i]?.[1];
+      if (!raw) continue;
+      try {
+        result.set(residentIds[i], JSON.parse(raw) as LocalResidentMeta);
+      } catch {
+        // Ignore corrupt entry
+      }
+    }
+  } catch {
+    // Non-fatal fallback read
+  }
+  return result;
+}
+
 export async function writeLocalResidentMeta(
   residentId: string,
   meta: LocalResidentMeta
@@ -338,16 +361,15 @@ export async function fetchRoomsWithOccupancy(
       fetchActiveResidentsRaw(propertyId, traceLabel),
     ]);
 
-    const residents = await Promise.all(
-      rawResidents.map(async (r) => {
-        const meta = await readLocalResidentMeta(r.id);
-        return {
-          ...r,
-          bed_label: r.bed_label ?? meta?.bed_label ?? null,
-          gender: (r.gender ?? meta?.gender ?? null) as ResidentGender | null,
-        };
-      })
-    );
+    const localMetaMap = await readLocalResidentMetaBatch(rawResidents.map((r) => r.id));
+    const residents = rawResidents.map((r) => {
+      const meta = localMetaMap.get(r.id);
+      return {
+        ...r,
+        bed_label: r.bed_label ?? meta?.bed_label ?? null,
+        gender: (r.gender ?? meta?.gender ?? null) as ResidentGender | null,
+      };
+    });
 
     const roomsMap = new Map<string, RoomDefinition>();
     const canonicalCodeMap = new Map<string, string>();
@@ -572,32 +594,31 @@ export async function fetchResidentsDirectory(
       }
     }
 
-    const items: ResidentDirectoryItem[] = await Promise.all(
-      rawResidents.map(async (r) => {
-        const meta = await readLocalResidentMeta(r.id);
-        const latestGate = latestGateMap.get(r.id);
-        return {
-          id: r.id,
-          propertyId: r.property_id,
-          fullName: r.full_name,
-          roomNumber: r.room_number,
-          bedLabel: r.bed_label ?? meta?.bed_label ?? null,
-          phoneNumber: r.phone_number,
-          gender: (r.gender ?? meta?.gender ?? null) as ResidentGender | null,
-          joiningDate:
-            r.joining_date ??
-            meta?.joining_date ??
-            (r.created_at ? r.created_at.slice(0, 10) : null),
-          monthlyRentPaise: r.monthly_rent_paise ?? 0,
-          depositPaise: r.deposit_paise ?? meta?.deposit_paise ?? 0,
-          isActive: r.is_active,
-          updatedAt: r.updated_at ?? null,
-          gateStatus: latestGate?.direction ?? 'IN',
-          lastGateEventTime: latestGate?.event_time ?? null,
-          pendingDuesPaise: duesMap.get(r.id) ?? 0,
-        };
-      })
-    );
+    const localMetaMap = await readLocalResidentMetaBatch(residentIds);
+    const items: ResidentDirectoryItem[] = rawResidents.map((r) => {
+      const meta = localMetaMap.get(r.id);
+      const latestGate = latestGateMap.get(r.id);
+      return {
+        id: r.id,
+        propertyId: r.property_id,
+        fullName: r.full_name,
+        roomNumber: r.room_number,
+        bedLabel: r.bed_label ?? meta?.bed_label ?? null,
+        phoneNumber: r.phone_number,
+        gender: (r.gender ?? meta?.gender ?? null) as ResidentGender | null,
+        joiningDate:
+          r.joining_date ??
+          meta?.joining_date ??
+          (r.created_at ? r.created_at.slice(0, 10) : null),
+        monthlyRentPaise: r.monthly_rent_paise ?? 0,
+        depositPaise: r.deposit_paise ?? meta?.deposit_paise ?? 0,
+        isActive: r.is_active,
+        updatedAt: r.updated_at ?? null,
+        gateStatus: latestGate?.direction ?? 'IN',
+        lastGateEventTime: latestGate?.event_time ?? null,
+        pendingDuesPaise: duesMap.get(r.id) ?? 0,
+      };
+    });
 
     items.sort((a, b) => {
       const roomCmp = sortRoomCodes(a.roomNumber, b.roomNumber);
@@ -1078,6 +1099,16 @@ export async function checkoutResident(input: {
       if (basicRes.error) return fail(basicRes.error, 'Could not check out resident.');
     } else if (richRes.error) {
       return fail(richRes.error, 'Could not check out resident.');
+    }
+
+    // Best-effort push token invalidation so checked-out residents stop receiving PG alerts.
+    try {
+      await supabase.rpc('invalidate_resident_push_tokens', {
+        p_property_id: input.propertyId,
+        p_resident_id: input.residentId,
+      });
+    } catch {
+      // Non-fatal if migration 29 not yet applied
     }
 
     await Promise.all([

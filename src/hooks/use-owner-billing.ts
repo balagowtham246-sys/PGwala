@@ -49,11 +49,9 @@ export function useGenerateMonthlyBillsMutation() {
       }
       return result.data;
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
@@ -68,11 +66,9 @@ export function useAllocateEbBillMutation() {
         throw new Error(result.error.message);
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
@@ -138,11 +134,9 @@ export function useUpdateResidentRentMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
@@ -201,11 +195,9 @@ export function useToggleWmBillingMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
@@ -225,11 +217,9 @@ export function useConfirmMonthlyPaymentMutation() {
       }
       return result.data;
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
@@ -248,11 +238,9 @@ export function useRejectPaymentReportMutation() {
         throw new Error(result.error.message);
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }

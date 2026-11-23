@@ -20,7 +20,7 @@ describe('navigation-guards', () => {
         evaluateNavigationRedirect({
           hasSession: false,
           role: null,
-          currentSegment: 'student-dashboard',
+          currentSegment: 'resident-dashboard',
         })
       ).toBe('/login');
 
@@ -120,7 +120,7 @@ describe('navigation-guards', () => {
             role: 'student',
             currentSegment: studentRoute,
           })
-        ).toBe(studentRoute === 'student-dashboard' ? '/resident-tabs' : null);
+        ).toBe(studentRoute === 'resident-dashboard' ? '/resident-tabs' : null);
       }
 
       // Shared routes like receipt-detail
@@ -141,7 +141,7 @@ describe('navigation-guards', () => {
           evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: route })
         ).toBeNull();
       }
-      for (const route of [...OWNER_ROUTES, ...STUDENT_ROUTES.filter((r) => r !== 'student-profile-edit'), 'login']) {
+      for (const route of [...OWNER_ROUTES, ...STUDENT_ROUTES.filter((r) => r !== 'resident-profile-edit'), 'login']) {
         expect(
           evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: route })
         ).toBe('/warden-dashboard');
@@ -166,7 +166,7 @@ describe('navigation-guards', () => {
       ).toBeNull();
       expect((STUDENT_ROUTES as readonly string[]).includes('student-food-updates')).toBe(false);
       expect(
-        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'student-menu' })
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'resident-menu' })
       ).toBeNull();
       expect(
         evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'residents-directory' })
@@ -196,16 +196,16 @@ describe('navigation-guards', () => {
         evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: 'notification-center' })
       ).toBe('/warden-dashboard');
       expect(
-        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'student-announcements' })
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'resident-announcements' })
       ).toBeNull();
       expect(
-        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'student-notifications' })
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'resident-notifications' })
       ).toBeNull();
       expect(
-        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'student-announcements' })
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'resident-announcements' })
       ).toBe('/owner-tabs');
       expect(
-        evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: 'student-notifications' })
+        evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: 'resident-notifications' })
       ).toBe('/warden-dashboard');
     });
   });

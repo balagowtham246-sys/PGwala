@@ -4,6 +4,8 @@ import {
   fetchWashingMachineStatus,
   formatCountdown,
   isWashingMachineConflictError,
+  isWashingMachineSessionExpired,
+  normalizeExpiredWashingMachineUnit,
   releaseWashingMachineUnit,
   requestWashingMachineAccess,
   startWashingMachineUnit,
@@ -211,5 +213,34 @@ describe('washing-machine.service', () => {
       expect(isWashingMachineConflictError(raceConflict.error)).toBe(true);
       expect(raceConflict.error.code).toBe('WM_CONFLICT');
     }
+  });
+
+  it('auto-releases washing machines stuck in_use for 60+ minutes', () => {
+    const startIso = '2026-11-19T10:00:00.000Z';
+    const after30m = new Date('2026-11-19T10:30:00.000Z').getTime();
+    const after65m = new Date('2026-11-19T11:05:00.000Z').getTime();
+
+    expect(isWashingMachineSessionExpired(startIso, after30m)).toBe(false);
+    expect(isWashingMachineSessionExpired(startIso, after65m)).toBe(true);
+
+    const normalized = normalizeExpiredWashingMachineUnit(
+      {
+        id: 'm-1',
+        property_id: 'prop-1',
+        machine_number: 1,
+        machine_name: 'Washing Machine 1',
+        is_active: true,
+        status: 'in_use',
+        current_resident_id: 'res-1',
+        current_resident_name: 'Asha',
+        current_resident_room: '101',
+        started_at: startIso,
+        updated_at: startIso,
+      },
+      after65m
+    );
+    expect(normalized.status).toBe('free');
+    expect(normalized.current_resident_id).toBeNull();
+    expect(normalized.started_at).toBeNull();
   });
 });

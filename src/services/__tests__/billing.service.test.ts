@@ -3,6 +3,7 @@ import { clearQueryCache } from '@/lib/query-cache';
 import { supabase } from '@/lib/supabase';
 import {
   confirmMonthlyPayment,
+  extractPaymentProofStoragePath,
   getOwnerBilling,
   getStudentBilling,
   rejectStudentPaymentReport,
@@ -351,5 +352,31 @@ describe('billing.service', () => {
         paid_method: 'upi',
       });
     }
+  });
+
+  it('deletes rejected payment proof screenshot from payment-proofs storage bucket', async () => {
+    const remove = jest.fn().mockResolvedValue({ data: [], error: null });
+    mockedStorageFrom.mockReturnValue({ remove });
+    mockedRpc.mockResolvedValueOnce({
+      data: {
+        success: true,
+        screenshot_url: 'res-1/1700000000_proof.jpg',
+      },
+      error: null,
+    });
+
+    const res = await rejectStudentPaymentReport({
+      reportId: 'rep-reject-1',
+      rejectionReason: 'Screenshot blurred',
+    });
+
+    expect(res).toEqual({ ok: true, data: null });
+    expect(mockedStorageFrom).toHaveBeenCalledWith('payment-proofs');
+    expect(remove).toHaveBeenCalledWith(['res-1/1700000000_proof.jpg']);
+    expect(
+      extractPaymentProofStoragePath(
+        'https://demo.supabase.co/storage/v1/object/sign/payment-proofs/res-1/proof.jpg?token=abc'
+      )
+    ).toBe('res-1/proof.jpg');
   });
 });

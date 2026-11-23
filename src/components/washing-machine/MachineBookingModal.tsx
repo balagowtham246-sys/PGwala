@@ -104,10 +104,10 @@ export function MachineBookingModal({
                 <Disc3 size={18} color="#0284C7" />
                 <Text style={styles.modalTitle}>Washing Machine Units</Text>
               </View>
-              <Text style={styles.modalSubtitle} numberOfLines={1}>
+              <Text style={styles.modalSubtitle} numberOfLines={2}>
                 {loading
                   ? 'Loading units...'
-                  : `${activeMachines.length} units • ${freeCount} free, ${inUseCount} in use`}
+                  : `${activeMachines.length} units • ${freeCount} free, ${inUseCount} in use · Sessions auto-free after 60m`}
               </Text>
             </View>
             <Pressable

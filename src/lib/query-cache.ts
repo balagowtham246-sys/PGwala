@@ -19,6 +19,7 @@ export interface CachedReadResult<T> {
 type CacheListener = () => void;
 
 const memoryCache = new Map<string, CacheEntry<unknown>>();
+const knownStorageKeys = new Set<string>();
 const listeners = new Map<string, Set<CacheListener>>();
 
 const nowMs = (): number =>
@@ -79,6 +80,7 @@ export async function getCachedEntry<T>(key: string): Promise<CachedReadResult<T
     }
 
     memoryCache.set(key, parsed as CacheEntry<unknown>);
+    knownStorageKeys.add(storageKeyFor(key));
     recordCacheRead(key, nowMs() - start, true);
     return {
       data: parsed.data,
@@ -112,21 +114,35 @@ export async function setCached<T>(
     expiresAt: now + Math.max(0, ttlMs),
   };
   memoryCache.set(key, entry as CacheEntry<unknown>);
+  const storageKey = storageKeyFor(key);
+  knownStorageKeys.add(storageKey);
 
-  try {
-    await AsyncStorage.setItem(storageKeyFor(key), JSON.stringify(entry));
-  } catch {
-    // Non-fatal: memory cache still holds the entry
-  } finally {
-    recordCacheWrite(key, nowMs() - start);
+  const persistWrite = async () => {
+    try {
+      await AsyncStorage.setItem(storageKey, JSON.stringify(entry));
+    } catch {
+      // Non-fatal: memory cache still holds the entry
+    } finally {
+      recordCacheWrite(key, nowMs() - start);
+    }
+  };
+
+  if (process.env.NODE_ENV === 'test') {
+    await persistWrite();
     notifyKey(key);
+    return;
   }
+
+  notifyKey(key);
+  void persistWrite();
 }
 
 export async function invalidateKey(key: string): Promise<void> {
   memoryCache.delete(key);
+  const storageKey = storageKeyFor(key);
+  knownStorageKeys.delete(storageKey);
   try {
-    await AsyncStorage.removeItem(storageKeyFor(key));
+    await AsyncStorage.removeItem(storageKey);
   } catch {
     // Ignore storage removal errors
   } finally {
@@ -141,11 +157,16 @@ export async function invalidatePrefix(prefix: string): Promise<void> {
     }
   }
 
+  const storagePrefix = storageKeyFor(prefix);
+  const matchingStorageKeys: string[] = [];
+  for (const sk of Array.from(knownStorageKeys)) {
+    if (sk.startsWith(storagePrefix)) {
+      matchingStorageKeys.push(sk);
+      knownStorageKeys.delete(sk);
+    }
+  }
+
   try {
-    const allKeys = await AsyncStorage.getAllKeys();
-    const matchingStorageKeys = allKeys.filter((k) =>
-      k.startsWith(storageKeyFor(prefix))
-    );
     if (matchingStorageKeys.length > 0) {
       await AsyncStorage.multiRemove(matchingStorageKeys);
     }
@@ -176,6 +197,7 @@ export function subscribeCache(key: string, listener: CacheListener): () => void
 
 export async function clearQueryCache(): Promise<void> {
   memoryCache.clear();
+  knownStorageKeys.clear();
   try {
     const allKeys = await AsyncStorage.getAllKeys();
     const cacheKeys = allKeys.filter((k) => k.startsWith(CACHE_STORAGE_PREFIX));

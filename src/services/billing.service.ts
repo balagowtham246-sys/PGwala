@@ -216,6 +216,7 @@ export interface ConfirmMonthlyPaymentResult {
 export interface RejectPaymentReportParams {
   reportId: string;
   rejectionReason: string;
+  screenshotUrl?: string | null;
 }
 
 export interface SubmitStudentPaymentProofParams {
@@ -582,7 +583,7 @@ export async function getOwnerBilling(
     if (!payload.property?.id) {
       return ok({
         propertyId: null,
-        propertyName: activePropName || 'Shalom Residency',
+        propertyName: activePropName || 'My PG',
         rentBills: [],
         ebBills: [],
         allResidents: [],
@@ -592,7 +593,7 @@ export async function getOwnerBilling(
 
     const resolvedPropertyId = payload.property.id;
     const resolvedPropertyName =
-      activePropName || payload.property.name || 'Shalom Residency';
+      activePropName || payload.property.name || 'My PG';
     const paymentMap = buildPaymentAllocationMap(payload.payment_allocations);
     const snapshot = buildOwnerBillingSnapshot({
       propertyId: resolvedPropertyId,
@@ -777,8 +778,40 @@ export async function confirmMonthlyPayment(
   }
 }
 
+export function extractPaymentProofStoragePath(
+  pathOrUrl: string | null | undefined
+): string | null {
+  if (!pathOrUrl) return null;
+  const trimmed = pathOrUrl.trim();
+  if (!trimmed) return null;
+  if (
+    trimmed.startsWith('file:') ||
+    trimmed.startsWith('ph:') ||
+    trimmed.startsWith('content:')
+  ) {
+    return null;
+  }
+
+  const publicPrefix = '/storage/v1/object/public/payment-proofs/';
+  const signPrefix = '/storage/v1/object/sign/payment-proofs/';
+
+  if (trimmed.includes(publicPrefix)) {
+    const part = trimmed.split(publicPrefix)[1];
+    return part ? decodeURIComponent(part.split('?')[0]) : null;
+  }
+  if (trimmed.includes(signPrefix)) {
+    const part = trimmed.split(signPrefix)[1];
+    return part ? decodeURIComponent(part.split('?')[0]) : null;
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return null;
+  }
+  return trimmed.replace(/^\/+/, '');
+}
+
 /**
- * Rejects a student payment report with an owner reason (strictly online RPC).
+ * Rejects a student payment report with an owner reason (strictly online RPC)
+ * and best-effort deletes the rejected screenshot from `payment-proofs` storage.
  */
 export async function rejectStudentPaymentReport(
   params: RejectPaymentReportParams
@@ -798,6 +831,18 @@ export async function rejectStudentPaymentReport(
     if (error) throw error;
     if (!data?.success) {
       throw new Error(data?.error || 'Failed to reject payment proof.');
+    }
+
+    const storagePath = extractPaymentProofStoragePath(
+      (typeof data.screenshot_url === 'string' ? data.screenshot_url : null) ??
+        params.screenshotUrl
+    );
+    if (storagePath && supabase.storage?.from) {
+      try {
+        await supabase.storage.from('payment-proofs').remove([storagePath]);
+      } catch {
+        // Non-fatal: report rejection already succeeded
+      }
     }
 
     await invalidatePrefix(BILLING_CACHE_PREFIX);

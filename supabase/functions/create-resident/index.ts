@@ -8,6 +8,19 @@ interface RequestBody {
   phone_number?: string;
   email: string;
   temporary_password: string;
+  bed_label?: string | null;
+  gender?: 'male' | 'female' | 'other' | null;
+  joining_date?: string | null;
+  monthly_rent_paise?: number | null;
+  deposit_paise?: number | null;
+  emergency_contact?: string | null;
+}
+
+function normalizePhoneLast10(phone: string | null | undefined): string | null {
+  if (!phone) return null;
+  const digits = phone.replace(/\D/g, '');
+  if (digits.length < 10) return null;
+  return digits.slice(-10);
 }
 
 const corsHeaders = {
@@ -102,7 +115,20 @@ serve(async (req) => {
       });
     }
 
-    const { property_id, full_name, room_number, phone_number, email, temporary_password } = body;
+    const {
+      property_id,
+      full_name,
+      room_number,
+      phone_number,
+      email,
+      temporary_password,
+      bed_label,
+      gender,
+      joining_date,
+      monthly_rent_paise,
+      deposit_paise,
+      emergency_contact,
+    } = body;
 
     const trimmedPropertyId = property_id?.trim();
     const trimmedName = full_name?.trim();
@@ -110,6 +136,26 @@ serve(async (req) => {
     const trimmedEmail = email?.trim().toLowerCase();
     const trimmedPassword = temporary_password?.trim();
     const trimmedPhone = phone_number?.trim() || null;
+    const normalizedPhone10 = normalizePhoneLast10(trimmedPhone);
+    const trimmedBedLabel = typeof bed_label === 'string' && bed_label.trim() ? bed_label.trim() : null;
+    const validGender =
+      gender === 'male' || gender === 'female' || gender === 'other' ? gender : null;
+    const validJoiningDate =
+      typeof joining_date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(joining_date.trim())
+        ? joining_date.trim()
+        : null;
+    const validMonthlyRentPaise =
+      typeof monthly_rent_paise === 'number' && Number.isFinite(monthly_rent_paise) && monthly_rent_paise >= 0
+        ? Math.round(monthly_rent_paise)
+        : null;
+    const validDepositPaise =
+      typeof deposit_paise === 'number' && Number.isFinite(deposit_paise) && deposit_paise >= 0
+        ? Math.round(deposit_paise)
+        : null;
+    const trimmedEmergencyContact =
+      typeof emergency_contact === 'string' && emergency_contact.trim()
+        ? emergency_contact.trim().slice(0, 120)
+        : null;
 
     if (!trimmedPropertyId || !trimmedName || !trimmedRoom || !trimmedEmail || !trimmedPassword) {
       return jsonResponse(400, {
@@ -194,6 +240,29 @@ serve(async (req) => {
       });
     }
 
+    // 4b. Block duplicate active phone number within the same property
+    if (normalizedPhone10) {
+      const { data: activePhones } = await adminClient
+        .from('residents')
+        .select('id, full_name, room_number, phone_number')
+        .eq('property_id', trimmedPropertyId)
+        .eq('is_active', true)
+        .not('phone_number', 'is', null);
+
+      const phoneConflict = (activePhones ?? []).find(
+        (r: { phone_number?: string | null }) =>
+          normalizePhoneLast10(r.phone_number) === normalizedPhone10
+      ) as { full_name?: string; room_number?: string } | undefined;
+
+      if (phoneConflict) {
+        return jsonResponse(409, {
+          success: false,
+          code: 'DUPLICATE_PHONE',
+          error: `Phone number ${trimmedPhone} is already assigned to active resident "${phoneConflict.full_name || 'another resident'}" in Room ${phoneConflict.room_number || '?'}.`,
+        });
+      }
+    }
+
     // 5. Create new Supabase Auth account (never overwrite or delete an existing Auth user on conflict)
     const { data: createdUser, error: createAuthError } = await adminClient.auth.admin.createUser({
       email: trimmedEmail,
@@ -257,6 +326,28 @@ serve(async (req) => {
         code: 'DB_LINK_FAILED',
         error: rpcResult?.error || rpcError?.message || 'Failed to save resident profile in database.',
       });
+    }
+
+    // 6b. Persist optional rich onboarding fields (bed, gender, joining date, rent, deposit, emergency contact)
+    const richPatch: Record<string, unknown> = {};
+    if (trimmedBedLabel !== null) richPatch.bed_label = trimmedBedLabel;
+    if (validGender !== null) richPatch.gender = validGender;
+    if (validJoiningDate !== null) richPatch.joining_date = validJoiningDate;
+    if (validMonthlyRentPaise !== null) richPatch.monthly_rent_paise = validMonthlyRentPaise;
+    if (validDepositPaise !== null) richPatch.deposit_paise = validDepositPaise;
+    if (trimmedEmergencyContact !== null) richPatch.emergency_contact = trimmedEmergencyContact;
+
+    if (rpcResult.resident_id && Object.keys(richPatch).length > 0) {
+      const { error: richUpdateError } = await adminClient
+        .from('residents')
+        .update(richPatch)
+        .eq('id', rpcResult.resident_id);
+      if (richUpdateError) {
+        console.warn(
+          '[create-resident] Optional rich fields update warning:',
+          richUpdateError.message
+        );
+      }
     }
 
     // 7. Return success without exposing passwords or sensitive tokens

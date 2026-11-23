@@ -1,6 +1,8 @@
 import React, { memo, useCallback, useEffect, useMemo, useState } from 'react';
 import {
+  Alert,
   AppState,
+  Linking,
   Modal,
   Platform,
   Pressable,
@@ -17,6 +19,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Href, router, useFocusEffect } from 'expo-router';
 import {
   ChevronRight,
+  Phone,
   Search,
   SlidersHorizontal,
   Users,
@@ -66,16 +69,20 @@ const ResidentDirectoryRow = memo(function ResidentDirectoryRow({
   isLast: boolean;
   onPress: (id: string) => void;
 }) {
-  const roomBedText = resident.bedLabel
-    ? `Room ${resident.roomNumber} · ${resident.bedLabel}`
-    : `Room ${resident.roomNumber}`;
+  const bedPart = resident.bedLabel ? resident.bedLabel : 'Bed unassigned';
+  const duesPart =
+    resident.pendingDuesPaise > 0
+      ? `${formatPaiseToRupees(resident.pendingDuesPaise)} due`
+      : 'Paid';
+  const subtitleText = `${bedPart} · ${duesPart}`;
   const statusLabel = toSentenceCaseStatus(resident.gateStatus);
   const statusVariant = resident.gateStatus === 'IN' ? 'success' : 'warning';
+  const phoneDigits = (resident.phoneNumber ?? '').replace(/\D/g, '');
 
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${resident.fullName}, ${roomBedText}, ${statusLabel}`}
+      accessibilityLabel={`${resident.fullName}, ${subtitleText}, ${statusLabel}`}
       onPress={() => onPress(resident.id)}
       style={({ pressed }) => [
         styles.residentRow,
@@ -88,19 +95,44 @@ const ResidentDirectoryRow = memo(function ResidentDirectoryRow({
         <Text style={styles.residentName} numberOfLines={1}>
           {resident.fullName}
         </Text>
-        <Text style={styles.residentMeta} numberOfLines={1}>
-          {roomBedText}
+        <Text
+          style={[
+            styles.residentMeta,
+            resident.pendingDuesPaise > 0 && styles.dueText,
+          ]}
+          numberOfLines={1}>
+          {subtitleText}
         </Text>
       </View>
 
       <View style={styles.residentRight}>
+        {phoneDigits.length >= 10 && (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Call ${resident.fullName}`}
+            hitSlop={8}
+            style={({ pressed }) => [
+              {
+                width: 30,
+                height: 30,
+                borderRadius: 15,
+                backgroundColor: OwnerTheme.colors.primaryLight,
+                alignItems: 'center',
+                justifyContent: 'center',
+              },
+              pressed && { opacity: 0.7 },
+            ]}
+            onPress={(e) => {
+              e.stopPropagation();
+              Linking.openURL(`tel:${phoneDigits}`).catch(() => {
+                Alert.alert('Unable to Call', 'Could not open the phone dialer.');
+              });
+            }}>
+            <Phone size={14} color={OwnerTheme.colors.primary} />
+          </Pressable>
+        )}
         <View style={styles.badgesCol}>
           <StatusBadge label={statusLabel} variant={statusVariant} size="sm" />
-          {resident.pendingDuesPaise > 0 && (
-            <Text style={styles.dueText}>
-              {formatPaiseToRupees(resident.pendingDuesPaise)} due
-            </Text>
-          )}
         </View>
         <ChevronRight size={16} color={OwnerTheme.colors.textMuted} />
       </View>
@@ -173,13 +205,15 @@ export default function ResidentsDirectoryScreen() {
     };
   }, [selectedPropertyId, isScreenFocused, isAppActive, qc]);
 
+  const refetchDirectory = directoryQuery.refetch;
+
   const handleRefresh = useCallback(() => {
     if (!selectedPropertyId) return;
     setManualRefreshing(true);
-    void directoryQuery.refetch().finally(() => {
+    void refetchDirectory().finally(() => {
       setManualRefreshing(false);
     });
-  }, [selectedPropertyId, directoryQuery]);
+  }, [selectedPropertyId, refetchDirectory]);
 
   const availableRooms = useMemo(() => {
     const rooms = new Set<string>();

@@ -137,11 +137,9 @@ export function useSaveFoodMenuMutation() {
       if (!context) return;
       qc.setQueryData(context.key, context.previous);
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
@@ -198,11 +196,9 @@ export function useToggleFoodMenuPublishMutation() {
       if (!context) return;
       qc.setQueryData(context.key, context.previous);
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
@@ -250,11 +246,9 @@ export function useDeleteFoodMenuMutation() {
       if (!context) return;
       qc.setQueryData(context.key, context.previous);
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
@@ -315,11 +309,9 @@ export function useUpsertMealsForDateMutation() {
       if (!context) return;
       qc.setQueryData(context.key, context.previous);
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }

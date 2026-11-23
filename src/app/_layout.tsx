@@ -127,8 +127,8 @@ function RootNavigationLayout() {
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="owner-tabs" />
       <Stack.Screen name="resident-tabs" />
-      <Stack.Screen name="student-dashboard" />
-      <Stack.Screen name="student-in-out" />
+      <Stack.Screen name="resident-dashboard" />
+      <Stack.Screen name="resident-in-out" />
       <Stack.Screen name="add-resident" />
       <Stack.Screen name="edit-resident" />
       <Stack.Screen name="residents-directory" />
@@ -137,16 +137,16 @@ function RootNavigationLayout() {
       <Stack.Screen name="notification-center" />
       <Stack.Screen name="food-menu" />
       <Stack.Screen name="billing-management" />
-      <Stack.Screen name="student-billing" />
+      <Stack.Screen name="resident-billing" />
       <Stack.Screen name="receipt-detail" />
       <Stack.Screen name="owner-complaints" />
-      <Stack.Screen name="student-complaints" />
-      <Stack.Screen name="student-gate-history" />
-      <Stack.Screen name="student-menu" />
-      <Stack.Screen name="student-settings" />
-      <Stack.Screen name="student-profile-edit" />
-      <Stack.Screen name="student-accommodation" />
-      <Stack.Screen name="student-chat" />
+      <Stack.Screen name="resident-complaints" />
+      <Stack.Screen name="resident-gate-history" />
+      <Stack.Screen name="resident-menu" />
+      <Stack.Screen name="resident-settings" />
+      <Stack.Screen name="resident-profile-edit" />
+      <Stack.Screen name="resident-accommodation" />
+      <Stack.Screen name="resident-chat" />
       <Stack.Screen name="owner-settings" />
       <Stack.Screen name="owner-profile-edit" />
       <Stack.Screen name="owner-properties" />
@@ -154,8 +154,8 @@ function RootNavigationLayout() {
       <Stack.Screen name="owner-wardens" />
       <Stack.Screen name="warden-dashboard" />
       <Stack.Screen name="warden-settings" />
-      <Stack.Screen name="student-announcements" />
-      <Stack.Screen name="student-notifications" />
+      <Stack.Screen name="resident-announcements" />
+      <Stack.Screen name="resident-notifications" />
     </Stack>
   );
 }

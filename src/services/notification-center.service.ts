@@ -17,7 +17,7 @@ export interface InboxItem {
   timestamp: string;
   isRead: boolean;
   priority?: string;
-  routeTarget: '/resident-profile' | '/student-in-out' | '/owner-complaints';
+  routeTarget: '/resident-profile' | '/resident-in-out' | '/owner-complaints';
   residentId?: string;
   residentName?: string;
   roomNumber?: string;
@@ -159,7 +159,7 @@ export async function fetchOwnerInboxPage(
             : 'Entered the PG premises',
           timestamp: row.event_time,
           isRead: readSet.has(id),
-          routeTarget: row.resident_id ? '/resident-profile' : '/student-in-out',
+          routeTarget: row.resident_id ? '/resident-profile' : '/resident-in-out',
           residentId: row.resident_id ?? undefined,
           residentName,
           roomNumber: roomNumber || undefined,

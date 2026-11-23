@@ -220,7 +220,7 @@ export function ResidentProfileSections({
           style={styles.sectionFooterLink}
           onPress={() =>
             router.push({
-              pathname: '/student-in-out',
+              pathname: '/resident-in-out',
               params: { residentId: profile.id },
             } as Href)
           }>

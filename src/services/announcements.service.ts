@@ -53,6 +53,7 @@ export interface SendAnnouncementInput {
   audience: AnnouncementAudience;
   roomNumber?: string | null;
   channel: AnnouncementChannel;
+  idempotencyKey?: string;
 }
 
 export interface SendAnnouncementResult {
@@ -273,6 +274,10 @@ export async function sendAnnouncement(
               normalizedRoom!.toLowerCase()
           );
 
+    const idempotencyKey =
+      input.idempotencyKey?.trim() ||
+      `ann-${input.propertyId.slice(0, 8)}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
     let pushDeliveredVia: SendAnnouncementResult['pushDeliveredVia'] = 'not_applicable';
     if (input.channel === 'push') {
       try {
@@ -283,6 +288,7 @@ export async function sendAnnouncement(
           message,
           audience: input.audience,
           room_number: normalizedRoom,
+          idempotency_key: idempotencyKey,
           recipient_profile_ids: matchingRecipients
             .map((r) => r.profileId)
             .filter(Boolean),

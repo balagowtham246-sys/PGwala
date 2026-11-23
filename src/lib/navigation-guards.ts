@@ -4,23 +4,23 @@
 
 export const STUDENT_ROUTES = [
   'resident-tabs',
-  'student-dashboard',
-  'student-billing',
-  'student-complaints',
-  'student-chat',
-  'student-gate-history',
-  'student-menu',
-  'student-settings',
-  'student-profile-edit',
-  'student-accommodation',
-  'student-announcements',
-  'student-notifications',
+  'resident-dashboard',
+  'resident-billing',
+  'resident-complaints',
+  'resident-chat',
+  'resident-gate-history',
+  'resident-menu',
+  'resident-settings',
+  'resident-profile-edit',
+  'resident-accommodation',
+  'resident-announcements',
+  'resident-notifications',
 ] as const;
 
 export const OWNER_ROUTES = [
   '(tabs)',
   'owner-tabs',
-  'student-in-out',
+  'resident-in-out',
   'add-resident',
   'edit-resident',
   'residents-directory',
@@ -40,7 +40,7 @@ export const OWNER_ROUTES = [
 export const WARDEN_ROUTES = [
   'warden-dashboard',
   'warden-settings',
-  'student-profile-edit',
+  'resident-profile-edit',
 ] as const;
 
 export interface NavigationGuardState {
@@ -82,7 +82,7 @@ export function evaluateNavigationRedirect(state: NavigationGuardState): string 
   if (role === 'student') {
     if (
       inAuthGroup ||
-      currentSegment === 'student-dashboard' ||
+      currentSegment === 'resident-dashboard' ||
       (currentSegment &&
         ((OWNER_ROUTES as readonly string[]).includes(currentSegment) ||
           currentSegment === 'warden-dashboard' ||

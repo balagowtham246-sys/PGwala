@@ -40,14 +40,14 @@ const TABS: TabConfig[] = [
     label: 'Maintenance',
     icon: Wrench,
     ownerRoute: '/owner-complaints',
-    studentRoute: '/student-complaints',
+    studentRoute: '/resident-complaints',
   },
   {
     key: 'menu',
     label: 'Menu',
     icon: Utensils,
     ownerRoute: '/food-menu',
-    studentRoute: '/student-menu',
+    studentRoute: '/resident-menu',
   },
   {
     key: 'home',
@@ -60,15 +60,15 @@ const TABS: TabConfig[] = [
     key: 'gate',
     label: 'Gate',
     icon: DoorOpen,
-    ownerRoute: '/student-in-out',
-    studentRoute: '/student-gate-history',
+    ownerRoute: '/resident-in-out',
+    studentRoute: '/resident-gate-history',
   },
   {
     key: 'bill',
     label: 'Bill',
     icon: Receipt,
     ownerRoute: '/billing-management',
-    studentRoute: '/student-billing',
+    studentRoute: '/resident-billing',
   },
 ];
 

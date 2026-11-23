@@ -62,4 +62,8 @@ export const queryKeys = {
     property: (propertyId: string) =>
       ['washingMachine', 'property', propertyId] as const,
   },
+  wardens: {
+    all: ['wardens'] as const,
+    owner: (userId: string) => ['wardens', 'owner', userId] as const,
+  },
 } as const;

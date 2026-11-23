@@ -3,6 +3,34 @@ import { fail, ok, ServiceResult } from '@/lib/service-result';
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
 
 export const CYCLE_DURATION_MINUTES = 45;
+export const AUTO_RELEASE_MINUTES = 60;
+
+export function isWashingMachineSessionExpired(
+  startedAtIso: string | null | undefined,
+  nowMs: number = Date.now()
+): boolean {
+  if (!startedAtIso) return false;
+  const startedMs = new Date(startedAtIso).getTime();
+  if (Number.isNaN(startedMs)) return false;
+  return nowMs - startedMs >= AUTO_RELEASE_MINUTES * 60 * 1000;
+}
+
+export function normalizeExpiredWashingMachineUnit(
+  unit: WashingMachineUnitData,
+  nowMs: number = Date.now()
+): WashingMachineUnitData {
+  if (unit.status === 'in_use' && isWashingMachineSessionExpired(unit.started_at, nowMs)) {
+    return {
+      ...unit,
+      status: 'free',
+      current_resident_id: null,
+      current_resident_name: null,
+      current_resident_room: null,
+      started_at: null,
+    };
+  }
+  return unit;
+}
 
 export interface WashingMachineStatusData {
   property_id: string;
@@ -91,19 +119,25 @@ export async function fetchWashingMachineStatus(
     recordRoundTrip(traceLabel);
 
     if (!error && rpcRes && rpcRes.success) {
-      const unitList: WashingMachineUnitData[] = (rpcRes.machines ?? []).map((m: any) => ({
-        id: m.id,
-        property_id: m.property_id,
-        machine_number: m.machine_number ?? 1,
-        machine_name: m.machine_name ?? `Machine ${m.machine_number ?? 1}`,
-        is_active: m.is_active ?? true,
-        status: m.status ?? 'free',
-        current_resident_id: m.current_resident_id,
-        current_resident_name: m.current_resident_name,
-        current_resident_room: m.current_resident_room,
-        started_at: m.started_at,
-        updated_at: m.updated_at,
-      }));
+      const nowMs = Date.now();
+      const unitList: WashingMachineUnitData[] = (rpcRes.machines ?? []).map((m: any) =>
+        normalizeExpiredWashingMachineUnit(
+          {
+            id: m.id,
+            property_id: m.property_id,
+            machine_number: m.machine_number ?? 1,
+            machine_name: m.machine_name ?? `Machine ${m.machine_number ?? 1}`,
+            is_active: m.is_active ?? true,
+            status: m.status ?? 'free',
+            current_resident_id: m.current_resident_id,
+            current_resident_name: m.current_resident_name,
+            current_resident_room: m.current_resident_room,
+            started_at: m.started_at,
+            updated_at: m.updated_at,
+          },
+          nowMs
+        )
+      );
 
       return ok({
         machines: unitList,

@@ -194,6 +194,7 @@ export interface StudentDashboardData {
   menus: Record<MealType, ResidentFoodMenu | null>;
   pendingDuesPaise: number | null;
   pendingReviewPaise?: number | null;
+  currentMonthBillGenerated?: boolean;
   latestMovement: ResidentMovementRecord | null;
   hasUnreadChat: boolean;
 }
@@ -385,44 +386,97 @@ export async function fetchOwnerDashboard(
 
   startTrace(traceLabel);
   try {
-    // Fast Path: Single-roundtrip composite SQL RPC + current month rent collections in parallel
-    const [summaryResult, chargesResult, pendingReportsResult] = await Promise.all([
-      supabase.rpc('get_owner_dashboard_summary', {
-        p_property_id: propertyId,
-        p_date: todayIsoDate,
-      }),
-      supabase
-        .from('charges')
-        .select('amount_paise, status')
-        .eq('property_id', propertyId)
-        .eq('billing_period_start', currentMonthStartIso)
-        .eq('category', 'rent'),
-      supabase
-        .from('student_payment_reports')
-        .select('id', { count: 'exact', head: true })
-        .eq('property_id', propertyId)
-        .eq('status', 'pending'),
-    ]);
-    recordRoundTrip(traceLabel, 3);
-
-    let rentCollectedPaise = 0;
-    let rentTotalPaise = 0;
-    let unpaidResidentsCount = 0;
-    if (!chargesResult.error && chargesResult.data) {
-      for (const ch of chargesResult.data) {
-        const amt = ch.amount_paise || 0;
-        rentTotalPaise += amt;
-        if (ch.status === 'paid') {
-          rentCollectedPaise += amt;
-        }
-        if (ch.status !== 'paid' && ch.status !== 'settled') {
-          unpaidResidentsCount += 1;
-        }
-      }
-    }
-    const pendingProofsCount = pendingReportsResult.count ?? 0;
+    // Fast Path: Single-roundtrip composite SQL RPC (includes rent totals + pending proofs when migration 28 is deployed)
+    const summaryResult = await supabase.rpc('get_owner_dashboard_summary', {
+      p_property_id: propertyId,
+      p_date: todayIsoDate,
+    });
+    recordRoundTrip(traceLabel, 1);
 
     const { data: summaryRpc, error: rpcError } = summaryResult;
+    const rpcHasBillingStats =
+      !rpcError &&
+      summaryRpc?.success &&
+      typeof summaryRpc.stats?.rentTotalPaise === 'number' &&
+      typeof summaryRpc.stats?.pendingProofsCount === 'number';
+
+    let rentCollectedPaise = rpcHasBillingStats
+      ? (summaryRpc.stats.rentCollectedPaise ?? 0)
+      : 0;
+    let rentTotalPaise = rpcHasBillingStats
+      ? (summaryRpc.stats.rentTotalPaise ?? 0)
+      : 0;
+    let unpaidResidentsCount = rpcHasBillingStats
+      ? (summaryRpc.stats.unpaidResidentsCount ?? 0)
+      : 0;
+    let pendingProofsCount = rpcHasBillingStats
+      ? (summaryRpc.stats.pendingProofsCount ?? 0)
+      : 0;
+
+    if (!rpcHasBillingStats) {
+      const [chargesResult, pendingReportsResult] = await Promise.all([
+        supabase
+          .from('charges')
+          .select('resident_id, amount_paise, status')
+          .eq('property_id', propertyId)
+          .eq('billing_period_start', currentMonthStartIso)
+          .eq('category', 'rent'),
+        supabase
+          .from('student_payment_reports')
+          .select(
+            'id, charge_id, resident:residents!inner(is_active), charge:charges!inner(status, billing_period_start)',
+            { count: 'exact' }
+          )
+          .eq('property_id', propertyId)
+          .eq('status', 'pending'),
+      ]);
+      recordRoundTrip(traceLabel, 2);
+
+      if (!chargesResult.error && chargesResult.data) {
+        const unpaidResidentIds = new Set<string>();
+        let fallbackUnpaidCount = 0;
+        for (const ch of chargesResult.data as {
+          resident_id?: string | null;
+          amount_paise: number | null;
+          status: string;
+        }[]) {
+          const amt = ch.amount_paise || 0;
+          rentTotalPaise += amt;
+          if (ch.status === 'paid' || ch.status === 'settled') {
+            rentCollectedPaise += amt;
+          } else if (ch.resident_id) {
+            unpaidResidentIds.add(ch.resident_id);
+          } else {
+            fallbackUnpaidCount += 1;
+          }
+        }
+        unpaidResidentsCount = unpaidResidentIds.size + fallbackUnpaidCount;
+      }
+
+      if (!pendingReportsResult.error && Array.isArray(pendingReportsResult.data)) {
+        pendingProofsCount = (
+          pendingReportsResult.data as {
+            charge_id?: string | null;
+            resident?: { is_active?: boolean } | { is_active?: boolean }[] | null;
+            charge?:
+              | { status?: string; billing_period_start?: string }
+              | { status?: string; billing_period_start?: string }[]
+              | null;
+          }[]
+        ).filter((row) => {
+          const res = Array.isArray(row.resident) ? row.resident[0] : row.resident;
+          const chg = Array.isArray(row.charge) ? row.charge[0] : row.charge;
+          return (
+            Boolean(row.charge_id) &&
+            res?.is_active === true &&
+            chg?.status === 'outstanding' &&
+            chg?.billing_period_start === currentMonthStartIso
+          );
+        }).length;
+      } else if (!pendingReportsResult.error) {
+        pendingProofsCount = pendingReportsResult.count ?? 0;
+      }
+    }
 
     if (!rpcError && summaryRpc?.success) {
       const stats: OwnerDashboardStats = {
@@ -1122,8 +1176,16 @@ export async function fetchStudentDashboard(
     const hasUnreadChat = hasUnreadChatMessage(latestChatRes.data?.created_at, lastSeenIso);
 
     let latestGateRecord: ResidentMovementRecord | null = null;
+    let currentMonthBillGenerated: boolean | undefined =
+      (pendingDuesPaise !== null && pendingDuesPaise > 0) ||
+      (pendingReviewPaise !== null && pendingReviewPaise > 0)
+        ? true
+        : undefined;
 
     if (!summaryRes.error && summaryRes.data?.success) {
+      if (typeof summaryRes.data.currentMonthBillGenerated === 'boolean') {
+        currentMonthBillGenerated = summaryRes.data.currentMonthBillGenerated;
+      }
       const publishedMenus = (summaryRes.data.publishedMenus ?? []) as ResidentFoodMenu[];
       for (const item of publishedMenus) {
         if (['breakfast', 'lunch', 'dinner'].includes(item.meal_type)) {
@@ -1199,11 +1261,29 @@ export async function fetchStudentDashboard(
       }
     }
 
+    if (currentMonthBillGenerated === undefined) {
+      try {
+        const currentMonthStartIso = `${todayIso.slice(0, 7)}-01`;
+        const monthBillCheck = await supabase
+          .from('charges')
+          .select('id')
+          .eq('resident_id', residentInfo.id)
+          .eq('billing_period_start', currentMonthStartIso)
+          .limit(1);
+        if (!monthBillCheck.error && Array.isArray(monthBillCheck.data)) {
+          currentMonthBillGenerated = monthBillCheck.data.length > 0;
+        }
+      } catch {
+        // Non-fatal fallback when query is not mocked or schema differs
+      }
+    }
+
     const dashboardData: StudentDashboardData = {
       resident: residentInfo,
       menus: resolvedMenus,
       pendingDuesPaise,
       pendingReviewPaise,
+      currentMonthBillGenerated,
       latestMovement: latestGateRecord,
       hasUnreadChat,
     };

@@ -4,6 +4,7 @@ import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-nati
 
 import { EmptyState, SectionHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
+import { useResidentTabs } from '@/context/resident-tabs-context';
 import { formatRoomLabel, toSentenceCaseStatus } from '@/lib/ux-utils';
 import type { OwnerActivityItem } from '@/services/dashboard.service';
 
@@ -13,6 +14,7 @@ interface RecentActivitySectionProps {
 }
 
 export function RecentActivitySection({ loading, activities }: RecentActivitySectionProps) {
+  const { isInsidePager, navigateToTab } = useResidentTabs();
   const visibleActivities = activities.slice(0, 4);
 
   return (
@@ -21,7 +23,13 @@ export function RecentActivitySection({ loading, activities }: RecentActivitySec
       <SectionHeader
         title="Recent Movement"
         actionText="View all ›"
-        onAction={() => router.push('/student-in-out')}
+        onAction={() => {
+          if (isInsidePager) {
+            navigateToTab('gate');
+          } else {
+            router.push('/resident-in-out');
+          }
+        }}
         style={{ marginTop: 4, marginBottom: 8 }}
       />
 

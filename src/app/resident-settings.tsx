@@ -11,7 +11,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Href, router } from 'expo-router';
 import Constants from 'expo-constants';
-import { Bell, ChevronRight, LogOut, Megaphone, ShieldCheck } from 'lucide-react-native';
+import { Bell, Building2, ChevronRight, LogOut, Megaphone, ShieldCheck } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -69,7 +69,7 @@ export default function ResidentSettingsScreen() {
         subtitle="Resident Portal"
         showBack
         onBack={() =>
-          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+          router.canGoBack() ? router.back() : router.replace('/resident-dashboard')
         }
       />
 
@@ -82,7 +82,7 @@ export default function ResidentSettingsScreen() {
             { backgroundColor: colors.card, borderColor: colors.border },
             pressed && { backgroundColor: colors.surfaceElevated },
           ]}
-          onPress={() => router.push('/student-accommodation')}>
+          onPress={() => router.push('/resident-accommodation')}>
           <View style={[styles.avatarCircle, { backgroundColor: colors.primary }]}>
             <Text style={styles.avatarText}>{getInitials(profile?.full_name)}</Text>
           </View>
@@ -101,7 +101,7 @@ export default function ResidentSettingsScreen() {
 
         {/* Preferences & Alerts */}
         <View style={styles.section}>
-          <Text style={[styles.sectionHeader, { color: colors.textMuted }]}>Preferences & Alerts</Text>
+          <Text style={[styles.sectionHeader, { color: colors.textMuted }]}>PREFERENCES & ALERTS</Text>
           <View style={[styles.groupedCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
             <Pressable
               accessibilityRole="button"
@@ -110,7 +110,27 @@ export default function ResidentSettingsScreen() {
                 { borderBottomWidth: 1, borderBottomColor: colors.borderLight },
                 pressed && { backgroundColor: colors.surfaceElevated },
               ]}
-              onPress={() => router.push('/student-notifications' as Href)}>
+              onPress={() => router.push('/resident-accommodation')}>
+              <View style={[styles.iconWrap, { backgroundColor: colors.primaryLight }]}>
+                <Building2 size={18} color={colors.primary} />
+              </View>
+              <View style={styles.rowContent}>
+                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>My PG & Room Info</Text>
+                <Text style={[styles.rowSubtitle, { color: colors.textSecondary }]}>
+                  Wi-Fi password, curfew, owner & warden contact
+                </Text>
+              </View>
+              <ChevronRight size={18} color={colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.settingsRow,
+                { borderBottomWidth: 1, borderBottomColor: colors.borderLight },
+                pressed && { backgroundColor: colors.surfaceElevated },
+              ]}
+              onPress={() => router.push('/resident-notifications' as Href)}>
               <View style={[styles.iconWrap, { backgroundColor: colors.warningLight }]}>
                 <Bell size={18} color={colors.warning} />
               </View>
@@ -129,7 +149,7 @@ export default function ResidentSettingsScreen() {
                 styles.settingsRow,
                 pressed && { backgroundColor: colors.surfaceElevated },
               ]}
-              onPress={() => router.push('/student-announcements' as Href)}>
+              onPress={() => router.push('/resident-announcements' as Href)}>
               <View style={[styles.iconWrap, { backgroundColor: colors.primaryLight }]}>
                 <Megaphone size={18} color={colors.primary} />
               </View>
@@ -154,7 +174,7 @@ export default function ResidentSettingsScreen() {
                 styles.settingsRow,
                 pressed && { backgroundColor: colors.surfaceElevated },
               ]}
-              onPress={() => router.push('/student-profile-edit')}>
+              onPress={() => router.push('/resident-profile-edit')}>
               <View style={[styles.iconWrap, { backgroundColor: colors.successLight }]}>
                 <ShieldCheck size={18} color={colors.success} />
               </View>

@@ -242,6 +242,8 @@ export default function StudentComplaintsScreen() {
     }
   };
 
+  const refetchComplaints = complaintsQuery.refetch;
+
   const loadData = useCallback(async () => {
     if (!userId) return;
     if (!sharedResident) {
@@ -257,8 +259,8 @@ export default function StudentComplaintsScreen() {
       }
       return;
     }
-    await complaintsQuery.refetch();
-  }, [userId, sharedResident, refreshResident, complaintsQuery]);
+    await refetchComplaints();
+  }, [userId, sharedResident, refreshResident, refetchComplaints]);
 
   const loadMoreComplaints = () => {
     if (!hasMore || loadingMore) return;
@@ -278,13 +280,13 @@ export default function StudentComplaintsScreen() {
         if (!active) return;
         setPendingOfflineCount(await getPendingCount());
         if (summary.succeeded > 0) {
-          await complaintsQuery.refetch();
+          await refetchComplaints();
         }
       });
       return () => {
         active = false;
       };
-    }, [sharedResident, userId, loadData, complaintsQuery])
+    }, [sharedResident, userId, loadData, refetchComplaints])
   );
 
   // Submit new complaint (optimistic update + rollback on error + server-row replacement on success)
@@ -399,7 +401,7 @@ export default function StudentComplaintsScreen() {
         subtitle={headerSubtitle}
         showBack
         onBack={() =>
-          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+          router.canGoBack() ? router.back() : router.replace('/resident-dashboard')
         }
       />
 

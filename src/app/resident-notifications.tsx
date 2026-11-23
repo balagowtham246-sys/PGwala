@@ -29,7 +29,6 @@ import {
 import {
   HIGH_CONTRAST_SWITCH_COLORS,
   OwnerHeader,
-  PrimaryButton,
   SecondaryButton,
   StatusBadge,
   SWITCH_THUMB_COLOR,
@@ -384,7 +383,7 @@ export default function StudentNotificationsScreen() {
         subtitle="Manage your PG alert preferences"
         showBack
         onBack={() =>
-          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+          router.canGoBack() ? router.back() : router.replace('/resident-dashboard')
         }
       />
 
@@ -432,7 +431,7 @@ export default function StudentNotificationsScreen() {
             )}
           </View>
 
-          <PrimaryButton
+          <SecondaryButton
             label="Send Test Notification"
             icon={Bell}
             onPress={() => void handleSendTestNotification()}

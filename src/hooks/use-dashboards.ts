@@ -136,11 +136,13 @@ export function useOwnerReleaseWmMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.washingMachine.all }),
-      ]);
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({
+        queryKey: ['dashboard', 'owner', variables.propertyId],
+      });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.washingMachine.property(variables.propertyId),
+      });
     },
   });
 }
@@ -201,11 +203,13 @@ export function useOwnerSetWmOutOfOrderMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.washingMachine.all }),
-      ]);
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({
+        queryKey: ['dashboard', 'owner', variables.propertyId],
+      });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.washingMachine.property(variables.propertyId),
+      });
     },
   });
 }
@@ -349,8 +353,8 @@ export function useSendWardenFoodAlertMutation() {
         }
       );
     },
-    onSuccess: async (_data, variables) => {
-      await qc.invalidateQueries({
+    onSuccess: (_data, variables) => {
+      void qc.invalidateQueries({
         queryKey: variables.userId
           ? queryKeys.dashboard.warden(variables.userId)
           : queryKeys.dashboard.all,

@@ -2,11 +2,11 @@ import React from 'react';
 import { useLocalSearchParams } from 'expo-router';
 
 import { SwipeableTabsShell } from '@/components/swipeable-tabs-shell';
-import StudentComplaintsScreen from './student-complaints';
-import StudentMenuScreen from './student-menu';
-import ResidentDashboardScreen from './student-dashboard';
-import ResidentGateHistoryScreen from './student-gate-history';
-import StudentBillingScreen from './student-billing';
+import StudentComplaintsScreen from './resident-complaints';
+import StudentMenuScreen from './resident-menu';
+import ResidentDashboardScreen from './resident-dashboard';
+import ResidentGateHistoryScreen from './resident-gate-history';
+import StudentBillingScreen from './resident-billing';
 
 export default function ResidentTabsScreen() {
   const params = useLocalSearchParams<{ tab?: string }>();

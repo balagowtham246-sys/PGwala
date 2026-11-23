@@ -1,13 +1,3 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import {
   Building2,
@@ -15,6 +5,16 @@ import {
   Megaphone,
   Utensils,
 } from 'lucide-react-native';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  View,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 
 import {
   EmptyState,
@@ -76,10 +76,10 @@ export default function StudentAnnouncementsScreen() {
   const [propertyInfo, setPropertyInfo] = useState<LinkedPropertyInfo | null>(() =>
     sharedResident?.propertyId
       ? {
-          propertyId: sharedResident.propertyId,
-          propertyName: sharedResident.propertyName || 'My PG',
-          roomNumber: sharedResident.roomNumber || '',
-        }
+        propertyId: sharedResident.propertyId,
+        propertyName: sharedResident.propertyName || 'My PG',
+        roomNumber: sharedResident.roomNumber || '',
+      }
       : null
   );
   const [items, setItems] = useState<ResidentNoticeItem[]>([]);
@@ -224,18 +224,21 @@ export default function StudentAnnouncementsScreen() {
     showToast('All notices marked as read');
   };
 
-  const handlePressItem = (item: ResidentNoticeItem) => {
-    if (!userId || !propertyInfo?.propertyId || item.isRead) return;
-    triggerSelectionHaptic();
-    setItems((prev) =>
-      prev.map((entry) =>
-        entry.id === item.id ? { ...entry, isRead: true } : entry
-      )
-    );
-    void markResidentNoticeRead(userId, propertyInfo.propertyId, item.id);
-  };
+  const handlePressItem = useCallback(
+    (item: ResidentNoticeItem) => {
+      if (!userId || !propertyInfo?.propertyId || item.isRead) return;
+      triggerSelectionHaptic();
+      setItems((prev) =>
+        prev.map((entry) =>
+          entry.id === item.id ? { ...entry, isRead: true } : entry
+        )
+      );
+      void markResidentNoticeRead(userId, propertyInfo.propertyId, item.id);
+    },
+    [userId, propertyInfo]
+  );
 
-  const renderCategoryIcon = (item: ResidentNoticeItem) => {
+  const renderCategoryIcon = useCallback((item: ResidentNoticeItem) => {
     if (item.type === 'announcement') {
       return (
         <View
@@ -271,7 +274,73 @@ export default function StudentAnnouncementsScreen() {
         <Utensils size={17} color={iconColor} />
       </View>
     );
-  };
+  }, []);
+
+  const renderNoticeItem = useCallback(
+    ({ item }: { item: ResidentNoticeItem }) => {
+      const timeLabel = formatGateEventTimestamp(item.timestamp);
+      const badgeLabel =
+        item.type === 'announcement'
+          ? item.audienceLabel || 'All residents'
+          : item.mealStatus
+            ? statusLabel(item.mealStatus)
+            : 'Food update';
+      const badgeVariant: StatusBadgeVariant =
+        item.type === 'announcement'
+          ? badgeLabel !== 'All residents'
+            ? 'info'
+            : 'neutral'
+          : getFoodBadgeVariant(item.mealStatus);
+
+      return (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`${item.title}${!item.isRead ? ', unread' : ''}`}
+          onPress={() => handlePressItem(item)}
+          style={({ pressed }) => [
+            styles.itemCard,
+            !item.isRead && styles.itemCardUnread,
+            pressed && styles.itemCardPressed,
+          ]}>
+          {renderCategoryIcon(item)}
+
+          <View style={styles.itemBody}>
+            <View style={styles.itemTopRow}>
+              <View style={styles.titleRow}>
+                {!item.isRead && <View style={styles.unreadDot} />}
+                <Text
+                  style={[
+                    styles.itemTitle,
+                    !item.isRead && styles.itemTitleUnread,
+                  ]}
+                  numberOfLines={2}>
+                  {item.title}
+                </Text>
+              </View>
+              {timeLabel ? (
+                <Text style={styles.itemTimestamp}>{timeLabel}</Text>
+              ) : null}
+            </View>
+
+            {item.message ? (
+              <Text style={styles.itemMessage}>{item.message}</Text>
+            ) : null}
+
+            <View style={styles.badgeRow}>
+              <StatusBadge
+                label={badgeLabel}
+                variant={badgeVariant}
+                size="sm"
+              />
+            </View>
+          </View>
+        </Pressable>
+      );
+    },
+    [handlePressItem, renderCategoryIcon]
+  );
+
+  const keyExtractor = useCallback((item: ResidentNoticeItem) => item.id, []);
 
   const renderEmptyFilterState = () => {
     if (filter === 'notices') {
@@ -316,7 +385,7 @@ export default function StudentAnnouncementsScreen() {
         subtitle={unreadCount > 0 ? undefined : headerSubtitle}
         showBack
         onBack={() =>
-          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+          router.canGoBack() ? router.back() : router.replace('/resident-dashboard')
         }
         rightAction={
           unreadCount > 0 ? (
@@ -335,41 +404,55 @@ export default function StudentAnnouncementsScreen() {
         }
       />
 
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
-            colors={[OwnerTheme.colors.primary]}
-          />
-        }>
-        {loading && !propertyInfo && items.length === 0 ? (
+      {loading && !propertyInfo && items.length === 0 ? (
+        <View style={styles.scrollContent}>
           <LoadingState message="Loading notices..." />
-        ) : errorMessage && !propertyInfo && items.length === 0 ? (
+        </View>
+      ) : errorMessage && !propertyInfo && items.length === 0 ? (
+        <View style={styles.scrollContent}>
           <ErrorState
             message={errorMessage}
             onRetry={() => void loadNotices(true, true)}
           />
-        ) : !propertyInfo ? (
+        </View>
+      ) : !propertyInfo ? (
+        <View style={styles.scrollContent}>
           <EmptyState
             icon={Building2}
             title="Awaiting Room Allocation"
             description="PG notices and food alerts will appear here once your room is assigned."
           />
-        ) : (
-          <>
-            <SegmentedFilter
-              options={filterOptions}
-              activeKey={filter}
-              onSelect={(next) => {
-                triggerSelectionHaptic();
-                setFilter(next);
-              }}
-            />
-
-            {loading && items.length === 0 ? (
+        </View>
+      ) : (
+        <FlatList
+          data={loading && items.length === 0 ? [] : errorMessage && items.length === 0 ? [] : filteredItems}
+          keyExtractor={keyExtractor}
+          renderItem={renderNoticeItem}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          initialNumToRender={12}
+          maxToRenderPerBatch={12}
+          windowSize={7}
+          ListHeaderComponent={
+            <View style={styles.listContainer}>
+              <SegmentedFilter
+                options={filterOptions}
+                activeKey={filter}
+                onSelect={(next) => {
+                  triggerSelectionHaptic();
+                  setFilter(next);
+                }}
+              />
+              {errorMessage && items.length > 0 && (
+                <ErrorState
+                  message={errorMessage}
+                  onRetry={() => void loadNotices(true)}
+                />
+              )}
+            </View>
+          }
+          ListEmptyComponent={
+            loading && items.length === 0 ? (
               <LoadingState message="Loading notices..." />
             ) : errorMessage && items.length === 0 ? (
               <ErrorState
@@ -377,86 +460,18 @@ export default function StudentAnnouncementsScreen() {
                 onRetry={() => void loadNotices(true, true)}
               />
             ) : (
-              <>
-                {errorMessage && (
-                  <ErrorState
-                    message={errorMessage}
-                    onRetry={() => void loadNotices(true)}
-                  />
-                )}
-
-                {filteredItems.length === 0 ? (
-                  renderEmptyFilterState()
-                ) : (
-                  <View style={styles.listContainer}>
-                    {filteredItems.map((item) => {
-                      const timeLabel = formatGateEventTimestamp(item.timestamp);
-                      const badgeLabel =
-                        item.type === 'announcement'
-                          ? item.audienceLabel || 'All residents'
-                          : item.mealStatus
-                            ? statusLabel(item.mealStatus)
-                            : 'Food update';
-                      const badgeVariant: StatusBadgeVariant =
-                        item.type === 'announcement'
-                          ? badgeLabel !== 'All residents'
-                            ? 'info'
-                            : 'neutral'
-                          : getFoodBadgeVariant(item.mealStatus);
-
-                      return (
-                        <Pressable
-                          key={item.id}
-                          accessibilityRole="button"
-                          accessibilityLabel={`${item.title}${!item.isRead ? ', unread' : ''}`}
-                          onPress={() => handlePressItem(item)}
-                          style={({ pressed }) => [
-                            styles.itemCard,
-                            !item.isRead && styles.itemCardUnread,
-                            pressed && styles.itemCardPressed,
-                          ]}>
-                          {renderCategoryIcon(item)}
-
-                          <View style={styles.itemBody}>
-                            <View style={styles.itemTopRow}>
-                              <View style={styles.titleRow}>
-                                {!item.isRead && <View style={styles.unreadDot} />}
-                                <Text
-                                  style={[
-                                    styles.itemTitle,
-                                    !item.isRead && styles.itemTitleUnread,
-                                  ]}
-                                  numberOfLines={2}>
-                                  {item.title}
-                                </Text>
-                              </View>
-                              {timeLabel ? (
-                                <Text style={styles.itemTimestamp}>{timeLabel}</Text>
-                              ) : null}
-                            </View>
-
-                            {item.message ? (
-                              <Text style={styles.itemMessage}>{item.message}</Text>
-                            ) : null}
-
-                            <View style={styles.badgeRow}>
-                              <StatusBadge
-                                label={badgeLabel}
-                                variant={badgeVariant}
-                                size="sm"
-                              />
-                            </View>
-                          </View>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                )}
-              </>
-            )}
-          </>
-        )}
-      </ScrollView>
+              renderEmptyFilterState()
+            )
+          }
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              colors={[OwnerTheme.colors.primary]}
+            />
+          }
+        />
+      )}
     </SafeAreaView>
   );
 }

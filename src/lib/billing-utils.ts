@@ -225,3 +225,95 @@ export function buildWhatsAppReminderUrl(
   return `https://wa.me/${normalized}?text=${encodeURIComponent(message)}`;
 }
 
+export interface MonthlyRentExportRow {
+  full_name: string;
+  room_number: string;
+  phone_number?: string | null;
+  rent_paise: number;
+  wm_paise: number;
+  total_paise: number;
+  status: string;
+}
+
+/**
+ * Generates a clean, WhatsApp-ready monthly rent collection summary for PG owners.
+ */
+export function buildMonthlyRentSummaryText(params: {
+  propertyName: string;
+  monthLabel: string;
+  rentBills: MonthlyRentExportRow[];
+}): string {
+  const { propertyName, monthLabel, rentBills } = params;
+  let totalExpectedPaise = 0;
+  let totalCollectedPaise = 0;
+  let paidCount = 0;
+  const unpaidRows: MonthlyRentExportRow[] = [];
+
+  for (const row of rentBills) {
+    const amt = row.total_paise || 0;
+    totalExpectedPaise += amt;
+    if (row.status === 'paid' || row.status === 'settled') {
+      totalCollectedPaise += amt;
+      paidCount += 1;
+    } else {
+      unpaidRows.push(row);
+    }
+  }
+
+  const pendingPaise = Math.max(0, totalExpectedPaise - totalCollectedPaise);
+  const lines: string[] = [
+    `*${propertyName} — Rent Report (${monthLabel})*`,
+    `Expected: ${formatPaiseToRupees(totalExpectedPaise)}`,
+    `Collected: ${formatPaiseToRupees(totalCollectedPaise)} (${paidCount}/${rentBills.length} paid)`,
+    `Pending: ${formatPaiseToRupees(pendingPaise)} (${unpaidRows.length} unpaid)`,
+  ];
+
+  if (unpaidRows.length > 0) {
+    lines.push('', '*Pending Residents:*');
+    for (const row of unpaidRows) {
+      lines.push(
+        `• Room ${row.room_number} — ${row.full_name}: ${formatPaiseToRupees(row.total_paise)}`
+      );
+    }
+  } else if (rentBills.length > 0) {
+    lines.push('', 'All residents have settled rent for this month.');
+  }
+
+  return lines.join('\n');
+}
+
+function escapeCsvCell(value: string | number): string {
+  const str = String(value);
+  if (/[",\r\n]/.test(str)) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
+}
+
+/**
+ * Generates an RFC-4180 CSV spreadsheet string for monthly rent collection.
+ */
+export function buildMonthlyRentCsv(params: {
+  propertyName: string;
+  monthLabel: string;
+  rentBills: MonthlyRentExportRow[];
+}): string {
+  const header = 'Property,Month,Room,Resident,Phone,Rent (INR),Washing Machine (INR),Total (INR),Status';
+  const rows = params.rentBills.map((row) =>
+    [
+      params.propertyName,
+      params.monthLabel,
+      row.room_number,
+      row.full_name,
+      row.phone_number ?? '',
+      Math.round((row.rent_paise || 0) / 100),
+      Math.round((row.wm_paise || 0) / 100),
+      Math.round((row.total_paise || 0) / 100),
+      row.status === 'paid' || row.status === 'settled' ? 'Paid' : 'Pending',
+    ]
+      .map(escapeCsvCell)
+      .join(',')
+  );
+  return [header, ...rows].join('\n');
+}
+

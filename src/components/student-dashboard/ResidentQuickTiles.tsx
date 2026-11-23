@@ -1,6 +1,6 @@
 import React from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Check, CheckCircle2, LogIn, LogOut, Receipt } from 'lucide-react-native';
+import { Check, CheckCircle2, Clock, LogIn, LogOut, Receipt } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
@@ -15,6 +15,7 @@ import type {
 interface ResidentQuickTilesProps {
   pendingDuesPaise: number | null;
   pendingReviewPaise?: number | null;
+  currentMonthBillGenerated?: boolean;
   menus?: Record<MealType, ResidentFoodMenu | null>;
   latestMovement: ResidentMovementRecord | null;
   savingMovement: boolean;
@@ -28,6 +29,7 @@ interface ResidentQuickTilesProps {
 export function ResidentQuickTiles({
   pendingDuesPaise,
   pendingReviewPaise = null,
+  currentMonthBillGenerated,
   latestMovement,
   savingMovement,
   washingMachineSlot,
@@ -82,6 +84,26 @@ export function ResidentQuickTiles({
           </View>
           <Receipt size={24} color={OwnerTheme.colors.warning} />
         </Pressable>
+      ) : currentMonthBillGenerated === false ? (
+        <Pressable
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.heroFocusCard,
+            styles.heroFocusCardPendingGen,
+            pressed && styles.btnPressed,
+          ]}
+          onPress={onPressRentDue}>
+          <View style={styles.pendingGenIconWrap}>
+            <Clock size={20} color="#475569" />
+          </View>
+          <View style={styles.heroFocusLeft}>
+            <Text style={styles.pendingGenTitle}>Monthly bill not generated yet</Text>
+            <Text style={styles.pendingGenSub} numberOfLines={1}>
+              Owner will generate this month&apos;s bill soon
+            </Text>
+          </View>
+          <Text style={styles.pendingGenLink}>View bills ›</Text>
+        </Pressable>
       ) : (
         <Pressable
           accessibilityRole="button"
@@ -97,7 +119,7 @@ export function ResidentQuickTiles({
           <View style={styles.heroFocusLeft}>
             <Text style={styles.settledTitle}>Rent settled</Text>
             <Text style={styles.settledSub} numberOfLines={1}>
-              Tap to view receipts &amp; monthly summary
+              View receipts &amp; monthly summary
             </Text>
           </View>
           <Text style={styles.settledLink}>View bills ›</Text>
@@ -240,6 +262,35 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: OwnerTheme.colors.success,
+  },
+  heroFocusCardPendingGen: {
+    borderLeftColor: '#64748B',
+    borderColor: '#CBD5E1',
+    backgroundColor: '#F8FAFC',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  pendingGenIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#E2E8F0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pendingGenTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: '#1E293B',
+  },
+  pendingGenSub: {
+    fontSize: 12,
+    color: '#475569',
+  },
+  pendingGenLink: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: OwnerTheme.colors.primary,
   },
   heroFocusLeft: {
     flex: 1,

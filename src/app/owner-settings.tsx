@@ -37,8 +37,14 @@ import { useToast } from '@/context/toast-context';
 import { supabase } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader } from '@/components/ui/owner';
+import { WmUnitsModal } from '@/components/owner-dashboard/OwnerDashboardModals';
 import { BiometricSettingsRow } from '@/components/biometric-settings-row';
 import { SettingsComplianceSection } from '@/components/settings-compliance-section';
+import {
+  useOwnerDashboardQuery,
+  useOwnerReleaseWmMutation,
+  useOwnerSetWmOutOfOrderMutation,
+} from '@/hooks/use-dashboards';
 
 interface WashingMachineRow {
   id: string;
@@ -65,8 +71,97 @@ export default function OwnerSettingsScreen() {
   });
   const [wmCountLoading, setWmCountLoading] = useState(false);
   const [savingWm, setSavingWm] = useState(false);
+  const [wmLiveModalVisible, setWmLiveModalVisible] = useState(false);
 
   const selectedPropertyId = selectedProperty?.id ?? null;
+
+  const dashboardQuery = useOwnerDashboardQuery(
+    selectedPropertyId,
+    Boolean(selectedPropertyId) && wmLiveModalVisible
+  );
+  const releaseWmMutation = useOwnerReleaseWmMutation();
+  const outOfOrderWmMutation = useOwnerSetWmOutOfOrderMutation();
+
+  const wmUnits = dashboardQuery.data?.wmUnits ?? [];
+  const wmSummary = dashboardQuery.data?.wmSummary ?? {
+    totalCount: wmCount,
+    inUseCount: 0,
+    freeCount: wmCount,
+    outOfOrderCount: 0,
+  };
+  const outOfOrderCount =
+    wmSummary.outOfOrderCount ??
+    wmUnits.filter((u) => u.status === 'out_of_order').length;
+  const busyMachineId = releaseWmMutation.isPending
+    ? releaseWmMutation.variables.machineId
+    : outOfOrderWmMutation.isPending
+      ? outOfOrderWmMutation.variables.machineId
+      : null;
+
+  const handleOwnerReleaseWm = (machineId: string, machineName: string) => {
+    if (!selectedPropertyId) return;
+    Alert.alert(
+      'Free Up Machine',
+      `Are you sure you want to free up ${machineName}? This will end the current resident's session.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Free Up',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await releaseWmMutation.mutateAsync({
+                propertyId: selectedPropertyId,
+                machineId,
+              });
+            } catch (err) {
+              Alert.alert(
+                'Error',
+                err instanceof Error ? err.message : 'Failed to release washing machine.'
+              );
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleOwnerSetOutOfOrder = (
+    machineId: string,
+    machineName: string,
+    outOfOrder: boolean,
+    isInUse: boolean
+  ) => {
+    if (!selectedPropertyId) return;
+    const applyChange = async () => {
+      try {
+        await outOfOrderWmMutation.mutateAsync({
+          propertyId: selectedPropertyId,
+          machineId,
+          outOfOrder,
+        });
+      } catch (err) {
+        Alert.alert(
+          'Error',
+          err instanceof Error
+            ? err.message
+            : 'Failed to update washing machine status.'
+        );
+      }
+    };
+    if (outOfOrder) {
+      Alert.alert(
+        'Mark Out of Order',
+        `Mark ${machineName} as out of order?${isInUse ? " This will end the current resident's session." : ''}`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Mark Out of Order', style: 'destructive', onPress: applyChange },
+        ]
+      );
+      return;
+    }
+    void applyChange();
+  };
 
   const fetchWmDataForProperty = useCallback(async (propertyId: string) => {
     let storedNames: Record<string, string> = {};
@@ -416,18 +511,46 @@ export default function OwnerSettingsScreen() {
               accessibilityRole="button"
               style={({ pressed }) => [
                 styles.settingsRow,
+                styles.rowDivider,
                 pressed && styles.rowPressed,
               ]}
               onPress={openWmModal}>
-              <View style={[styles.iconWrap, { backgroundColor: '#E0F2FE' }]}>
-                <Disc3 size={18} color="#0284C7" />
+              <View
+                style={[
+                  styles.iconWrap,
+                  { backgroundColor: OwnerTheme.colors.primaryLight },
+                ]}>
+                <Disc3 size={18} color={OwnerTheme.colors.primary} />
               </View>
               <View style={styles.rowContent}>
                 <Text style={styles.rowTitle}>Washing Machines</Text>
                 <Text style={styles.rowSubtitle}>
                   {wmCountLoading
                     ? 'Checking units...'
-                    : `${wmCount} unit${wmCount === 1 ? '' : 's'} configured for ${selectedProperty?.name || 'this PG'}`}
+                    : `${wmCount} unit${wmCount === 1 ? '' : 's'} configured · Capacity & names`}
+                </Text>
+              </View>
+              <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              style={({ pressed }) => [
+                styles.settingsRow,
+                pressed && styles.rowPressed,
+              ]}
+              onPress={() => setWmLiveModalVisible(true)}>
+              <View
+                style={[
+                  styles.iconWrap,
+                  { backgroundColor: OwnerTheme.colors.infoLight },
+                ]}>
+                <Disc3 size={18} color={OwnerTheme.colors.info} />
+              </View>
+              <View style={styles.rowContent}>
+                <Text style={styles.rowTitle}>Live Machine Status</Text>
+                <Text style={styles.rowSubtitle}>
+                  Inspect active washes, force-free, or mark out of order
                 </Text>
               </View>
               <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
@@ -734,6 +857,18 @@ export default function OwnerSettingsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      <WmUnitsModal
+        visible={wmLiveModalVisible}
+        propertyName={selectedProperty?.name || 'Live Usage'}
+        wmSummary={wmSummary}
+        wmUnits={wmUnits}
+        outOfOrderCount={outOfOrderCount}
+        busyMachineId={busyMachineId}
+        onRelease={handleOwnerReleaseWm}
+        onSetOutOfOrder={handleOwnerSetOutOfOrder}
+        onClose={() => setWmLiveModalVisible(false)}
+      />
     </SafeAreaView>
   );
 }

@@ -257,7 +257,7 @@ function PropertyEditForm({
           style={OwnerSharedStyles.textInput}
           value={propName}
           onChangeText={setPropName}
-          placeholder="e.g. Shalom Boys PG"
+          placeholder="e.g. Sunrise Boys PG"
           placeholderTextColor={OwnerTheme.colors.textMuted}
         />
       </View>
@@ -318,7 +318,7 @@ function PropertyEditForm({
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="email-address"
-          placeholder="e.g. shalompg@okaxis"
+          placeholder="e.g. yourpg@okaxis"
           placeholderTextColor={OwnerTheme.colors.textMuted}
           editable={!saving}
         />
@@ -358,7 +358,7 @@ function PropertyEditForm({
           onChangeText={setWifiSsid}
           autoCapitalize="none"
           autoCorrect={false}
-          placeholder="e.g. Shalom_PG_WiFi"
+          placeholder="e.g. PG_WiFi_5G"
           placeholderTextColor={OwnerTheme.colors.textMuted}
           editable={!saving}
         />
@@ -775,7 +775,7 @@ export default function OwnerPropertiesScreen() {
                   style={OwnerSharedStyles.textInput}
                   value={newPgName}
                   onChangeText={setNewPgName}
-                  placeholder="e.g. Shalom Girls PG"
+                  placeholder="e.g. Sunrise Girls PG"
                   placeholderTextColor={OwnerTheme.colors.textMuted}
                 />
               </View>

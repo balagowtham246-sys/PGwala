@@ -79,7 +79,7 @@ export function useOwnerMovementQuery(params: {
         if (!properties || properties.length === 0) {
           return {
             propertyId: null,
-            propertyName: activePropName || 'Shalom Residency',
+            propertyName: activePropName || 'My PG',
             allResidents: [],
             activeResidents: [],
             logs: [],
@@ -108,7 +108,7 @@ export function useOwnerMovementQuery(params: {
       if (allResidentIds.length === 0) {
         return {
           propertyId: activePropId,
-          propertyName: activePropName || 'Shalom Residency',
+          propertyName: activePropName || 'My PG',
           allResidents,
           activeResidents,
           logs: [],
@@ -148,7 +148,7 @@ export function useOwnerMovementQuery(params: {
 
       return {
         propertyId: activePropId,
-        propertyName: activePropName || 'Shalom Residency',
+        propertyName: activePropName || 'My PG',
         allResidents,
         activeResidents,
         logs: sortLogsDescending((logsData as MovementLogItem[]) ?? []),
@@ -187,7 +187,9 @@ export function useStudentGateHistoryQuery(residentId: string | undefined) {
       const rangeEnd = pageParam + GATE_HISTORY_PAGE_SIZE - 1;
       const { data, error } = await supabase
         .from('movement_logs')
-        .select('*')
+        .select(
+          'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
+        )
         .eq('resident_id', residentId!)
         .order('event_time', { ascending: false })
         .range(pageParam, rangeEnd);
@@ -306,16 +308,14 @@ export function useRecordStudentMovementMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: async (data) => {
+    onSettled: (data) => {
       if (data?.queued) {
         // Offline queue holds the authoritative pending state until sync completes
         return;
       }
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.movement.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
-      ]);
+      void qc.invalidateQueries({ queryKey: queryKeys.movement.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
     },
   });
 }

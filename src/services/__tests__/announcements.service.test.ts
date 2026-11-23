@@ -180,15 +180,19 @@ describe('announcements.service', () => {
     });
 
     expect(mockedInvokeEdgeFunction).toHaveBeenCalledTimes(1);
-    expect(mockedInvokeEdgeFunction).toHaveBeenCalledWith('send-announcement', {
-      property_id: 'prop-1',
-      property_name: 'Sunrise PG',
-      title: 'Water Tank Cleaning',
-      message: 'Supply off from 10 AM to 12 PM.',
-      audience: 'all',
-      room_number: null,
-      recipient_profile_ids: ['prof-1'],
-    });
+    expect(mockedInvokeEdgeFunction).toHaveBeenCalledWith(
+      'send-announcement',
+      expect.objectContaining({
+        property_id: 'prop-1',
+        property_name: 'Sunrise PG',
+        title: 'Water Tank Cleaning',
+        message: 'Supply off from 10 AM to 12 PM.',
+        audience: 'all',
+        room_number: null,
+        idempotency_key: expect.any(String),
+        recipient_profile_ids: ['prof-1'],
+      })
+    );
     expect(insertMock).toHaveBeenCalledWith(
       expect.objectContaining({
         property_id: 'prop-1',

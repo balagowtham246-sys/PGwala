@@ -174,13 +174,25 @@ export function useUpdateResidentWithLockMutation() {
         qc.setQueryData(key, list);
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.movement.all }),
-      ]);
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({
+        queryKey: queryKeys.residents.detail(variables.residentId),
+      });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.residents.directory(variables.propertyId),
+      });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.residents.activePeers(variables.propertyId),
+      });
+      void qc.invalidateQueries({
+        queryKey: ['dashboard', 'owner', variables.propertyId],
+      });
+      void qc.invalidateQueries({
+        queryKey: ['billing', 'owner', variables.propertyId],
+      });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.movement.property(variables.propertyId),
+      });
     },
   });
 }
@@ -193,13 +205,21 @@ export interface CheckoutResidentVariables {
   finalBillPaise: number;
 }
 
+interface CheckoutResidentMutationContext {
+  detailKey: ReturnType<typeof queryKeys.residents.detail>;
+  directoryKey: ReturnType<typeof queryKeys.residents.directory>;
+  previousDetail: ResidentProfileData | undefined;
+  previousDirectory: ResidentDirectoryItem[] | undefined;
+}
+
 export function useCheckoutResidentMutation() {
   const qc = useQueryClient();
 
   return useMutation<
     { finalBillCreated: boolean; releasedMachinesCount: number },
     Error,
-    CheckoutResidentVariables
+    CheckoutResidentVariables,
+    CheckoutResidentMutationContext
   >({
     mutationFn: async (input) => {
       const res = await checkoutResident(input);
@@ -208,14 +228,59 @@ export function useCheckoutResidentMutation() {
       }
       return res.data;
     },
-    onSettled: async () => {
+    onMutate: async ({ residentId, propertyId, leavingDateIso }) => {
+      const detailKey = queryKeys.residents.detail(residentId);
+      const directoryKey = queryKeys.residents.directory(propertyId);
       await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.billing.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.movement.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.washingMachine.all }),
+        qc.cancelQueries({ queryKey: detailKey }),
+        qc.cancelQueries({ queryKey: directoryKey }),
       ]);
+      const previousDetail = qc.getQueryData<ResidentProfileData>(detailKey);
+      const previousDirectory = qc.getQueryData<ResidentDirectoryItem[]>(directoryKey);
+
+      if (previousDetail) {
+        qc.setQueryData<ResidentProfileData>(detailKey, {
+          ...previousDetail,
+          isActive: false,
+          leftAt: leavingDateIso,
+        });
+      }
+      if (previousDirectory) {
+        qc.setQueryData<ResidentDirectoryItem[]>(
+          directoryKey,
+          previousDirectory.filter((item) => item.id !== residentId)
+        );
+      }
+
+      return { detailKey, directoryKey, previousDetail, previousDirectory };
+    },
+    onError: (_err, _vars, context) => {
+      if (!context) return;
+      qc.setQueryData(context.detailKey, context.previousDetail);
+      qc.setQueryData(context.directoryKey, context.previousDirectory);
+    },
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({
+        queryKey: queryKeys.residents.detail(variables.residentId),
+      });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.residents.directory(variables.propertyId),
+      });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.residents.activePeers(variables.propertyId),
+      });
+      void qc.invalidateQueries({
+        queryKey: ['dashboard', 'owner', variables.propertyId],
+      });
+      void qc.invalidateQueries({
+        queryKey: ['billing', 'owner', variables.propertyId],
+      });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.movement.property(variables.propertyId),
+      });
+      void qc.invalidateQueries({
+        queryKey: queryKeys.washingMachine.property(variables.propertyId),
+      });
     },
   });
 }

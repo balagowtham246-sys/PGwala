@@ -1,12 +1,12 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  FlatList,
   KeyboardAvoidingView,
   Linking,
   Platform,
   Pressable,
   RefreshControl,
-  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -260,6 +260,25 @@ export default function OwnerAnnouncementsScreen() {
     }
   };
 
+  const handleOpenWhatsAppGroupShare = async () => {
+    if (!whatsappState) return;
+    const encoded = encodeURIComponent(whatsappState.whatsappMessage);
+    const waUrl = `https://wa.me/?text=${encoded}`;
+    try {
+      const supported = await Linking.canOpenURL(waUrl);
+      if (supported) {
+        await Linking.openURL(waUrl);
+        return;
+      }
+      await Share.share({ message: whatsappState.whatsappMessage });
+    } catch (err) {
+      Alert.alert(
+        'WhatsApp Unavailable',
+        extractErrorMessage(err, 'Could not open WhatsApp.')
+      );
+    }
+  };
+
   const handleShareBroadcastAgain = async () => {
     if (!whatsappState) return;
     try {
@@ -289,6 +308,56 @@ export default function OwnerAnnouncementsScreen() {
       ? `Send Push Notice (${recipientCount} ${recipientCount === 1 ? 'resident' : 'residents'})`
       : `Send via WhatsApp (${recipientCount} ${recipientCount === 1 ? 'resident' : 'residents'})`;
 
+  const renderAnnouncementItem = useCallback(
+    ({ item }: { item: (typeof announcements)[number] }) => {
+      const audienceLabel =
+        item.audience === 'room' && item.roomNumber
+          ? formatRoomLabel(item.roomNumber)
+          : 'All residents';
+      const channelLabel = item.channel === 'whatsapp' ? 'WhatsApp' : 'Push';
+      const timeLabel = formatGateEventTimestamp(item.createdAt);
+
+      return (
+        <View style={styles.historyCard}>
+          <View style={styles.historyTopRow}>
+            <Text style={styles.historyTitle}>{item.title}</Text>
+            {timeLabel ? (
+              <Text style={styles.historyTimestamp}>{timeLabel}</Text>
+            ) : null}
+          </View>
+
+          <Text style={styles.historyMessage}>{item.message}</Text>
+
+          <View style={styles.historyMetaRow}>
+            <View style={styles.badgesWrap}>
+              <StatusBadge
+                label={audienceLabel}
+                variant={item.audience === 'room' ? 'info' : 'neutral'}
+                size="sm"
+              />
+              <StatusBadge
+                label={channelLabel}
+                variant={item.channel === 'whatsapp' ? 'success' : 'info'}
+                size="sm"
+              />
+            </View>
+            <Text style={styles.historyRecipientCount}>
+              {`${item.recipientCount} ${
+                item.recipientCount === 1 ? 'recipient' : 'recipients'
+              }`}
+            </Text>
+          </View>
+        </View>
+      );
+    },
+    []
+  );
+
+  const announcementKeyExtractor = useCallback(
+    (item: (typeof announcements)[number]) => item.id,
+    []
+  );
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
@@ -300,422 +369,399 @@ export default function OwnerAnnouncementsScreen() {
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={handleRefresh}
-              colors={[OwnerTheme.colors.primary]}
-            />
-          }>
-          {loadingProperties && !selectedPropertyId ? (
+        {loadingProperties && !selectedPropertyId ? (
+          <View style={styles.scrollContent}>
             <LoadingState message="Loading property..." />
-          ) : !selectedPropertyId ? (
+          </View>
+        ) : !selectedPropertyId ? (
+          <View style={styles.scrollContent}>
             <EmptyState
               icon={Building2}
               title="No Property Selected"
               description="Select or add a PG property to broadcast announcements to your residents."
             />
-          ) : (
-            <>
-              {/* Compose Card */}
-              <View style={styles.card}>
-                <View style={styles.cardHeaderRow}>
-                  <View style={styles.cardHeaderIcon}>
-                    <Megaphone size={17} color={OwnerTheme.colors.primary} />
-                  </View>
-                  <View style={styles.cardHeaderTextWrap}>
-                    <Text style={styles.cardTitle}>Broadcast Notice</Text>
-                    <Text style={styles.cardSubtitle}>
-                      Notify all residents or target a specific room
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Audience Selector */}
-                <Text style={styles.fieldLabel}>Audience</Text>
-                <View style={styles.toggleRow}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: audience === 'all' }}
-                    onPress={() => {
-                      triggerSelectionHaptic();
-                      setAudience('all');
-                      setFormError(null);
-                    }}
-                    style={[
-                      styles.togglePill,
-                      audience === 'all' && styles.togglePillActive,
-                    ]}>
-                    <Users
-                      size={15}
-                      color={
-                        audience === 'all'
-                          ? OwnerTheme.colors.primary
-                          : OwnerTheme.colors.textSecondary
-                      }
-                    />
-                    <Text
-                      style={[
-                        styles.togglePillText,
-                        audience === 'all' && styles.togglePillTextActive,
-                      ]}>
-                      All residents ({residents.length})
-                    </Text>
-                  </Pressable>
-
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: audience === 'room' }}
-                    onPress={() => {
-                      triggerSelectionHaptic();
-                      setAudience('room');
-                      if (!selectedRoom && rooms[0]) {
-                        setSelectedRoom(rooms[0].roomNumber);
-                      }
-                      setFormError(null);
-                    }}
-                    style={[
-                      styles.togglePill,
-                      audience === 'room' && styles.togglePillActive,
-                    ]}>
-                    <Building2
-                      size={15}
-                      color={
-                        audience === 'room'
-                          ? OwnerTheme.colors.primary
-                          : OwnerTheme.colors.textSecondary
-                      }
-                    />
-                    <Text
-                      style={[
-                        styles.togglePillText,
-                        audience === 'room' && styles.togglePillTextActive,
-                      ]}>
-                      Single room
-                    </Text>
-                  </Pressable>
-                </View>
-
-                {/* Room Chips when Single room is active */}
-                {audience === 'room' && (
-                  <View style={styles.roomPickerBox}>
-                    <Text style={styles.roomPickerLabel}>Select Room</Text>
-                    {loadingTargets && rooms.length === 0 ? (
-                      <Text style={styles.inlineHint}>Loading rooms...</Text>
-                    ) : rooms.length === 0 ? (
-                      <Text style={styles.inlineHint}>
-                        No active rooms found for this property yet. Add residents with room
-                        numbers to target a specific room.
+          </View>
+        ) : (
+          <FlatList
+            data={loadingHistory && announcements.length === 0 ? [] : announcements}
+            keyExtractor={announcementKeyExtractor}
+            renderItem={renderAnnouncementItem}
+            contentContainerStyle={styles.scrollContent}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+            initialNumToRender={10}
+            maxToRenderPerBatch={10}
+            windowSize={7}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={handleRefresh}
+                colors={[OwnerTheme.colors.primary]}
+              />
+            }
+            ListHeaderComponent={
+              <View style={styles.historyList}>
+                {/* Compose Card */}
+                <View style={styles.card}>
+                  <View style={styles.cardHeaderRow}>
+                    <View style={styles.cardHeaderIcon}>
+                      <Megaphone size={17} color={OwnerTheme.colors.primary} />
+                    </View>
+                    <View style={styles.cardHeaderTextWrap}>
+                      <Text style={styles.cardTitle}>Broadcast Notice</Text>
+                      <Text style={styles.cardSubtitle}>
+                        Notify all residents or target a specific room
                       </Text>
-                    ) : (
-                      <View style={styles.roomChipsWrap}>
-                        {rooms.map((room) => {
-                          const isSelected = effectiveRoomNumber === room.roomNumber;
-                          return (
-                            <Pressable
-                              key={room.roomNumber}
-                              accessibilityRole="button"
-                              accessibilityState={{ selected: isSelected }}
-                              onPress={() => {
-                                triggerSelectionHaptic();
-                                setSelectedRoom(room.roomNumber);
-                                setFormError(null);
-                              }}
-                              style={[
-                                styles.roomChip,
-                                isSelected && styles.roomChipActive,
-                              ]}>
-                              <Text
+                    </View>
+                  </View>
+
+                  {/* Audience Selector */}
+                  <Text style={styles.fieldLabel}>Audience</Text>
+                  <View style={styles.toggleRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: audience === 'all' }}
+                      onPress={() => {
+                        triggerSelectionHaptic();
+                        setAudience('all');
+                        setFormError(null);
+                      }}
+                      style={[
+                        styles.togglePill,
+                        audience === 'all' && styles.togglePillActive,
+                      ]}>
+                      <Users
+                        size={15}
+                        color={
+                          audience === 'all'
+                            ? OwnerTheme.colors.primary
+                            : OwnerTheme.colors.textSecondary
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.togglePillText,
+                          audience === 'all' && styles.togglePillTextActive,
+                        ]}>
+                        All residents ({residents.length})
+                      </Text>
+                    </Pressable>
+
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: audience === 'room' }}
+                      onPress={() => {
+                        triggerSelectionHaptic();
+                        setAudience('room');
+                        if (!selectedRoom && rooms[0]) {
+                          setSelectedRoom(rooms[0].roomNumber);
+                        }
+                        setFormError(null);
+                      }}
+                      style={[
+                        styles.togglePill,
+                        audience === 'room' && styles.togglePillActive,
+                      ]}>
+                      <Building2
+                        size={15}
+                        color={
+                          audience === 'room'
+                            ? OwnerTheme.colors.primary
+                            : OwnerTheme.colors.textSecondary
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.togglePillText,
+                          audience === 'room' && styles.togglePillTextActive,
+                        ]}>
+                        Single room
+                      </Text>
+                    </Pressable>
+                  </View>
+
+                  {/* Room Chips when Single room is active */}
+                  {audience === 'room' && (
+                    <View style={styles.roomPickerBox}>
+                      <Text style={styles.roomPickerLabel}>Select Room</Text>
+                      {loadingTargets && rooms.length === 0 ? (
+                        <Text style={styles.inlineHint}>Loading rooms...</Text>
+                      ) : rooms.length === 0 ? (
+                        <Text style={styles.inlineHint}>
+                          No active rooms found for this property yet. Add residents with room
+                          numbers to target a specific room.
+                        </Text>
+                      ) : (
+                        <View style={styles.roomChipsWrap}>
+                          {rooms.map((room) => {
+                            const isSelected = effectiveRoomNumber === room.roomNumber;
+                            return (
+                              <Pressable
+                                key={room.roomNumber}
+                                accessibilityRole="button"
+                                accessibilityState={{ selected: isSelected }}
+                                onPress={() => {
+                                  triggerSelectionHaptic();
+                                  setSelectedRoom(room.roomNumber);
+                                  setFormError(null);
+                                }}
                                 style={[
-                                  styles.roomChipText,
-                                  isSelected && styles.roomChipTextActive,
+                                  styles.roomChip,
+                                  isSelected && styles.roomChipActive,
                                 ]}>
-                                {`${room.label} (${room.residentCount})`}
-                              </Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    )}
+                                <Text
+                                  style={[
+                                    styles.roomChipText,
+                                    isSelected && styles.roomChipTextActive,
+                                  ]}>
+                                  {`${room.label} (${room.residentCount})`}
+                                </Text>
+                              </Pressable>
+                            );
+                          })}
+                        </View>
+                      )}
+                    </View>
+                  )}
+
+                  {/* Channel Selector */}
+                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Delivery Channel</Text>
+                  <View style={styles.toggleRow}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: channel === 'push' }}
+                      onPress={() => {
+                        triggerSelectionHaptic();
+                        setChannel('push');
+                      }}
+                      style={[
+                        styles.togglePill,
+                        channel === 'push' && styles.togglePillActive,
+                      ]}>
+                      <Bell
+                        size={15}
+                        color={
+                          channel === 'push'
+                            ? OwnerTheme.colors.primary
+                            : OwnerTheme.colors.textSecondary
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.togglePillText,
+                          channel === 'push' && styles.togglePillTextActive,
+                        ]}>
+                        Push notification
+                      </Text>
+                    </Pressable>
+
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: channel === 'whatsapp' }}
+                      onPress={() => {
+                        triggerSelectionHaptic();
+                        setChannel('whatsapp');
+                      }}
+                      style={[
+                        styles.togglePill,
+                        channel === 'whatsapp' && styles.togglePillActive,
+                      ]}>
+                      <MessageCircle
+                        size={15}
+                        color={
+                          channel === 'whatsapp'
+                            ? OwnerTheme.colors.primary
+                            : OwnerTheme.colors.textSecondary
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.togglePillText,
+                          channel === 'whatsapp' && styles.togglePillTextActive,
+                        ]}>
+                        WhatsApp
+                      </Text>
+                    </Pressable>
+                  </View>
+
+                  {/* Title Input */}
+                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Title *</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={title}
+                    onChangeText={(val) => {
+                      setTitle(val);
+                      if (formError) setFormError(null);
+                    }}
+                    placeholder="e.g., Water Tank Cleaning Tomorrow"
+                    placeholderTextColor={OwnerTheme.colors.textMuted}
+                    maxLength={120}
+                    returnKeyType="next"
+                    editable={!sending}
+                  />
+
+                  {/* Message Input */}
+                  <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Message *</Text>
+                  <TextInput
+                    style={[styles.input, styles.textArea]}
+                    value={message}
+                    onChangeText={(val) => {
+                      setMessage(val);
+                      if (formError) setFormError(null);
+                    }}
+                    placeholder="Write your notice for residents..."
+                    placeholderTextColor={OwnerTheme.colors.textMuted}
+                    multiline
+                    numberOfLines={4}
+                    textAlignVertical="top"
+                    maxLength={1000}
+                    editable={!sending}
+                  />
+
+                  {formError && <ErrorState message={formError} style={styles.formError} />}
+
+                  <PrimaryButton
+                    label={sendButtonLabel}
+                    icon={channel === 'push' ? Send : MessageCircle}
+                    loading={sending}
+                    disabled={sending}
+                    onPress={handleSend}
+                    style={styles.sendBtn}
+                  />
+                </View>
+
+                {/* Inline Push Confirmation Banner */}
+                {pushBanner && (
+                  <View style={styles.confirmationBanner}>
+                    <CheckCircle2
+                      size={18}
+                      color={OwnerTheme.colors.success}
+                      style={{ marginTop: 1 }}
+                    />
+                    <View style={styles.confirmationTextCol}>
+                      <Text style={styles.confirmationTitle}>
+                        {`Sent "${pushBanner.title}" to ${pushBanner.recipientCount} ${
+                          pushBanner.recipientCount === 1 ? 'resident' : 'residents'
+                        }`}
+                      </Text>
+                      {pushBanner.pushDeliveredVia === 'local_fallback' && (
+                        <Text style={styles.fallbackNote}>
+                          Saved with local fallback: remote push delivery is unavailable right now,
+                          so live device push notifications could not be dispatched.
+                        </Text>
+                      )}
+                    </View>
                   </View>
                 )}
 
-                {/* Channel Selector */}
-                <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Delivery Channel</Text>
-                <View style={styles.toggleRow}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: channel === 'push' }}
-                    onPress={() => {
-                      triggerSelectionHaptic();
-                      setChannel('push');
-                    }}
-                    style={[
-                      styles.togglePill,
-                      channel === 'push' && styles.togglePillActive,
-                    ]}>
-                    <Bell
-                      size={15}
-                      color={
-                        channel === 'push'
-                          ? OwnerTheme.colors.primary
-                          : OwnerTheme.colors.textSecondary
-                      }
-                    />
-                    <Text
-                      style={[
-                        styles.togglePillText,
-                        channel === 'push' && styles.togglePillTextActive,
-                      ]}>
-                      Push notification
+                {/* WhatsApp Recipients Action Section */}
+                {whatsappState && (
+                  <View style={styles.card}>
+                    <View style={styles.whatsappHeaderRow}>
+                      <View style={styles.whatsappHeaderLeft}>
+                        <MessageCircle size={17} color={OwnerTheme.colors.success} />
+                        <Text style={styles.cardTitle}>WhatsApp Recipients</Text>
+                      </View>
+                      <StatusBadge
+                        label={`${whatsappState.recipientCount} matched`}
+                        variant="success"
+                        size="sm"
+                      />
+                    </View>
+
+                    <Text style={styles.whatsappSubtext}>
+                      Tap any resident below to open their pre-filled WhatsApp message, or share the
+                      broadcast text again.
                     </Text>
-                  </Pressable>
 
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: channel === 'whatsapp' }}
-                    onPress={() => {
-                      triggerSelectionHaptic();
-                      setChannel('whatsapp');
-                    }}
-                    style={[
-                      styles.togglePill,
-                      channel === 'whatsapp' && styles.togglePillActive,
-                    ]}>
-                    <MessageCircle
-                      size={15}
-                      color={
-                        channel === 'whatsapp'
-                          ? OwnerTheme.colors.primary
-                          : OwnerTheme.colors.textSecondary
-                      }
-                    />
-                    <Text
-                      style={[
-                        styles.togglePillText,
-                        channel === 'whatsapp' && styles.togglePillTextActive,
-                      ]}>
-                      WhatsApp
-                    </Text>
-                  </Pressable>
-                </View>
-
-                {/* Title Input */}
-                <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Title *</Text>
-                <TextInput
-                  style={styles.input}
-                  value={title}
-                  onChangeText={(val) => {
-                    setTitle(val);
-                    if (formError) setFormError(null);
-                  }}
-                  placeholder="e.g., Water Tank Cleaning Tomorrow"
-                  placeholderTextColor={OwnerTheme.colors.textMuted}
-                  maxLength={120}
-                  returnKeyType="next"
-                  editable={!sending}
-                />
-
-                {/* Message Input */}
-                <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Message *</Text>
-                <TextInput
-                  style={[styles.input, styles.textArea]}
-                  value={message}
-                  onChangeText={(val) => {
-                    setMessage(val);
-                    if (formError) setFormError(null);
-                  }}
-                  placeholder="Write your notice for residents..."
-                  placeholderTextColor={OwnerTheme.colors.textMuted}
-                  multiline
-                  numberOfLines={4}
-                  textAlignVertical="top"
-                  maxLength={1000}
-                  editable={!sending}
-                />
-
-                {formError && <ErrorState message={formError} style={styles.formError} />}
-
-                <PrimaryButton
-                  label={sendButtonLabel}
-                  icon={channel === 'push' ? Send : MessageCircle}
-                  loading={sending}
-                  disabled={sending}
-                  onPress={handleSend}
-                  style={styles.sendBtn}
-                />
-              </View>
-
-              {/* Inline Push Confirmation Banner */}
-              {pushBanner && (
-                <View style={styles.confirmationBanner}>
-                  <CheckCircle2
-                    size={18}
-                    color={OwnerTheme.colors.success}
-                    style={{ marginTop: 1 }}
-                  />
-                  <View style={styles.confirmationTextCol}>
-                    <Text style={styles.confirmationTitle}>
-                      {`Sent "${pushBanner.title}" to ${pushBanner.recipientCount} ${
-                        pushBanner.recipientCount === 1 ? 'resident' : 'residents'
-                      }`}
-                    </Text>
-                    {pushBanner.pushDeliveredVia === 'local_fallback' && (
-                      <Text style={styles.fallbackNote}>
-                        Saved with local fallback: remote push delivery is unavailable right now,
-                        so live device push notifications could not be dispatched.
+                    {whatsappRecipientsWithPhone.length > 0 ? (
+                      <View style={styles.recipientList}>
+                        {whatsappRecipientsWithPhone.map((recipient, idx) => (
+                          <View
+                            key={recipient.id}
+                            style={[
+                              styles.recipientRow,
+                              idx === whatsappRecipientsWithPhone.length - 1 &&
+                                styles.recipientRowLast,
+                            ]}>
+                            <View style={styles.recipientInfo}>
+                              <Text style={styles.recipientName} numberOfLines={1}>
+                                {recipient.fullName}
+                              </Text>
+                              {recipient.phoneNumber && (
+                                <Text style={styles.recipientPhone}>{recipient.phoneNumber}</Text>
+                              )}
+                            </View>
+                            <Pressable
+                              accessibilityRole="button"
+                              accessibilityLabel={`Send WhatsApp to ${recipient.fullName}`}
+                              onPress={() => void handleOpenWhatsAppRecipient(recipient)}
+                              style={({ pressed }) => [
+                                styles.whatsappChipBtn,
+                                pressed && { opacity: 0.8 },
+                              ]}>
+                              <ExternalLink size={13} color={OwnerTheme.colors.success} />
+                              <Text style={styles.whatsappChipBtnText}>Message</Text>
+                            </Pressable>
+                          </View>
+                        ))}
+                      </View>
+                    ) : (
+                      <Text style={styles.inlineHint}>
+                        None of the matched residents have a valid phone number on file for 1-tap
+                        WhatsApp links.
                       </Text>
                     )}
-                  </View>
-                </View>
-              )}
 
-              {/* WhatsApp Recipients Action Section */}
-              {whatsappState && (
-                <View style={styles.card}>
-                  <View style={styles.whatsappHeaderRow}>
-                    <View style={styles.whatsappHeaderLeft}>
-                      <MessageCircle size={17} color={OwnerTheme.colors.success} />
-                      <Text style={styles.cardTitle}>WhatsApp Recipients</Text>
-                    </View>
-                    <StatusBadge
-                      label={`${whatsappState.recipientCount} matched`}
-                      variant="success"
-                      size="sm"
+                    <PrimaryButton
+                      label="Share to PG WhatsApp Group"
+                      icon={MessageCircle}
+                      onPress={() => void handleOpenWhatsAppGroupShare()}
+                      style={styles.shareAgainBtn}
+                    />
+
+                    <SecondaryButton
+                      label="Share via Other Apps"
+                      icon={Share2}
+                      onPress={handleShareBroadcastAgain}
+                      style={styles.shareAgainBtn}
                     />
                   </View>
+                )}
 
-                  <Text style={styles.whatsappSubtext}>
-                    Tap any resident below to open their pre-filled WhatsApp message, or share the
-                    broadcast text again.
-                  </Text>
+                {/* Announcement History Section */}
+                <SectionHeader
+                  title="Announcement History"
+                  meta={announcements.length > 0 ? `${announcements.length}` : undefined}
+                  style={{ marginTop: 6, marginBottom: 4 }}
+                />
 
-                  {whatsappRecipientsWithPhone.length > 0 ? (
-                    <View style={styles.recipientList}>
-                      {whatsappRecipientsWithPhone.map((recipient, idx) => (
-                        <View
-                          key={recipient.id}
-                          style={[
-                            styles.recipientRow,
-                            idx === whatsappRecipientsWithPhone.length - 1 &&
-                              styles.recipientRowLast,
-                          ]}>
-                          <View style={styles.recipientInfo}>
-                            <Text style={styles.recipientName} numberOfLines={1}>
-                              {recipient.fullName}
-                            </Text>
-                            {recipient.phoneNumber && (
-                              <Text style={styles.recipientPhone}>{recipient.phoneNumber}</Text>
-                            )}
-                          </View>
-                          <Pressable
-                            accessibilityRole="button"
-                            accessibilityLabel={`Send WhatsApp to ${recipient.fullName}`}
-                            onPress={() => void handleOpenWhatsAppRecipient(recipient)}
-                            style={({ pressed }) => [
-                              styles.whatsappChipBtn,
-                              pressed && { opacity: 0.8 },
-                            ]}>
-                            <ExternalLink size={13} color={OwnerTheme.colors.success} />
-                            <Text style={styles.whatsappChipBtnText}>Message</Text>
-                          </Pressable>
-                        </View>
-                      ))}
-                    </View>
-                  ) : (
-                    <Text style={styles.inlineHint}>
-                      None of the matched residents have a valid phone number on file for 1-tap
-                      WhatsApp links.
-                    </Text>
-                  )}
-
-                  <SecondaryButton
-                    label="Share Broadcast Text"
-                    icon={Share2}
-                    onPress={handleShareBroadcastAgain}
-                    style={styles.shareAgainBtn}
+                {historyError && announcements.length > 0 && (
+                  <ErrorState
+                    message={historyError}
+                    onRetry={() => void loadHistory(selectedPropertyId, true)}
                   />
-                </View>
-              )}
-
-              {/* Announcement History Section */}
-              <SectionHeader
-                title="Announcement History"
-                meta={announcements.length > 0 ? `${announcements.length}` : undefined}
-                style={{ marginTop: 6, marginBottom: 4 }}
-              />
-
-              {loadingHistory && announcements.length === 0 ? (
+                )}
+              </View>
+            }
+            ListEmptyComponent={
+              loadingHistory ? (
                 <LoadingState message="Loading announcement history..." />
-              ) : historyError && announcements.length === 0 ? (
+              ) : historyError ? (
                 <ErrorState
                   message={historyError}
                   onRetry={() => void loadHistory(selectedPropertyId, true)}
                 />
-              ) : announcements.length === 0 ? (
+              ) : (
                 <EmptyState
                   icon={Megaphone}
                   title="No announcements yet"
                   description="Broadcast your first notice above to keep residents informed."
                 />
-              ) : (
-                <View style={styles.historyList}>
-                  {historyError && (
-                    <ErrorState
-                      message={historyError}
-                      onRetry={() => void loadHistory(selectedPropertyId, true)}
-                    />
-                  )}
-                  {announcements.map((item) => {
-                    const audienceLabel =
-                      item.audience === 'room' && item.roomNumber
-                        ? formatRoomLabel(item.roomNumber)
-                        : 'All residents';
-                    const channelLabel = item.channel === 'whatsapp' ? 'WhatsApp' : 'Push';
-                    const timeLabel = formatGateEventTimestamp(item.createdAt);
-
-                    return (
-                      <View key={item.id} style={styles.historyCard}>
-                        <View style={styles.historyTopRow}>
-                          <Text style={styles.historyTitle}>{item.title}</Text>
-                          {timeLabel ? (
-                            <Text style={styles.historyTimestamp}>{timeLabel}</Text>
-                          ) : null}
-                        </View>
-
-                        <Text style={styles.historyMessage}>{item.message}</Text>
-
-                        <View style={styles.historyMetaRow}>
-                          <View style={styles.badgesWrap}>
-                            <StatusBadge
-                              label={audienceLabel}
-                              variant={item.audience === 'room' ? 'info' : 'neutral'}
-                              size="sm"
-                            />
-                            <StatusBadge
-                              label={channelLabel}
-                              variant={item.channel === 'whatsapp' ? 'success' : 'info'}
-                              size="sm"
-                            />
-                          </View>
-                          <Text style={styles.historyRecipientCount}>
-                            {`${item.recipientCount} ${
-                              item.recipientCount === 1 ? 'recipient' : 'recipients'
-                            }`}
-                          </Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-            </>
-          )}
-        </ScrollView>
+              )
+            }
+          />
+        )}
       </KeyboardAvoidingView>
     </SafeAreaView>
   );

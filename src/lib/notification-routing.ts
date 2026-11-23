@@ -2,21 +2,21 @@ export type NotificationUserRole = 'owner' | 'student' | 'warden';
 
 const SAFE_ROUTE_WHITELIST = new Set<string>([
   '/(tabs)',
-  '/student-dashboard',
+  '/resident-dashboard',
   '/warden-dashboard',
-  '/student-billing',
+  '/resident-billing',
   '/billing-management',
-  '/student-complaints',
+  '/resident-complaints',
   '/owner-complaints',
-  '/student-announcements',
+  '/resident-announcements',
   '/owner-announcements',
-  '/student-menu',
+  '/resident-menu',
   '/food-menu',
-  '/student-gate-history',
-  '/student-in-out',
-  '/student-chat',
+  '/resident-gate-history',
+  '/resident-in-out',
+  '/resident-chat',
   '/notification-center',
-  '/student-notifications',
+  '/resident-notifications',
 ]);
 
 function extractSafeRouteCandidate(raw: unknown): string | null {
@@ -53,35 +53,35 @@ export function resolveNotificationRoute(
     case 'meal':
       if (role === 'warden') return '/warden-dashboard';
       if (role === 'owner') return '/(tabs)';
-      return '/student-menu';
+      return '/resident-menu';
 
     case 'announcement':
     case 'notice':
-      return role === 'owner' ? '/owner-announcements' : '/student-announcements';
+      return role === 'owner' ? '/owner-announcements' : '/resident-announcements';
 
     case 'bill':
     case 'billing':
     case 'payment':
     case 'payment_proof':
     case 'rent':
-      return role === 'owner' ? '/billing-management' : '/student-billing';
+      return role === 'owner' ? '/billing-management' : '/resident-billing';
 
     case 'complaint':
     case 'maintenance':
-      return role === 'owner' ? '/owner-complaints' : '/student-complaints';
+      return role === 'owner' ? '/owner-complaints' : '/resident-complaints';
 
     case 'washing_machine':
     case 'wm_queue':
     case 'wm_free':
-      return role === 'owner' ? '/(tabs)' : '/student-dashboard';
+      return role === 'owner' ? '/(tabs)' : '/resident-dashboard';
 
     case 'gate':
     case 'movement':
     case 'return_reminder':
-      return role === 'owner' ? '/student-in-out' : '/student-gate-history';
+      return role === 'owner' ? '/resident-in-out' : '/resident-gate-history';
 
     case 'chat':
-      return '/student-chat';
+      return '/resident-chat';
 
     default:
       return null;

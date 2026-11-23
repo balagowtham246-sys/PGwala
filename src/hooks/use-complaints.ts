@@ -259,11 +259,9 @@ export function useOwnerCreateComplaintMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.complaints.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.complaints.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
@@ -350,14 +348,15 @@ export function useOwnerUpdateComplaintMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.complaints.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.complaints.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
+
+const STUDENT_COMPLAINT_SELECT =
+  'id, property_id, resident_id, category, priority, status, title, description, photo_url, owner_notes, resolved_at, created_at';
 
 export interface StudentComplaintsPage {
   complaints: StudentComplaintItem[];
@@ -385,7 +384,7 @@ export function useStudentComplaintsQuery(residentId: string | undefined) {
       const rangeEnd = pageParam + COMPLAINTS_PAGE_SIZE - 1;
       const { data, error } = await supabase
         .from('complaints')
-        .select('*')
+        .select(STUDENT_COMPLAINT_SELECT)
         .eq('resident_id', residentId!)
         .order('created_at', { ascending: false })
         .range(pageParam, rangeEnd);
@@ -470,7 +469,7 @@ export function useStudentCreateComplaintMutation() {
           description: input.description,
           photo_url: uploadedPhotoPath,
         })
-        .select('*')
+        .select(STUDENT_COMPLAINT_SELECT)
         .single();
 
       if (error) throw error;
@@ -536,11 +535,9 @@ export function useStudentCreateComplaintMutation() {
       if (!context) return;
       qc.setQueryData(context.queryKey, context.previous);
     },
-    onSettled: async () => {
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: queryKeys.complaints.all }),
-        qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
-      ]);
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.complaints.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }

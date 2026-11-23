@@ -124,13 +124,19 @@ export default function ResidentProfileScreen() {
     });
   }, [propertyId, residentId, qc]);
 
+  const refetchProfile = profileQuery.refetch;
+  const mutateUpdateResident = updateResidentMutation.mutateAsync;
+  const isUpdatingResident = updateResidentMutation.isPending;
+  const mutateConfirmPayment = confirmPaymentMutation.mutateAsync;
+  const isConfirmingPayment = confirmPaymentMutation.isPending;
+
   const handleRefresh = useCallback(() => {
     if (!residentId) return;
     setManualRefreshing(true);
-    void profileQuery.refetch().finally(() => {
+    void refetchProfile().finally(() => {
       setManualRefreshing(false);
     });
-  }, [residentId, profileQuery]);
+  }, [residentId, refetchProfile]);
 
   const phoneNumber = profile?.phoneNumber;
 
@@ -212,10 +218,10 @@ export default function ResidentProfileScreen() {
   }, [profile]);
 
   const handleSaveNotes = useCallback(async () => {
-    if (!profile || updateResidentMutation.isPending) return;
+    if (!profile || isUpdatingResident) return;
     const trimmed = notesDraft.trim();
     try {
-      const outcome = await updateResidentMutation.mutateAsync({
+      const outcome = await mutateUpdateResident({
         residentId: profile.id,
         propertyId: profile.propertyId,
         loadedUpdatedAt: profile.updatedAt,
@@ -228,7 +234,7 @@ export default function ResidentProfileScreen() {
             text: 'Reload Latest',
             onPress: () => {
               setEditingNotes(false);
-              void profileQuery.refetch();
+              void refetchProfile();
             },
           },
         ]);
@@ -248,7 +254,7 @@ export default function ResidentProfileScreen() {
         err instanceof Error ? err.message : 'Failed to save notes.'
       );
     }
-  }, [profile, notesDraft, updateResidentMutation, profileQuery]);
+  }, [profile, notesDraft, isUpdatingResident, mutateUpdateResident, refetchProfile]);
 
   const handleOpenRoomModal = useCallback(() => {
     if (!profile) return;
@@ -259,14 +265,14 @@ export default function ResidentProfileScreen() {
   }, [profile]);
 
   const handleSaveRoomChange = useCallback(async () => {
-    if (!profile || updateResidentMutation.isPending) return;
+    if (!profile || isUpdatingResident) return;
     if (!draftRoomNumber.trim() || !draftBedLabel.trim()) {
       Alert.alert('Select Room & Bed', 'Please choose a room and an available bed.');
       return;
     }
 
     try {
-      const outcome = await updateResidentMutation.mutateAsync({
+      const outcome = await mutateUpdateResident({
         residentId: profile.id,
         propertyId: profile.propertyId,
         loadedUpdatedAt: profile.updatedAt,
@@ -284,7 +290,7 @@ export default function ResidentProfileScreen() {
       ) {
         Alert.alert('Unable to Move Resident', outcome.message);
         setRoomPickerRefreshSignal((n) => n + 1);
-        void profileQuery.refetch();
+        void refetchProfile();
         return;
       }
 
@@ -296,7 +302,7 @@ export default function ResidentProfileScreen() {
         err instanceof Error ? err.message : 'Could not update room.'
       );
     }
-  }, [profile, draftRoomNumber, draftBedLabel, updateResidentMutation, profileQuery]);
+  }, [profile, draftRoomNumber, draftBedLabel, isUpdatingResident, mutateUpdateResident, refetchProfile]);
 
   const handleRecordPaymentPress = useCallback(() => {
     if (!profile) return;
@@ -312,9 +318,9 @@ export default function ResidentProfileScreen() {
   }, [profile, firstUnpaidCharge]);
 
   const handleConfirmPayment = useCallback(async () => {
-    if (!profile || !firstUnpaidCharge || confirmPaymentMutation.isPending) return;
+    if (!profile || !firstUnpaidCharge || isConfirmingPayment) return;
     try {
-      const data = await confirmPaymentMutation.mutateAsync({
+      const data = await mutateConfirmPayment({
         chargeId: firstUnpaidCharge.id,
         method: paymentMethod,
       });
@@ -330,7 +336,7 @@ export default function ResidentProfileScreen() {
         err instanceof Error ? err.message : 'Could not confirm payment.'
       );
     }
-  }, [profile, firstUnpaidCharge, paymentMethod, confirmPaymentMutation, showToast]);
+  }, [profile, firstUnpaidCharge, paymentMethod, isConfirmingPayment, mutateConfirmPayment, showToast]);
 
   const handleOpenCheckoutModal = useCallback(() => {
     if (!profile) return;

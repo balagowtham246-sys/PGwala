@@ -98,7 +98,7 @@ export function FoodStatusBanner({ refreshKey = 0 }: { refreshKey?: number }) {
       <Pressable
         style={styles.slimRow}
         onPress={() =>
-          router.push({ pathname: '/student-announcements', params: { tab: 'food' } } as Href)
+          router.push({ pathname: '/resident-announcements', params: { tab: 'food' } } as Href)
         }>
         <Megaphone size={16} color={OwnerTheme.colors.textSecondary} />
         <Text style={styles.slimText}>Food updates</Text>
@@ -118,7 +118,7 @@ export function FoodStatusBanner({ refreshKey = 0 }: { refreshKey?: number }) {
             accessibilityRole="button"
             style={[styles.card, { backgroundColor: c.bg, borderColor: c.border }]}
             onPress={() =>
-              router.push({ pathname: '/student-announcements', params: { tab: 'food' } } as Href)
+              router.push({ pathname: '/resident-announcements', params: { tab: 'food' } } as Href)
             }>
             <StatusIcon status={a.status} />
             <View style={{ flex: 1 }}>

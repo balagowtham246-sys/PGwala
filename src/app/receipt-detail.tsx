@@ -12,12 +12,16 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams } from 'expo-router';
 import { AlertTriangle } from 'lucide-react-native';
 
 import { useAuth } from '@/context/auth-context';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { invalidatePrefix } from '@/lib/query-cache';
+import { queryKeys } from '@/lib/query-keys';
 import { supabase } from '@/lib/supabase';
+import { BILLING_CACHE_PREFIX } from '@/services/billing.service';
 import { OwnerHeader } from '@/components/ui/owner';
 
 interface PaymentDetail {
@@ -57,6 +61,7 @@ interface PaymentDetail {
 }
 
 export default function ReceiptDetailScreen() {
+  const qc = useQueryClient();
   const { user, profile } = useAuth();
   const userId = user?.id;
   const { id } = useLocalSearchParams<{ id?: string }>();
@@ -185,6 +190,9 @@ export default function ReceiptDetailScreen() {
 
       setShowReverseModal(false);
       setReversalReason('');
+      void invalidatePrefix(BILLING_CACHE_PREFIX);
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
       Alert.alert('Payment Reversed', data.message || 'Receipt marked as reversed.');
       await loadReceipt();
     } catch (err: unknown) {

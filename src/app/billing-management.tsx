@@ -3,6 +3,7 @@ import {
   Edit3,
   Info,
   MessageCircle,
+  Share2,
   X,
   Zap,
 } from 'lucide-react-native';
@@ -33,7 +34,7 @@ import { ChargeFormModal } from '@/components/billing/ChargeFormModal';
 import { PaymentReportReviewModal } from '@/components/billing/PaymentReportReviewModal';
 import { ResidentLedgerCard } from '@/components/billing/ResidentLedgerCard';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
-import { EmptyState, OwnerHeader } from '@/components/ui/owner';
+import { BillingSkeleton, EmptyState, OwnerHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
@@ -48,6 +49,8 @@ import {
   useUpdateResidentRentMutation,
 } from '@/hooks/use-owner-billing';
 import {
+  buildMonthlyRentCsv,
+  buildMonthlyRentSummaryText,
   buildWhatsAppReminderUrl,
   formatDueStatus,
   formatPaiseToRupees,
@@ -235,7 +238,7 @@ export default function SimplifiedBillingManagementScreen() {
   const refreshing = manualRefreshing;
   const propertyId = snapshot?.propertyId ?? activeSelectedPropertyId ?? null;
   const propertyName =
-    snapshot?.propertyName ?? activeSelectedPropertyName ?? 'Shalom Residency';
+    snapshot?.propertyName ?? activeSelectedPropertyName ?? 'My PG';
   const rentBills = useMemo(
     () => snapshot?.rentBills ?? [],
     [snapshot?.rentBills]
@@ -1052,12 +1055,7 @@ export default function SimplifiedBillingManagementScreen() {
 
   const renderBillingEmpty = () => {
     if (loading) {
-      return (
-        <View style={styles.loadingBox}>
-          <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
-          <Text style={styles.loadingText}>Loading bills...</Text>
-        </View>
-      );
+      return <BillingSkeleton />;
     }
     if (billingMode === 'RENT') {
       return (
@@ -1105,6 +1103,48 @@ export default function SimplifiedBillingManagementScreen() {
     );
   };
 
+  const handleExportMonthlyReport = () => {
+    if (rentBills.length === 0) {
+      Alert.alert(
+        'Nothing to Export',
+        `No rent bills found for ${monthLabel}.`
+      );
+      return;
+    }
+
+    const shareText = async (content: string, title: string) => {
+      try {
+        await Share.share({ message: content, title });
+      } catch {
+        Alert.alert('Share Unavailable', 'Could not open share sheet on this device.');
+      }
+    };
+
+    Alert.alert(
+      `Export Rent Report (${monthLabel})`,
+      `Choose a format to share for ${propertyName}:`,
+      [
+        {
+          text: 'WhatsApp Summary',
+          onPress: () =>
+            void shareText(
+              buildMonthlyRentSummaryText({ propertyName, monthLabel, rentBills }),
+              `${propertyName} Rent Report (${monthLabel})`
+            ),
+        },
+        {
+          text: 'CSV Spreadsheet',
+          onPress: () =>
+            void shareText(
+              buildMonthlyRentCsv({ propertyName, monthLabel, rentBills }),
+              `${propertyName} Rent CSV (${monthLabel})`
+            ),
+        },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       {/* Standardized Header */}
@@ -1113,35 +1153,50 @@ export default function SimplifiedBillingManagementScreen() {
         subtitle={propertyName}
         showBack
         rightAction={
-          billingMode === 'EB' ? (
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.headerActionBtn,
-                pressed && styles.cardPressed,
-              ]}
-              onPress={() => setSplitEbModalVisible(true)}>
-              <Zap size={15} color={OwnerTheme.colors.warning} />
-              <Text
-                style={[
-                  styles.headerActionBtnText,
-                  { color: OwnerTheme.colors.warning },
-                ]}>
-                Split EB
-              </Text>
-            </Pressable>
-          ) : (
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.headerActionBtn,
-                pressed && styles.cardPressed,
-              ]}
-              onPress={() => setGenerateRentModalVisible(true)}>
-              <Edit3 size={15} color={OwnerTheme.colors.primary} />
-              <Text style={styles.headerActionBtnText}>Set Rent</Text>
-            </Pressable>
-          )
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            {billingMode === 'RENT' && rentBills.length > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Export monthly rent report"
+                style={({ pressed }) => [
+                  styles.headerActionBtn,
+                  pressed && styles.cardPressed,
+                ]}
+                onPress={handleExportMonthlyReport}>
+                <Share2 size={14} color={OwnerTheme.colors.primary} />
+                <Text style={styles.headerActionBtnText}>Export</Text>
+              </Pressable>
+            )}
+            {billingMode === 'EB' ? (
+              <Pressable
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.headerActionBtn,
+                  pressed && styles.cardPressed,
+                ]}
+                onPress={() => setSplitEbModalVisible(true)}>
+                <Zap size={15} color={OwnerTheme.colors.warning} />
+                <Text
+                  style={[
+                    styles.headerActionBtnText,
+                    { color: OwnerTheme.colors.warning },
+                  ]}>
+                  Split EB
+                </Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                accessibilityRole="button"
+                style={({ pressed }) => [
+                  styles.headerActionBtn,
+                  pressed && styles.cardPressed,
+                ]}
+                onPress={() => setGenerateRentModalVisible(true)}>
+                <Edit3 size={15} color={OwnerTheme.colors.primary} />
+                <Text style={styles.headerActionBtnText}>Set Rent</Text>
+              </Pressable>
+            )}
+          </View>
         }
       />
 

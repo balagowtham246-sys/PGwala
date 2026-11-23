@@ -99,7 +99,7 @@ export function SwipeableTabsShell({
     }, [navigateToTab])
   );
 
-  // Preload adjacent pages silently so swiping feels instantaneous
+  // Preload adjacent pages silently after Home settles so cold start stays snappy
   useEffect(() => {
     const timer = setTimeout(() => {
       setMountedIndices((prev) => {
@@ -108,7 +108,7 @@ export function SwipeableTabsShell({
         if (activeIndex < TAB_ORDER.length - 1) next.add(activeIndex + 1);
         return next.size === prev.size ? prev : next;
       });
-    }, 150);
+    }, 1200);
     return () => clearTimeout(timer);
   }, [activeIndex]);
 

@@ -62,7 +62,7 @@ export async function checkAppVersion(platform: 'android' | 'ios' = 'android'): 
   try {
     const { data, error } = await supabase
       .from('app_versions')
-      .select('*')
+      .select('id, platform, min_version, latest_version, apk_download_url, release_notes, is_mandatory')
       .eq('platform', platform)
       .maybeSingle();
 

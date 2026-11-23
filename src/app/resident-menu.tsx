@@ -164,6 +164,8 @@ export default function StudentMenuScreen() {
     execute: executeFoodOptIn,
   });
 
+  const refetchMenus = menusQuery.refetch;
+
   const loadMenu = useCallback(
     async (forceResident = false) => {
       const todayIso = toLocalIsoDate(new Date());
@@ -176,10 +178,10 @@ export default function StudentMenuScreen() {
         await refreshResident(forceResident);
       }
       if (activePropertyId) {
-        await menusQuery.refetch();
+        await refetchMenus();
       }
     },
-    [userId, sharedResident, refreshResident, activePropertyId, menusQuery]
+    [userId, sharedResident, refreshResident, activePropertyId, refetchMenus]
   );
 
   useFocusEffect(
@@ -262,13 +264,13 @@ export default function StudentMenuScreen() {
         subtitle={propertyName}
         showBack
         onBack={() =>
-          router.canGoBack() ? router.back() : router.replace('/student-dashboard')
+          router.canGoBack() ? router.back() : router.replace('/resident-dashboard')
         }
         rightAction={
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="View food and PG notices"
-            onPress={() => router.push('/student-announcements' as Href)}
+            onPress={() => router.push('/resident-announcements' as Href)}
             style={({ pressed }) => [
               styles.noticesPill,
               pressed && styles.noticesPillPressed,

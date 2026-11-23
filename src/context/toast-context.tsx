@@ -3,6 +3,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -94,8 +95,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     if (callback) callback();
   };
 
+  const contextValue = useMemo<ToastContextValue>(
+    () => ({ showToast, hideToast }),
+    [showToast, hideToast]
+  );
+
   return (
-    <ToastContext.Provider value={{ showToast, hideToast }}>
+    <ToastContext.Provider value={contextValue}>
       <View style={styles.root}>
         {children}
         {toast ? (

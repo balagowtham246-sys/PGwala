@@ -1,9 +1,9 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -130,7 +130,7 @@ export default function StudentInOutScreen() {
   const loading = movementQuery.isPending && !snapshot;
   const refreshing = manualRefreshing;
   const propertyName =
-    snapshot?.propertyName ?? activeSelectedPropertyName ?? 'Shalom Residency';
+    snapshot?.propertyName ?? activeSelectedPropertyName ?? 'My PG';
   const residents = useMemo(
     () => snapshot?.activeResidents ?? [],
     [snapshot?.activeResidents]
@@ -158,16 +158,30 @@ export default function StudentInOutScreen() {
     void movementQuery.refetch();
   };
 
-  const getLatestResidentLog = (
-    residentId: string
-  ): MovementLogRecord | undefined => {
-    return logs.find((l) => l.resident_id === residentId);
-  };
+  const latestLogByResident = useMemo(() => {
+    const map = new Map<string, MovementLogRecord>();
+    for (const l of logs) {
+      if (!map.has(l.resident_id)) {
+        map.set(l.resident_id, l);
+      }
+    }
+    return map;
+  }, [logs]);
 
-  const getResidentCurrentStatus = (residentId: string): ResidentStatus => {
-    const latest = getLatestResidentLog(residentId);
-    return latest ? latest.direction : 'IN';
-  };
+  const getLatestResidentLog = useCallback(
+    (residentId: string): MovementLogRecord | undefined => {
+      return latestLogByResident.get(residentId);
+    },
+    [latestLogByResident]
+  );
+
+  const getResidentCurrentStatus = useCallback(
+    (residentId: string): ResidentStatus => {
+      const latest = latestLogByResident.get(residentId);
+      return latest ? latest.direction : 'IN';
+    },
+    [latestLogByResident]
+  );
 
   // Live count derivation
   const counts = residents.reduce(
@@ -255,6 +269,132 @@ export default function StudentInOutScreen() {
     });
   }, [scopedLogs, historyDirectionFilter, historyDateFilter, referenceTimeMs]);
 
+  const renderResidentItem = useCallback(
+    ({ item: resident }: { item: MovementResidentRecord }) => {
+      const currentStatus = getResidentCurrentStatus(resident.id);
+      const latestLog = getLatestResidentLog(resident.id);
+      const isInside = currentStatus === 'IN';
+      const isOutside = currentStatus === 'OUT';
+      const isLate = Boolean(
+        isOutside && latestLog && isLateReturn(latestLog.expected_return_time)
+      );
+
+      return (
+        <View
+          style={[
+            styles.residentCard,
+            isLate && styles.residentCardLate,
+          ]}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Open profile for ${resident.full_name}`}
+            style={({ pressed }) => [pressed && styles.cardPressed]}
+            onPress={() =>
+              router.push({
+                pathname: '/resident-profile',
+                params: { id: resident.id },
+              } as Href)
+            }>
+            <View style={styles.residentCardHeader}>
+              <View style={{ flex: 1, paddingRight: 8 }}>
+                <Text style={styles.residentName}>
+                  {resident.full_name}
+                </Text>
+                <Text style={styles.residentRoom}>
+                  Room {resident.room_number}
+                </Text>
+              </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                {isLate && (
+                  <StatusBadge
+                    label={toSentenceCaseStatus('late')}
+                    variant="danger"
+                    size="sm"
+                  />
+                )}
+                <StatusBadge
+                  label={toSentenceCaseStatus(isInside ? 'inside' : 'outside')}
+                  variant={isInside ? 'success' : 'warning'}
+                  size="sm"
+                />
+              </View>
+            </View>
+
+            {/* Clean information rows */}
+            {isOutside && latestLog ? (
+              <View style={styles.detailsBox}>
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Checked out:</Text>
+                  <Text style={styles.detailValue}>
+                    {formatGateEventTimestamp(latestLog.event_time)}
+                  </Text>
+                </View>
+                {latestLog.purpose ? (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Purpose:</Text>
+                    <Text style={styles.detailValueBold}>
+                      {latestLog.purpose}
+                    </Text>
+                  </View>
+                ) : null}
+                {latestLog.expected_return_time ? (
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>
+                      Expected return:
+                    </Text>
+                    <Text style={styles.detailValue}>
+                      {latestLog.expected_return_time}
+                    </Text>
+                  </View>
+                ) : null}
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Dinner:</Text>
+                  <Text
+                    style={[
+                      styles.dinnerText,
+                      latestLog.food_required
+                        ? { color: OwnerTheme.colors.success }
+                        : { color: OwnerTheme.colors.textMuted },
+                    ]}>
+                    {latestLog.food_required ? 'Required' : 'Not required'}
+                  </Text>
+                </View>
+              </View>
+            ) : (
+              <View style={styles.detailsBox}>
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Checked in:</Text>
+                  <Text
+                    style={[
+                      styles.detailValue,
+                      !latestLog && { color: OwnerTheme.colors.textMuted },
+                    ]}>
+                    {latestLog
+                      ? formatGateEventTimestamp(latestLog.event_time)
+                      : 'No gate logs yet'}
+                  </Text>
+                </View>
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Dinner:</Text>
+                  <Text
+                    style={[
+                      styles.dinnerText,
+                      { color: OwnerTheme.colors.success },
+                    ]}>
+                    Included (Inside PG)
+                  </Text>
+                </View>
+              </View>
+            )}
+          </Pressable>
+        </View>
+      );
+    },
+    [getResidentCurrentStatus, getLatestResidentLog]
+  );
+
+  const residentKeyExtractor = useCallback((item: MovementResidentRecord) => item.id, []);
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
@@ -276,120 +416,129 @@ export default function StudentInOutScreen() {
         }
       />
 
-      <ScrollView
+      <FlatList
+        data={loading ? [] : filteredResidents}
+        keyExtractor={residentKeyExtractor}
+        renderItem={renderResidentItem}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
+        initialNumToRender={12}
+        maxToRenderPerBatch={12}
+        windowSize={7}
+        ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
             colors={[OwnerTheme.colors.primary]}
           />
-        }>
-        {errorMessage && (
-          <ErrorState message={errorMessage} onRetry={loadData} />
-        )}
+        }
+        ListHeaderComponent={
+          <View>
+            {errorMessage && (
+              <ErrorState message={errorMessage} onRetry={loadData} />
+            )}
 
-        {/* Top 3 Real-Time Statistics */}
-        <View style={styles.statsRow}>
-          <StatisticCard
-            label="Inside"
-            value={counts.inside}
-            accentColor={OwnerTheme.colors.success}
-            icon={LogIn}
-            sublabel="Checked in"
-            onPress={() => setActiveTab('IN')}
-          />
-          <StatisticCard
-            label="Outside"
-            value={counts.outside}
-            accentColor={OwnerTheme.colors.warning}
-            icon={LogOut}
-            sublabel="Checked out"
-            onPress={() => setActiveTab('OUT')}
-          />
-          <StatisticCard
-            label="Dinner"
-            value={mealsRequiredCount}
-            accentColor={OwnerTheme.colors.primary}
-            icon={Utensils}
-            sublabel={`${counts.inside} in + ${outsideMealsCount} out`}
-          />
-        </View>
+            {/* Top 3 Real-Time Statistics */}
+            <View style={styles.statsRow}>
+              <StatisticCard
+                label="Inside"
+                value={counts.inside}
+                accentColor={OwnerTheme.colors.success}
+                icon={LogIn}
+                sublabel="Checked in"
+                onPress={() => setActiveTab('IN')}
+              />
+              <StatisticCard
+                label="Outside"
+                value={counts.outside}
+                accentColor={OwnerTheme.colors.warning}
+                icon={LogOut}
+                sublabel="Checked out"
+                onPress={() => setActiveTab('OUT')}
+              />
+              <StatisticCard
+                label="Dinner"
+                value={mealsRequiredCount}
+                accentColor={OwnerTheme.colors.primary}
+                icon={Utensils}
+                sublabel={`${counts.inside} in + ${outsideMealsCount} out`}
+              />
+            </View>
 
-        {/* Late Return Alert Strip (only shown when overdue returns exist) */}
-        {lateReturnCount > 0 && (
-          <View style={styles.lateAlertRow}>
-            <View style={styles.lateChip}>
-              <Text style={styles.lateChipText}>
-                {lateReturnCount} late return{lateReturnCount > 1 ? 's' : ''}
-              </Text>
+            {/* Late Return Alert Strip (only shown when overdue returns exist) */}
+            {lateReturnCount > 0 && (
+              <View style={styles.lateAlertRow}>
+                <View style={styles.lateChip}>
+                  <Text style={styles.lateChipText}>
+                    {lateReturnCount} late return{lateReturnCount > 1 ? 's' : ''}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Resident Filter Banner */}
+            {activeResidentFilterId && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Filtered to ${filteredResidentName}. Show all`}
+                style={({ pressed }) => [
+                  styles.residentFilterBanner,
+                  pressed && styles.cardPressed,
+                ]}
+                onPress={handleClearResidentFilter}>
+                <Text style={styles.residentFilterBannerText} numberOfLines={1}>
+                  Filtered to {filteredResidentName} ·{' '}
+                  <Text style={styles.residentFilterBannerAction}>Show all</Text>
+                </Text>
+                <X size={15} color={OwnerTheme.colors.primary} />
+              </Pressable>
+            )}
+
+            {/* Filter Segmented Control */}
+            <SegmentedFilter
+              options={[
+                { key: 'ALL', label: 'All', count: residents.length },
+                { key: 'OUT', label: 'Outside', count: counts.outside },
+                { key: 'IN', label: 'Inside', count: counts.inside },
+              ]}
+              activeKey={activeTab}
+              onSelect={(key) => setActiveTab(key as FilterTab)}
+              style={{ marginTop: 14, marginBottom: 10 }}
+            />
+
+            {/* Live Resident Search Bar */}
+            <View style={styles.searchBarWrap}>
+              <Search size={16} color={OwnerTheme.colors.textMuted} />
+              <TextInput
+                style={styles.searchInput}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="Search by name or room..."
+                placeholderTextColor={OwnerTheme.colors.textMuted}
+                returnKeyType="search"
+                autoCorrect={false}
+              />
+              {searchQuery.length > 0 && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear search"
+                  hitSlop={8}
+                  onPress={() => setSearchQuery('')}>
+                  <X size={16} color={OwnerTheme.colors.textSecondary} />
+                </Pressable>
+              )}
             </View>
           </View>
-        )}
-
-        {/* Resident Filter Banner */}
-        {activeResidentFilterId && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Filtered to ${filteredResidentName}. Show all`}
-            style={({ pressed }) => [
-              styles.residentFilterBanner,
-              pressed && styles.cardPressed,
-            ]}
-            onPress={handleClearResidentFilter}>
-            <Text style={styles.residentFilterBannerText} numberOfLines={1}>
-              Filtered to {filteredResidentName} ·{' '}
-              <Text style={styles.residentFilterBannerAction}>Show all</Text>
-            </Text>
-            <X size={15} color={OwnerTheme.colors.primary} />
-          </Pressable>
-        )}
-
-        {/* Filter Segmented Control */}
-        <SegmentedFilter
-          options={[
-            { key: 'ALL', label: 'All', count: residents.length },
-            { key: 'OUT', label: 'Outside', count: counts.outside },
-            { key: 'IN', label: 'Inside', count: counts.inside },
-          ]}
-          activeKey={activeTab}
-          onSelect={(key) => setActiveTab(key as FilterTab)}
-          style={{ marginTop: 14, marginBottom: 10 }}
-        />
-
-        {/* Live Resident Search Bar */}
-        <View style={styles.searchBarWrap}>
-          <Search size={16} color={OwnerTheme.colors.textMuted} />
-          <TextInput
-            style={styles.searchInput}
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            placeholder="Search by name or room..."
-            placeholderTextColor={OwnerTheme.colors.textMuted}
-            returnKeyType="search"
-            autoCorrect={false}
-          />
-          {searchQuery.length > 0 && (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Clear search"
-              hitSlop={8}
-              onPress={() => setSearchQuery('')}>
-              <X size={16} color={OwnerTheme.colors.textSecondary} />
-            </Pressable>
-          )}
-        </View>
-
-        {/* Residents Roster */}
-        {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
-            <Text style={styles.loadingText}>Loading attendance roster...</Text>
-          </View>
-        ) : filteredResidents.length === 0 ? (
-          normalizedSearch ? (
+        }
+        ListEmptyComponent={
+          loading ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+              <Text style={styles.loadingText}>Loading attendance roster...</Text>
+            </View>
+          ) : normalizedSearch ? (
             <EmptyState
               title="No matching residents"
               description={`No residents match "${searchQuery.trim()}".`}
@@ -415,208 +564,87 @@ export default function StudentInOutScreen() {
               }
             />
           )
-        ) : (
-          <View style={styles.residentsList}>
-            {filteredResidents.map((resident) => {
-              const currentStatus = getResidentCurrentStatus(resident.id);
-              const latestLog = getLatestResidentLog(resident.id);
-              const isInside = currentStatus === 'IN';
-              const isOutside = currentStatus === 'OUT';
-              const isLate = Boolean(
-                isOutside && latestLog && isLateReturn(latestLog.expected_return_time)
-              );
-
-              return (
-                <View
-                  key={resident.id}
-                  style={[
-                    styles.residentCard,
-                    isLate && styles.residentCardLate,
-                  ]}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityLabel={`Open profile for ${resident.full_name}`}
-                    style={({ pressed }) => [pressed && styles.cardPressed]}
-                    onPress={() =>
-                      router.push({
-                        pathname: '/resident-profile',
-                        params: { id: resident.id },
-                      } as Href)
-                    }>
-                    <View style={styles.residentCardHeader}>
-                      <View style={{ flex: 1, paddingRight: 8 }}>
-                        <Text style={styles.residentName}>
-                          {resident.full_name}
-                        </Text>
-                        <Text style={styles.residentRoom}>
-                          Room {resident.room_number}
-                        </Text>
-                      </View>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                        {isLate && (
-                          <StatusBadge
-                            label={toSentenceCaseStatus('late')}
-                            variant="danger"
-                            size="sm"
-                          />
-                        )}
-                        <StatusBadge
-                          label={toSentenceCaseStatus(isInside ? 'inside' : 'outside')}
-                          variant={isInside ? 'success' : 'warning'}
-                          size="sm"
-                        />
-                      </View>
-                    </View>
-
-                    {/* Clean information rows */}
-                    {isOutside && latestLog ? (
-                      <View style={styles.detailsBox}>
-                        <View style={styles.detailRow}>
-                          <Text style={styles.detailLabel}>Checked out:</Text>
-                          <Text style={styles.detailValue}>
-                            {formatGateEventTimestamp(latestLog.event_time)}
-                          </Text>
-                        </View>
-                        {latestLog.purpose ? (
-                          <View style={styles.detailRow}>
-                            <Text style={styles.detailLabel}>Purpose:</Text>
-                            <Text style={styles.detailValueBold}>
-                              {latestLog.purpose}
-                            </Text>
-                          </View>
-                        ) : null}
-                        {latestLog.expected_return_time ? (
-                          <View style={styles.detailRow}>
-                            <Text style={styles.detailLabel}>
-                              Expected return:
-                            </Text>
-                            <Text style={styles.detailValue}>
-                              {latestLog.expected_return_time}
-                            </Text>
-                          </View>
-                        ) : null}
-                        <View style={styles.detailRow}>
-                          <Text style={styles.detailLabel}>Dinner:</Text>
-                          <Text
-                            style={[
-                              styles.dinnerText,
-                              latestLog.food_required
-                                ? { color: OwnerTheme.colors.success }
-                                : { color: OwnerTheme.colors.textMuted },
-                            ]}>
-                            {latestLog.food_required ? 'Required' : 'Not required'}
-                          </Text>
-                        </View>
-                      </View>
-                    ) : (
-                      <View style={styles.detailsBox}>
-                        <View style={styles.detailRow}>
-                          <Text style={styles.detailLabel}>Checked in:</Text>
-                          <Text
-                            style={[
-                              styles.detailValue,
-                              !latestLog && { color: OwnerTheme.colors.textMuted },
-                            ]}>
-                            {latestLog
-                              ? formatGateEventTimestamp(latestLog.event_time)
-                              : 'No gate logs yet'}
-                          </Text>
-                        </View>
-                        <View style={styles.detailRow}>
-                          <Text style={styles.detailLabel}>Dinner:</Text>
-                          <Text
-                            style={[
-                              styles.dinnerText,
-                              { color: OwnerTheme.colors.success },
-                            ]}>
-                            Included (Inside PG)
-                          </Text>
-                        </View>
-                      </View>
-                    )}
-                  </Pressable>
-                </View>
-              );
-            })}
-          </View>
-        )}
-
-        {/* Recent Event History Section (Latest 3 events) */}
-        <View style={styles.historySectionHeader}>
-          <Text style={styles.historySectionTitle}>Recent Event History</Text>
-          <Pressable
-            accessibilityRole="button"
-            onPress={() => {
-              setFullHistoryVisible(true);
-            }}>
-            <Text style={styles.viewAllText}>View All ›</Text>
-          </Pressable>
-        </View>
-
-        <View style={styles.historyCard}>
-          {loading ? (
-            <View style={{ padding: 16, alignItems: 'center' }}>
-              <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+        }
+        ListFooterComponent={
+          <View>
+            {/* Recent Event History Section (Latest 3 events) */}
+            <View style={styles.historySectionHeader}>
+              <Text style={styles.historySectionTitle}>Recent Event History</Text>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  setFullHistoryVisible(true);
+                }}>
+                <Text style={styles.viewAllText}>View All ›</Text>
+              </Pressable>
             </View>
-          ) : scopedLogs.length === 0 ? (
-            <EmptyState
-              title="No movement records"
-              description="When residents check in or out, records will appear here."
-            />
-          ) : (
-            groupLogsByLocalDay(scopedLogs.slice(0, 3)).map((group) => (
-              <View key={group.dateKey}>
-                <Text style={styles.historyDayLabel}>{group.dateTitle}</Text>
-                {group.items.map((item, index) => {
-                  const resident = residentMap.get(item.resident_id);
-                  const isEntry = item.direction === 'IN';
-                  return (
-                    <View
-                      key={item.id}
-                      style={[
-                        styles.historyItemRow,
-                        index === group.items.length - 1 && {
-                          borderBottomWidth: 0,
-                        },
-                      ]}>
-                      <View
-                        style={[
-                          styles.historyItemIcon,
-                          {
-                            backgroundColor: isEntry
-                              ? OwnerTheme.colors.successLight
-                              : OwnerTheme.colors.warningLight,
-                          },
-                        ]}>
-                        {isEntry ? (
-                          <LogIn size={15} color={OwnerTheme.colors.success} />
-                        ) : (
-                          <LogOut size={15} color={OwnerTheme.colors.warning} />
-                        )}
-                      </View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={styles.historyItemName}>
-                          {resident ? resident.full_name : 'Resident'}{' '}
-                          {resident ? `(Room ${resident.room_number})` : ''}
-                        </Text>
-                        <Text style={styles.historyItemSub}>
-                          {isEntry ? 'Checked in' : 'Checked out'}
-                          {item.purpose ? ` • ${item.purpose}` : ''}
-                        </Text>
-                      </View>
-                      <Text style={styles.historyItemTime}>
-                        {formatEventTime(item.event_time)}
-                      </Text>
-                    </View>
-                  );
-                })}
-              </View>
-            ))
-          )}
-        </View>
 
-        <View style={{ height: 40 }} />
-      </ScrollView>
+            <View style={styles.historyCard}>
+              {loading ? (
+                <View style={{ padding: 16, alignItems: 'center' }}>
+                  <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+                </View>
+              ) : scopedLogs.length === 0 ? (
+                <EmptyState
+                  title="No movement records"
+                  description="When residents check in or out, records will appear here."
+                />
+              ) : (
+                groupLogsByLocalDay(scopedLogs.slice(0, 3)).map((group) => (
+                  <View key={group.dateKey}>
+                    <Text style={styles.historyDayLabel}>{group.dateTitle}</Text>
+                    {group.items.map((item, index) => {
+                      const resident = residentMap.get(item.resident_id);
+                      const isEntry = item.direction === 'IN';
+                      return (
+                        <View
+                          key={item.id}
+                          style={[
+                            styles.historyItemRow,
+                            index === group.items.length - 1 && {
+                              borderBottomWidth: 0,
+                            },
+                          ]}>
+                          <View
+                            style={[
+                              styles.historyItemIcon,
+                              {
+                                backgroundColor: isEntry
+                                  ? OwnerTheme.colors.successLight
+                                  : OwnerTheme.colors.warningLight,
+                              },
+                            ]}>
+                            {isEntry ? (
+                              <LogIn size={15} color={OwnerTheme.colors.success} />
+                            ) : (
+                              <LogOut size={15} color={OwnerTheme.colors.warning} />
+                            )}
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.historyItemName}>
+                              {resident ? resident.full_name : 'Resident'}{' '}
+                              {resident ? `(Room ${resident.room_number})` : ''}
+                            </Text>
+                            <Text style={styles.historyItemSub}>
+                              {isEntry ? 'Checked in' : 'Checked out'}
+                              {item.purpose ? ` • ${item.purpose}` : ''}
+                            </Text>
+                          </View>
+                          <Text style={styles.historyItemTime}>
+                            {formatEventTime(item.event_time)}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </View>
+                ))
+              )}
+            </View>
+
+            <View style={{ height: 40 }} />
+          </View>
+        }
+      />
 
       <GateHistoryModal
         visible={fullHistoryVisible}
