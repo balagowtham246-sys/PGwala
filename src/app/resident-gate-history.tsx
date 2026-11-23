@@ -214,7 +214,11 @@ const GateLogRowCard = memo(function GateLogRowCard({
 export default function StudentGateHistoryScreen() {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const { resident: sharedResident, refreshResident } = useResident();
+  const {
+    resident: sharedResident,
+    loadingResident,
+    refreshResident,
+  } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
 
@@ -271,8 +275,8 @@ export default function StudentGateHistoryScreen() {
   const movementMutation = useRecordStudentMovementMutation();
 
   const loading =
-    (!resident && Boolean(userId)) ||
-    (gateQuery.isPending && !gateQuery.data);
+    (!resident && Boolean(userId) && loadingResident) ||
+    (Boolean(resident?.id) && gateQuery.isLoading && !gateQuery.data);
   const refreshing = manualRefreshing;
   const loadingMoreLogs = gateQuery.isFetchingNextPage;
   const savingMovement = movementMutation.isPending;

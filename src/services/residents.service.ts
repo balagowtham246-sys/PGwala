@@ -527,6 +527,105 @@ export async function createRoom(
   }
 }
 
+export async function renameRoom(
+  propertyId: string,
+  oldRoomNumber: string,
+  input: {
+    roomNumber: string;
+    totalBeds: number;
+    genderType: PropertyGenderType;
+  }
+): Promise<ServiceResult<RoomDefinition>> {
+  const cleanOld = normalizeRoomCode(oldRoomNumber);
+  const cleanNext = normalizeRoomCode(input.roomNumber);
+  if (!cleanNext) {
+    return fail(new Error('Room number is required.'));
+  }
+  if (cleanOld.toLowerCase() === cleanNext.toLowerCase()) {
+    return createRoom(propertyId, input);
+  }
+
+  const cleanBeds = Math.max(1, Math.min(20, Math.round(input.totalBeds || 2)));
+  const traceLabel = `residents:rename-room:${propertyId}`;
+  startTrace(traceLabel);
+
+  try {
+    // Check if target room code already exists in this property
+    const { data: existingTarget, error: checkErr } = await supabase
+      .from('rooms')
+      .select('id')
+      .eq('property_id', propertyId)
+      .eq('room_number', cleanNext)
+      .maybeSingle();
+
+    if (checkErr && !isMissingSchemaError(checkErr)) {
+      return fail(checkErr, 'Could not check target room name.');
+    }
+    if (existingTarget) {
+      return fail(new Error(`Room "${cleanNext}" already exists in this PG.`));
+    }
+
+    // Update rooms table row (or insert if it only existed implicitly via residents)
+    const { data: updatedRoom, error: roomErr } = await supabase
+      .from('rooms')
+      .update({
+        room_number: cleanNext,
+        total_beds: cleanBeds,
+        gender_type: input.genderType,
+      })
+      .eq('property_id', propertyId)
+      .eq('room_number', cleanOld)
+      .select('id, property_id, room_number, total_beds, gender_type')
+      .maybeSingle();
+
+    if (roomErr && !isMissingSchemaError(roomErr)) {
+      return fail(roomErr, 'Could not rename room.');
+    }
+
+    let saved: RoomDefinition = (updatedRoom as RoomDefinition | null) ?? {
+      property_id: propertyId,
+      room_number: cleanNext,
+      total_beds: cleanBeds,
+      gender_type: input.genderType,
+    };
+
+    if (!updatedRoom && !isMissingSchemaError(roomErr)) {
+      const { data: inserted } = await supabase
+        .from('rooms')
+        .upsert(saved, { onConflict: 'property_id,room_number' })
+        .select('id, property_id, room_number, total_beds, gender_type')
+        .maybeSingle();
+      if (inserted) saved = inserted as RoomDefinition;
+    }
+
+    // Cascade room rename to residents assigned to the old room name
+    const { error: resUpdateErr } = await supabase
+      .from('residents')
+      .update({ room_number: cleanNext })
+      .eq('property_id', propertyId)
+      .eq('room_number', cleanOld);
+
+    if (resUpdateErr) {
+      return fail(resUpdateErr, 'Room renamed, but failed to update resident room labels.');
+    }
+
+    const existingLocal = await readLocalRooms(propertyId);
+    const nextLocal = existingLocal.filter(
+      (r) =>
+        normalizeRoomCode(r.room_number).toLowerCase() !== cleanOld.toLowerCase() &&
+        normalizeRoomCode(r.room_number).toLowerCase() !== cleanNext.toLowerCase()
+    );
+    nextLocal.push({ ...saved, room_number: cleanNext, total_beds: cleanBeds });
+    await writeLocalRooms(propertyId, nextLocal);
+
+    return ok({ ...saved, room_number: cleanNext, total_beds: cleanBeds });
+  } catch (err) {
+    return fail(err, 'Could not rename room.');
+  } finally {
+    endTrace(traceLabel);
+  }
+}
+
 export async function fetchResidentsDirectory(
   propertyId: string
 ): Promise<ServiceResult<ResidentDirectoryItem[]>> {

@@ -232,7 +232,7 @@ export default function OwnerWardensScreen() {
       <Modal visible={Boolean(modalPropertyId)} transparent animationType="slide" onRequestClose={() => setModalPropertyId(null)}>
         <KeyboardAvoidingView
           style={styles.modalOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Assign warden</Text>

@@ -129,7 +129,7 @@ export default function ResidentProfileEditScreen() {
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}>
         <ScrollView
           contentContainerStyle={[styles.scrollContent, { paddingBottom: 140 }]}

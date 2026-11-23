@@ -21,7 +21,6 @@ import {
   Megaphone,
   Moon,
   Receipt,
-  Settings,
   Smartphone,
   Utensils,
 } from 'lucide-react-native';
@@ -29,7 +28,6 @@ import {
 import {
   HIGH_CONTRAST_SWITCH_COLORS,
   OwnerHeader,
-  SecondaryButton,
   StatusBadge,
   SWITCH_THUMB_COLOR,
 } from '@/components/ui/owner';
@@ -390,54 +388,67 @@ export default function StudentNotificationsScreen() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}>
-        {/* Push Permission & Test Card */}
-        <View style={styles.card}>
+        {/* Compact Device Push Strip */}
+        <View style={[styles.card, { paddingVertical: 12, gap: 10 }]}>
           <View style={styles.permissionHeaderRow}>
             <View style={styles.cardHeaderLeft}>
-              <Smartphone size={18} color={OwnerTheme.colors.primary} />
-              <Text style={styles.cardTitle}>Device Push Alerts</Text>
+              <Smartphone size={16} color={OwnerTheme.colors.primary} />
+              <View>
+                <Text style={[styles.cardTitle, { fontSize: 14 }]}>Device Push Alerts</Text>
+                <Text style={{ fontSize: 11, color: OwnerTheme.colors.textSecondary }}>
+                  {pushEnabled ? 'Active on this device' : 'Turn on for instant PG alerts'}
+                </Text>
+              </View>
             </View>
-            <StatusBadge
-              label={pushEnabled ? 'Enabled' : 'Off'}
-              variant={pushEnabled ? 'success' : 'neutral'}
-              size="sm"
-            />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <StatusBadge
+                label={pushEnabled ? 'On' : 'Off'}
+                variant={pushEnabled ? 'success' : 'neutral'}
+                size="sm"
+              />
+              {!pushEnabled && canAskAgain && Platform.OS !== 'web' ? (
+                <Pressable
+                  disabled={enablingPush}
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 999,
+                    backgroundColor: OwnerTheme.colors.primary,
+                  }}
+                  onPress={() => void handleEnablePush()}>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: '#FFFFFF' }}>
+                    {enablingPush ? '...' : 'Enable'}
+                  </Text>
+                </Pressable>
+              ) : (
+                <Pressable
+                  style={{
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 999,
+                    backgroundColor: '#F1F5F9',
+                  }}
+                  onPress={handleOpenDeviceSettings}>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: OwnerTheme.colors.textPrimary }}>
+                    Settings
+                  </Text>
+                </Pressable>
+              )}
+            </View>
           </View>
 
-          <Text style={styles.cardDescription}>
-            {Platform.OS === 'web'
-              ? 'Push notifications are delivered on the PGwala Android and iOS apps. You can always read updates inside the Notices inbox.'
-              : pushEnabled
-                ? 'Push permissions are active on this device for rent reminders, meal updates, and owner announcements.'
-                : 'Enable push notifications on this device so you never miss meal updates, rent dues, or urgent PG notices.'}
-          </Text>
-
-          <View style={styles.pushActionsRow}>
-            {!pushEnabled && canAskAgain && Platform.OS !== 'web' ? (
-              <SecondaryButton
-                label="Enable"
-                icon={Bell}
-                onPress={() => void handleEnablePush()}
-                loading={enablingPush}
-                style={styles.pushActionFlex}
-              />
-            ) : (
-              <SecondaryButton
-                label="Device Settings"
-                icon={Settings}
-                onPress={handleOpenDeviceSettings}
-                style={styles.pushActionFlex}
-              />
-            )}
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+            <Text style={{ fontSize: 11, color: OwnerTheme.colors.textMuted }}>
+              Verify alerts reach this phone
+            </Text>
+            <Pressable
+              disabled={testingNotif}
+              onPress={() => void handleSendTestNotification()}>
+              <Text style={{ fontSize: 12, fontWeight: '700', color: OwnerTheme.colors.primary }}>
+                {testingNotif ? 'Sending...' : 'Send Test ›'}
+              </Text>
+            </Pressable>
           </View>
-
-          <SecondaryButton
-            label="Send Test Notification"
-            icon={Bell}
-            onPress={() => void handleSendTestNotification()}
-            loading={testingNotif}
-            style={styles.testButton}
-          />
 
           {testNotice && (
             <View style={styles.testNoticeBox}>

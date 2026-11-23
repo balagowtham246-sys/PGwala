@@ -26,7 +26,7 @@ import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
 import { invokeEdgeFunction } from '@/lib/edge-functions';
 import { extractErrorMessage } from '@/lib/error-utils';
 
-const SUPPORT_EMAIL = 'balagowtham246@gmail.com';
+const SUPPORT_EMAIL = 'admin.pgwala@gmail.com';
 
 type ComplianceDialogKind = 'privacy' | 'support' | 'delete' | null;
 

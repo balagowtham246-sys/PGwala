@@ -372,7 +372,7 @@ export default function OwnerJoinRequestsScreen() {
           if (!submitting) setSelectedReq(null);
         }}>
         <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>

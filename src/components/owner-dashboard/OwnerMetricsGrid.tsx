@@ -4,13 +4,13 @@ import { Href, router } from 'expo-router';
 import {
   Building2,
   ChevronRight,
+  Disc3,
   LogIn,
   LogOut,
   Megaphone,
-  UserPlus,
+  QrCode,
   Users,
   Wrench,
-  Zap,
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
@@ -101,9 +101,11 @@ export function OwnerMetricsGrid({ stats, totalBeds = 0 }: OwnerMetricsGridProps
                   ? styles.pendingBadgeTextDue
                   : styles.pendingBadgeTextClear,
               ]}>
-              {pendingRentPaise > 0
-                ? `${formatPaiseToRupees(pendingRentPaise)} pending`
-                : 'All settled'}
+              {stats.rentTotalPaise === 0
+                ? 'Not billed'
+                : pendingRentPaise > 0
+                  ? `${formatPaiseToRupees(pendingRentPaise)} pending`
+                  : 'All settled'}
             </Text>
           </View>
         </View>
@@ -143,31 +145,31 @@ export function OwnerMetricsGrid({ stats, totalBeds = 0 }: OwnerMetricsGridProps
         </View>
       </Pressable>
 
-      {/* 4-Icon Quick Action Dock */}
+      {/* 4-Icon Quick Action Dock (distinct tools not in bottom bar) */}
       <View style={styles.quickDock}>
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Add new resident"
+          accessibilityLabel="View residents directory"
           style={({ pressed }) => [styles.dockItem, pressed && styles.cardPressed]}
-          onPress={() => router.push('/add-resident')}>
-          <View style={[styles.dockIconWrap, { backgroundColor: '#E0F2FE' }]}>
-            <UserPlus size={19} color="#0284C7" />
+          onPress={() => router.push('/residents-directory' as Href)}>
+          <View style={[styles.dockIconWrap, { backgroundColor: '#DCFCE7' }]}>
+            <Users size={19} color="#059669" />
           </View>
           <Text style={styles.dockLabel} numberOfLines={1}>
-            Add Resident
+            Residents
           </Text>
         </Pressable>
 
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Open electricity and billing"
+          accessibilityLabel="Invite residents via QR code or review join requests"
           style={({ pressed }) => [styles.dockItem, pressed && styles.cardPressed]}
-          onPress={goBilling}>
-          <View style={[styles.dockIconWrap, { backgroundColor: '#FEF3C7' }]}>
-            <Zap size={19} color="#D97706" />
+          onPress={() => router.push('/owner-join-requests' as Href)}>
+          <View style={[styles.dockIconWrap, { backgroundColor: '#E0F2FE' }]}>
+            <QrCode size={19} color="#0284C7" />
           </View>
           <Text style={styles.dockLabel} numberOfLines={1}>
-            Split EB
+            Invite QR
           </Text>
         </Pressable>
 
@@ -186,14 +188,14 @@ export function OwnerMetricsGrid({ stats, totalBeds = 0 }: OwnerMetricsGridProps
 
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="View residents directory"
+          accessibilityLabel="Manage washing machines and live status"
           style={({ pressed }) => [styles.dockItem, pressed && styles.cardPressed]}
-          onPress={() => router.push('/residents-directory' as Href)}>
-          <View style={[styles.dockIconWrap, { backgroundColor: '#DCFCE7' }]}>
-            <Users size={19} color="#059669" />
+          onPress={() => router.push('/owner-settings' as Href)}>
+          <View style={[styles.dockIconWrap, { backgroundColor: '#FEF3C7' }]}>
+            <Disc3 size={19} color="#D97706" />
           </View>
           <Text style={styles.dockLabel} numberOfLines={1}>
-            Residents
+            Machines
           </Text>
         </Pressable>
       </View>

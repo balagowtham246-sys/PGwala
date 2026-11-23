@@ -112,7 +112,12 @@ const EMPTY_DAY_MENU: DayMenuMap = {
 export default function StudentMenuScreen() {
   const qc = useQueryClient();
   const { user } = useAuth();
-  const { resident: sharedResident, refreshResident, patchResident } = useResident();
+  const {
+    resident: sharedResident,
+    loadingResident,
+    refreshResident,
+    patchResident,
+  } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
 
@@ -137,8 +142,8 @@ export default function StudentMenuScreen() {
 
   const loading =
     Boolean(userId) &&
-    ((!sharedResident && menusQuery.isPending) ||
-      (Boolean(activePropertyId) && menusQuery.isPending && !menusQuery.data));
+    ((loadingResident && !sharedResident) ||
+      (Boolean(activePropertyId) && menusQuery.isLoading && !menusQuery.data));
   const refreshing = manualRefreshing;
   const errorMessage = menusQuery.isError ? menusQuery.error.message : null;
   const menusByDate = useMemo(

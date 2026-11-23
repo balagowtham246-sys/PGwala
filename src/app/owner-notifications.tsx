@@ -271,18 +271,13 @@ export default function OwnerNotificationsScreen() {
         <View style={styles.card}>
           <View style={styles.cardHeader}>
             <ShieldAlert size={18} color={OwnerTheme.colors.warning} />
-            <Text style={styles.cardTitle}>Resident Departure Alerts</Text>
+            <Text style={styles.cardTitle}>Departure Alerts</Text>
           </View>
-          <Text style={styles.cardDescription}>
-            Get notified when residents check OUT for reasons other than college.
-          </Text>
 
           <View style={styles.settingRow}>
             <View style={styles.settingTextCol}>
-              <Text style={styles.settingLabel}>Non-College Exit Alerts</Text>
-              <Text style={styles.settingHint}>
-                Alerts when residents leave for shopping, outing, or hometown
-              </Text>
+              <Text style={styles.settingLabel}>Non-College Exits</Text>
+              <Text style={styles.settingHint}>Outings, shopping, or hometown</Text>
             </View>
             <Switch
               value={prefs.nonCollegeAlerts}
@@ -301,13 +296,8 @@ export default function OwnerNotificationsScreen() {
             pointerEvents={prefs.nonCollegeAlerts ? 'auto' : 'none'}>
             <View style={styles.settingRow}>
               <View style={styles.settingTextCol}>
-                <Text style={styles.settingLabel}>
-                  Evening Hours Only (6:00 PM+)
-                </Text>
-                <Text style={styles.settingHint}>
-                  Only alert for evening or night departures to avoid routine
-                  daytime notifications
-                </Text>
+                <Text style={styles.settingLabel}>Evening Only (6 PM+)</Text>
+                <Text style={styles.settingHint}>Skip daytime alerts</Text>
               </View>
               <Switch
                 value={prefs.eveningOnly}
@@ -320,10 +310,8 @@ export default function OwnerNotificationsScreen() {
 
             <View style={[styles.settingRow, styles.lastRow]}>
               <View style={styles.settingTextCol}>
-                <Text style={styles.settingLabel}>Limit repeat alerts</Text>
-                <Text style={styles.settingHint}>
-                  Limit repeat alerts to 1 per 15 min per resident
-                </Text>
+                <Text style={styles.settingLabel}>Limit Repeat Alerts</Text>
+                <Text style={styles.settingHint}>Max 1 alert per 15 min</Text>
               </View>
               <Switch
                 value={prefs.rateLimitEnabled}
@@ -342,9 +330,6 @@ export default function OwnerNotificationsScreen() {
             <Bell size={18} color={OwnerTheme.colors.primary} />
             <Text style={styles.cardTitle}>Delivery Channels</Text>
           </View>
-          <Text style={styles.cardDescription}>
-            Choose how departure and operational alerts are delivered to you.
-          </Text>
 
           <View style={[styles.settingRow, styles.lastRow]}>
             <View style={styles.settingTextCol}>

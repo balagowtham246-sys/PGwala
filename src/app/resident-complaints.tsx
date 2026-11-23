@@ -66,7 +66,11 @@ interface StudentResident {
 
 export default function StudentComplaintsScreen() {
   const { user } = useAuth();
-  const { resident: sharedResident, refreshResident } = useResident();
+  const {
+    resident: sharedResident,
+    loadingResident,
+    refreshResident,
+  } = useResident();
   const { showToast } = useToast();
   const userId = user?.id;
 
@@ -111,8 +115,8 @@ export default function StudentComplaintsScreen() {
   const createComplaintMutation = useStudentCreateComplaintMutation();
 
   const loading =
-    (!resident && Boolean(userId)) ||
-    (complaintsQuery.isPending && !complaintsQuery.data);
+    (!resident && Boolean(userId) && loadingResident) ||
+    (Boolean(resident?.id) && complaintsQuery.isLoading && !complaintsQuery.data);
   const refreshing = manualRefreshing;
   const loadingMore = complaintsQuery.isFetchingNextPage;
   const hasMore = Boolean(complaintsQuery.hasNextPage);

@@ -104,7 +104,7 @@ export function GoingOutModal({
         if (!saving) handleClose();
       }}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.overlay}>
         <Pressable style={styles.backdrop} onPress={handleClose} />
         <View style={styles.sheet}>

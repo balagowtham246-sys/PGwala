@@ -7,16 +7,11 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
 import { AlertTriangle, X } from 'lucide-react-native';
-import {
-  HIGH_CONTRAST_SWITCH_COLORS,
-  SWITCH_THUMB_COLOR,
-} from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import {
   ResidentRentBillItem,
@@ -119,7 +114,7 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
       animationType="fade"
       onRequestClose={onClose}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.modalOverlay}>
         <View style={styles.modalCard}>
           <View style={styles.modalHeaderRow}>
@@ -133,19 +128,14 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
             const onlyMissing = props.onlyFillMissingRent ?? true;
             const missingCount = props.missingRentCount ?? 0;
             const unpaidCount = props.unpaidExistingCount ?? 0;
-            const affectedCount = onlyMissing
-              ? missingCount
-              : missingCount + unpaidCount;
+            const allTargetCount = missingCount + unpaidCount;
             return (
               <>
                 <Text style={styles.modalExplanation}>
-                  Set default room rent for {props.monthLabel}. Paid bills are
-                  always preserved.
+                  {props.monthLabel} · Paid bills untouched
                 </Text>
 
-                <Text style={styles.inputFieldLabel}>
-                  Monthly Room Rent Amount (₹)
-                </Text>
+                <Text style={styles.inputFieldLabel}>Room Rent (₹)</Text>
                 <TextInput
                   style={styles.inputBox}
                   value={props.rentInputRupees}
@@ -156,30 +146,59 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
                 />
 
                 {props.onToggleOnlyFillMissingRent && (
-                  <View style={styles.safeToggleBox}>
-                    <View style={styles.safeToggleTextCol}>
-                      <Text style={styles.safeToggleTitle}>
-                        Only fill residents without rent (₹0)
-                      </Text>
-                      <Text style={styles.safeToggleSub}>
-                        {onlyMissing
-                          ? missingCount > 0
-                            ? `Will set rent for ${missingCount} resident${
-                                missingCount === 1 ? '' : 's'
-                              }. Custom room rents stay safe.`
-                            : 'All residents already have rent set. Turn off to overwrite unpaid bills.'
-                          : `Will overwrite ${affectedCount} unpaid/unbilled resident${
-                              affectedCount === 1 ? '' : 's'
-                            }.`}
-                      </Text>
+                  <View style={{ marginBottom: 14 }}>
+                    <Text style={styles.inputFieldLabel}>Apply To</Text>
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        backgroundColor: '#F1F5F9',
+                        borderRadius: 10,
+                        padding: 3,
+                        gap: 4,
+                      }}>
+                      <Pressable
+                        accessibilityRole="button"
+                        style={{
+                          flex: 1,
+                          paddingVertical: 9,
+                          borderRadius: 8,
+                          alignItems: 'center',
+                          backgroundColor: onlyMissing ? '#FFFFFF' : 'transparent',
+                        }}
+                        onPress={() => props.onToggleOnlyFillMissingRent?.(true)}>
+                        <Text
+                          style={{
+                            fontSize: 12,
+                            fontWeight: onlyMissing ? '700' : '600',
+                            color: onlyMissing
+                              ? OwnerTheme.colors.primary
+                              : OwnerTheme.colors.textSecondary,
+                          }}>
+                          Unset only ({missingCount})
+                        </Text>
+                      </Pressable>
+                      <Pressable
+                        accessibilityRole="button"
+                        style={{
+                          flex: 1,
+                          paddingVertical: 9,
+                          borderRadius: 8,
+                          alignItems: 'center',
+                          backgroundColor: !onlyMissing ? '#FFFFFF' : 'transparent',
+                        }}
+                        onPress={() => props.onToggleOnlyFillMissingRent?.(false)}>
+                        <Text
+                          style={{
+                            fontSize: 12,
+                            fontWeight: !onlyMissing ? '700' : '600',
+                            color: !onlyMissing
+                              ? OwnerTheme.colors.primary
+                              : OwnerTheme.colors.textSecondary,
+                          }}>
+                          All unpaid ({allTargetCount})
+                        </Text>
+                      </Pressable>
                     </View>
-                    <Switch
-                      value={onlyMissing}
-                      onValueChange={props.onToggleOnlyFillMissingRent}
-                      trackColor={HIGH_CONTRAST_SWITCH_COLORS}
-                      thumbColor={SWITCH_THUMB_COLOR}
-                      ios_backgroundColor={HIGH_CONTRAST_SWITCH_COLORS.false}
-                    />
                   </View>
                 )}
               </>
@@ -189,14 +208,10 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
           {mode === 'edit-rent' && props.resident && (
             <>
               <Text style={styles.modalExplanation}>
-                Adjust rent for {props.resident.full_name} (Room{' '}
-                {props.resident.room_number}). Unpaid bill for{' '}
-                {props.monthLabel} will update automatically.
+                {props.resident.full_name} · Room {props.resident.room_number} · {props.monthLabel}
               </Text>
 
-              <Text style={styles.inputFieldLabel}>
-                Monthly Rent Amount (₹)
-              </Text>
+              <Text style={styles.inputFieldLabel}>Monthly Rent (₹)</Text>
               <TextInput
                 style={styles.inputBox}
                 value={props.rentInputRupees}

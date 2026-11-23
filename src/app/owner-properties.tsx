@@ -581,7 +581,7 @@ export default function OwnerPropertiesScreen() {
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
@@ -831,7 +831,7 @@ export default function OwnerPropertiesScreen() {
         onRequestClose={closeAddModal}>
         <KeyboardAvoidingView
           style={OwnerSharedStyles.modalOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <Pressable
             style={StyleSheet.absoluteFill}
             accessibilityLabel="Close add property modal"
@@ -1015,8 +1015,10 @@ const styles = StyleSheet.create({
   },
   metaRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     alignItems: 'center',
-    gap: 6,
+    columnGap: 6,
+    rowGap: 4,
     marginTop: 3,
   },
   metaItem: {

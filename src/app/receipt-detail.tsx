@@ -441,7 +441,7 @@ export default function ReceiptDetailScreen() {
                   )}
                 </Pressable>
                 <Text style={styles.reversalHint}>
-                  Reversing will re-open all settled charges as outstanding and preserve this receipt marked as reversed.
+                  Re-opens settled charges as unpaid.
                 </Text>
               </View>
             )}

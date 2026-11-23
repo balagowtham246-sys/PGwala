@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
@@ -21,6 +23,7 @@ import {
 import {
   createRoom,
   fetchRoomsWithOccupancy,
+  renameRoom,
   RoomWithOccupancy,
 } from '@/services/residents.service';
 
@@ -99,9 +102,7 @@ export function RoomBedPicker({
   }, [loadRooms, refreshSignal]);
 
   const handleSaveRoomModal = async () => {
-    const clean = editingRoomTarget
-      ? editingRoomTarget.roomNumber
-      : normalizeRoomCode(newRoomNumber);
+    const clean = normalizeRoomCode(newRoomNumber);
     if (!clean) {
       setCreateError('Please enter a room number or code (e.g. 101 or D).');
       return;
@@ -112,11 +113,19 @@ export function RoomBedPicker({
 
     setCreatingRoom(true);
     setCreateError(null);
-    const res = await createRoom(propertyId, {
-      roomNumber: clean,
-      totalBeds: clampedBeds,
-      genderType: newRoomGender,
-    });
+    const oldRoomNumber = editingRoomTarget?.roomNumber ?? null;
+    const res =
+      oldRoomNumber && oldRoomNumber.toLowerCase() !== clean.toLowerCase()
+        ? await renameRoom(propertyId, oldRoomNumber, {
+            roomNumber: clean,
+            totalBeds: clampedBeds,
+            genderType: newRoomGender,
+          })
+        : await createRoom(propertyId, {
+            roomNumber: clean,
+            totalBeds: clampedBeds,
+            genderType: newRoomGender,
+          });
     setCreatingRoom(false);
 
     if (!res.ok) {
@@ -131,7 +140,12 @@ export function RoomBedPicker({
     setExpandedRoom(res.data.room_number);
     if (!wasEdit) {
       onSelect(res.data.room_number, 'Bed 1');
-    } else if (normalizeRoomCode(selectedRoomNumber).toLowerCase() === res.data.room_number.toLowerCase()) {
+    } else if (
+      normalizeRoomCode(selectedRoomNumber).toLowerCase() ===
+        (oldRoomNumber ?? '').toLowerCase() ||
+      normalizeRoomCode(selectedRoomNumber).toLowerCase() ===
+        res.data.room_number.toLowerCase()
+    ) {
       onSelect(res.data.room_number, selectedBedLabel || '');
     }
     await loadRooms();
@@ -317,7 +331,9 @@ export function RoomBedPicker({
         transparent
         animationType="fade"
         onRequestClose={() => setCreateVisible(false)}>
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView
+          style={styles.modalOverlay}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <Pressable
             style={StyleSheet.absoluteFill}
             onPress={() => setCreateVisible(false)}
@@ -337,29 +353,20 @@ export function RoomBedPicker({
               </Pressable>
             </View>
 
+            <Text style={styles.inputLabel}>Room Number / Name *</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g. 101 or D (auto-prefixed with Room)"
+              placeholderTextColor="#94A3B8"
+              value={newRoomNumber}
+              onChangeText={setNewRoomNumber}
+              autoCapitalize="characters"
+            />
             {editingRoomTarget ? (
-              <View style={styles.editingRoomBanner}>
-                <Text style={styles.editingRoomTitle}>
-                  {formatRoomLabel(editingRoomTarget.roomNumber)}
-                </Text>
-                <Text style={styles.hintText}>
-                  Currently {editingRoomTarget.occupiedBeds} occupied — minimum{' '}
-                  {Math.max(1, editingRoomTarget.occupiedBeds)} beds required.
-                </Text>
-              </View>
-            ) : (
-              <>
-                <Text style={styles.inputLabel}>Room Number / Code *</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="e.g. 101 or D (auto-prefixed with Room)"
-                  placeholderTextColor="#94A3B8"
-                  value={newRoomNumber}
-                  onChangeText={setNewRoomNumber}
-                  autoCapitalize="characters"
-                />
-              </>
-            )}
+              <Text style={[styles.hintText, { marginTop: 4 }]}>
+                {editingRoomTarget.occupiedBeds} occupied · updates all residents
+              </Text>
+            ) : null}
 
             <Text style={[styles.inputLabel, { marginTop: 12 }]}>Total Beds *</Text>
             <View style={styles.stepperRow}>
@@ -424,7 +431,7 @@ export function RoomBedPicker({
               </Text>
             </Pressable>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );

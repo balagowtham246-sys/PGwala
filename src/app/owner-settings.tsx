@@ -705,7 +705,7 @@ export default function OwnerSettingsScreen() {
         }}>
         <KeyboardAvoidingView
           style={styles.modalBackdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <Pressable
             style={StyleSheet.absoluteFill}
             accessibilityLabel="Close washing machines modal"
@@ -843,11 +843,6 @@ export default function OwnerSettingsScreen() {
               </View>
             ) : (
               <>
-                <Text style={styles.stepperHelpText}>
-                  Set the total number of washing machines available in this PG and
-                  label each unit.
-                </Text>
-
                 <View style={styles.stepperContainer}>
                   <Pressable
                     accessibilityRole="button"

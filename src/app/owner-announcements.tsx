@@ -408,7 +408,7 @@ export default function OwnerAnnouncementsScreen() {
 
       <KeyboardAvoidingView
         style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
         {loadingProperties && !selectedPropertyId ? (
           <View style={styles.scrollContent}>
             <LoadingState message="Loading property..." />
@@ -718,8 +718,7 @@ export default function OwnerAnnouncementsScreen() {
                     </View>
 
                     <Text style={styles.whatsappSubtext}>
-                      Tap any resident below to open their pre-filled WhatsApp message, or share the
-                      broadcast text again.
+                      Tap a resident to message on WhatsApp.
                     </Text>
 
                     {whatsappRecipientsWithPhone.length > 0 ? (
