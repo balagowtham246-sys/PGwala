@@ -1,6 +1,6 @@
 import React from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
-import { Check, CheckCircle2, Clock, LogIn, LogOut, Receipt } from 'lucide-react-native';
+import { Check, LogIn, LogOut } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
@@ -13,6 +13,9 @@ import type {
 } from '@/services/dashboard.service';
 
 interface ResidentQuickTilesProps {
+  residentName?: string;
+  roomLabel?: string;
+  propertyName?: string;
   pendingDuesPaise: number | null;
   pendingReviewPaise?: number | null;
   currentMonthBillGenerated?: boolean;
@@ -27,6 +30,9 @@ interface ResidentQuickTilesProps {
 }
 
 export function ResidentQuickTiles({
+  residentName,
+  roomLabel,
+  propertyName,
   pendingDuesPaise,
   pendingReviewPaise = null,
   currentMonthBillGenerated,
@@ -43,88 +49,91 @@ export function ResidentQuickTiles({
     ? formatGateEventTimestamp(latestMovement.event_time)
     : '';
 
+  const billingState =
+    pendingDuesPaise !== null && pendingDuesPaise > 0
+      ? {
+          dotColor: '#FB7185',
+          title: `₹${(pendingDuesPaise / 100).toLocaleString('en-IN')} rent due`,
+          subtitle: 'Tap to view breakdown & pay',
+          cta: 'Pay now ›',
+          ctaColor: '#FDA4AF',
+        }
+      : pendingReviewPaise !== null && pendingReviewPaise > 0
+        ? {
+            dotColor: '#FBBF24',
+            title: `₹${(pendingReviewPaise / 100).toLocaleString('en-IN')} under review`,
+            subtitle: 'Proof submitted · Awaiting approval',
+            cta: 'Details ›',
+            ctaColor: '#FDE68A',
+          }
+        : currentMonthBillGenerated === false
+          ? {
+              dotColor: '#94A3B8',
+              title: 'Monthly bill not generated yet',
+              subtitle: 'Your PG owner will generate it soon',
+              cta: 'Bills ›',
+              ctaColor: '#CBD5E1',
+            }
+          : {
+              dotColor: '#34D399',
+              title: 'Rent settled',
+              subtitle: 'View receipts & monthly summary',
+              cta: 'Receipts ›',
+              ctaColor: '#6EE7B7',
+            };
+
   return (
     <>
-      {/* Lead Hero Card: Rent Due or Settled Summary */}
-      {pendingDuesPaise !== null && pendingDuesPaise > 0 ? (
-        <Pressable
-          accessibilityRole="button"
-          style={({ pressed }) => [
-            styles.heroFocusCard,
-            styles.heroFocusCardDue,
-            pressed && styles.btnPressed,
-          ]}
-          onPress={onPressRentDue}>
-          <View style={styles.heroFocusLeft}>
-            <Text style={styles.heroFocusLabelDue}>Rent due</Text>
-            <Text style={styles.heroFocusTitle}>
-              ₹{(pendingDuesPaise / 100).toLocaleString('en-IN')} due
+      {/* Fintech-Modern Dark-Slate Resident Pass Hero Card */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`${billingState.title}. Open monthly bills`}
+        style={({ pressed }) => [styles.residentHeroCard, pressed && styles.btnPressed]}
+        onPress={onPressRentDue}>
+        <View style={styles.residentHeroTopRow}>
+          <View style={styles.residentHeroNameCol}>
+            <Text style={styles.residentHeroGreeting} numberOfLines={1}>
+              {residentName ? `Hi, ${residentName}` : 'Welcome back'}
             </Text>
-            <Text style={styles.heroFocusSub}>Tap to view breakdown & pay ›</Text>
+            {propertyName ? (
+              <Text style={styles.residentHeroProp} numberOfLines={1}>
+                {propertyName}
+              </Text>
+            ) : null}
           </View>
-          <Receipt size={24} color={OwnerTheme.colors.danger} />
-        </Pressable>
-      ) : pendingReviewPaise !== null && pendingReviewPaise > 0 ? (
-        <Pressable
-          accessibilityRole="button"
-          style={({ pressed }) => [
-            styles.heroFocusCard,
-            styles.heroFocusCardReview,
-            pressed && styles.btnPressed,
-          ]}
-          onPress={onPressRentDue}>
-          <View style={styles.heroFocusLeft}>
-            <Text style={styles.heroFocusLabelReview}>Under review</Text>
-            <Text style={styles.heroFocusTitle}>
-              ₹{(pendingReviewPaise / 100).toLocaleString('en-IN')} under review
-            </Text>
-            <Text style={styles.heroFocusSub}>
-              Payment proof submitted • Awaiting owner approval ›
-            </Text>
+          {roomLabel ? (
+            <View style={styles.residentHeroRoomPill}>
+              <Text style={styles.residentHeroRoomText}>{roomLabel}</Text>
+            </View>
+          ) : null}
+        </View>
+
+        <View style={styles.residentHeroBillStrip}>
+          <View style={styles.residentHeroBillLeft}>
+            <View
+              style={[
+                styles.residentHeroDot,
+                { backgroundColor: billingState.dotColor },
+              ]}
+            />
+            <View style={styles.residentHeroBillTextCol}>
+              <Text style={styles.residentHeroBillTitle} numberOfLines={1}>
+                {billingState.title}
+              </Text>
+              <Text style={styles.residentHeroBillSub} numberOfLines={1}>
+                {billingState.subtitle}
+              </Text>
+            </View>
           </View>
-          <Receipt size={24} color={OwnerTheme.colors.warning} />
-        </Pressable>
-      ) : currentMonthBillGenerated === false ? (
-        <Pressable
-          accessibilityRole="button"
-          style={({ pressed }) => [
-            styles.heroFocusCard,
-            styles.heroFocusCardPendingGen,
-            pressed && styles.btnPressed,
-          ]}
-          onPress={onPressRentDue}>
-          <View style={styles.pendingGenIconWrap}>
-            <Clock size={20} color="#475569" />
-          </View>
-          <View style={styles.heroFocusLeft}>
-            <Text style={styles.pendingGenTitle}>Monthly bill not generated yet</Text>
-            <Text style={styles.pendingGenSub} numberOfLines={1}>
-              Owner will generate this month&apos;s bill soon
-            </Text>
-          </View>
-          <Text style={styles.pendingGenLink}>View bills ›</Text>
-        </Pressable>
-      ) : (
-        <Pressable
-          accessibilityRole="button"
-          style={({ pressed }) => [
-            styles.heroFocusCard,
-            styles.heroFocusCardSettled,
-            pressed && styles.btnPressed,
-          ]}
-          onPress={onPressRentDue}>
-          <View style={styles.settledIconWrap}>
-            <CheckCircle2 size={20} color={OwnerTheme.colors.success} />
-          </View>
-          <View style={styles.heroFocusLeft}>
-            <Text style={styles.settledTitle}>Rent settled</Text>
-            <Text style={styles.settledSub} numberOfLines={1}>
-              View receipts &amp; monthly summary
-            </Text>
-          </View>
-          <Text style={styles.settledLink}>View bills ›</Text>
-        </Pressable>
-      )}
+          <Text
+            style={[
+              styles.residentHeroBillCta,
+              { color: billingState.ctaColor },
+            ]}>
+            {billingState.cta}
+          </Text>
+        </View>
+      </Pressable>
 
       {/* Top 2: 1 x 2 Hero Section (Washing Machine & Gate Attendance Side-by-Side) */}
       <View style={styles.heroRow}>
@@ -216,110 +225,98 @@ export function ResidentQuickTiles({
 }
 
 const styles = StyleSheet.create({
-  heroFocusCard: {
+  residentHeroCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    gap: 14,
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 5,
+  },
+  residentHeroTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    gap: 12,
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    borderLeftWidth: 4,
-    borderLeftColor: OwnerTheme.colors.primary,
-    padding: 16,
-    ...OwnerTheme.shadow,
+    gap: 10,
   },
-  heroFocusCardDue: {
-    borderLeftColor: OwnerTheme.colors.danger,
-    backgroundColor: '#FFFBFB',
-  },
-  heroFocusCardSettled: {
-    borderLeftColor: OwnerTheme.colors.success,
-    borderColor: '#BBF7D0',
-    backgroundColor: '#F0FDF4',
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-  },
-  settledIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: OwnerTheme.colors.successLight,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  settledTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#166534',
-  },
-  settledSub: {
-    fontSize: 12,
-    color: '#15803D',
-  },
-  settledLink: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: OwnerTheme.colors.success,
-  },
-  heroFocusCardPendingGen: {
-    borderLeftColor: '#64748B',
-    borderColor: '#CBD5E1',
-    backgroundColor: '#F8FAFC',
-    paddingVertical: 12,
-    paddingHorizontal: 14,
-  },
-  pendingGenIconWrap: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: '#E2E8F0',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  pendingGenTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: '#1E293B',
-  },
-  pendingGenSub: {
-    fontSize: 12,
-    color: '#475569',
-  },
-  pendingGenLink: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: OwnerTheme.colors.primary,
-  },
-  heroFocusLeft: {
+  residentHeroNameCol: {
     flex: 1,
-    gap: 3,
+    minWidth: 0,
   },
-  heroFocusLabelDue: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: OwnerTheme.colors.danger,
-    letterSpacing: 0.1,
-  },
-  heroFocusCardReview: {
-    backgroundColor: '#FFFBEB',
-    borderColor: '#FDE68A',
-  },
-  heroFocusLabelReview: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#B45309',
-    letterSpacing: 0.1,
-  },
-  heroFocusTitle: {
-    fontSize: 18,
+  residentHeroGreeting: {
+    fontSize: 21,
     fontWeight: '800',
-    color: OwnerTheme.colors.textPrimary,
+    color: '#FFFFFF',
+    letterSpacing: -0.4,
   },
-  heroFocusSub: {
-    fontSize: 13,
-    color: OwnerTheme.colors.textSecondary,
+  residentHeroProp: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  residentHeroRoomPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: 'rgba(56, 189, 248, 0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.3)',
+  },
+  residentHeroRoomText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#7DD3FC',
+  },
+  residentHeroBillStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    borderRadius: 13,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.09)',
+  },
+  residentHeroBillLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+  },
+  residentHeroDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 4.5,
+    flexShrink: 0,
+  },
+  residentHeroBillTextCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  residentHeroBillTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  residentHeroBillSub: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: '#94A3B8',
+    marginTop: 1,
+  },
+  residentHeroBillCta: {
+    fontSize: 12,
+    fontWeight: '700',
+    flexShrink: 0,
   },
   heroRow: {
     flexDirection: 'row',
@@ -328,12 +325,13 @@ const styles = StyleSheet.create({
   gateHeroCard: {
     flex: 1,
     backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    padding: 12,
+    borderRadius: 16,
+    padding: 13,
     borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
+    borderColor: '#E2E8F0',
     justifyContent: 'space-between',
-    minHeight: 140,
+    minHeight: 144,
+    ...OwnerTheme.shadow,
   },
   gateHeaderRow: {
     flexDirection: 'row',

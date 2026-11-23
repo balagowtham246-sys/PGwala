@@ -317,3 +317,50 @@ export function buildMonthlyRentCsv(params: {
   return [header, ...rows].join('\n');
 }
 
+export interface ReceiptShareInput {
+  receiptNumber: string;
+  status: 'approved' | 'reversed';
+  amountPaise: number;
+  method: string;
+  paymentDate: string;
+  propertyName: string;
+  propertyAddress?: string | null;
+  residentName: string;
+  roomNumber?: string | null;
+  notes?: string | null;
+  allocations?: { description: string; amountPaise: number; status?: string }[];
+}
+
+/**
+ * Formats a clean, shareable digital payment receipt for WhatsApp / HRA sharing.
+ */
+export function buildPaymentReceiptShareText(input: ReceiptShareInput): string {
+  const statusLabel = input.status === 'reversed' ? 'REVERSED' : 'PAID';
+  const lines: string[] = [
+    `*PG Rent Receipt (${statusLabel})*`,
+    `Receipt No: ${input.receiptNumber}`,
+    `PG: ${input.propertyName}${input.propertyAddress ? ` (${input.propertyAddress})` : ''}`,
+    `Resident: ${input.residentName}${input.roomNumber ? ` · Room ${input.roomNumber}` : ''}`,
+    `Amount: ${formatPaiseToRupees(input.amountPaise)}`,
+    `Method: ${input.method.toUpperCase()}`,
+    `Date: ${input.paymentDate}`,
+  ];
+
+  if (input.allocations && input.allocations.length > 0) {
+    lines.push('', '*Bill Breakdown:*');
+    for (const alloc of input.allocations) {
+      const reversedTag = alloc.status === 'reversed' ? ' (Reversed)' : '';
+      lines.push(
+        `• ${alloc.description}${reversedTag}: ${formatPaiseToRupees(alloc.amountPaise)}`
+      );
+    }
+  }
+
+  if (input.notes?.trim()) {
+    lines.push('', `Note: ${input.notes.trim()}`);
+  }
+
+  lines.push('', 'Generated via PGwala');
+  return lines.join('\n');
+}
+

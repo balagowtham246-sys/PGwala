@@ -142,8 +142,16 @@ export function decodeBase64ToBytes(input: string): Uint8Array {
   return bytes.subarray(0, u);
 }
 
+const SIGNED_URL_CACHE_MAX_ENTRIES = 200;
+const signedUrlCache = new Map<string, { url: string; expiresAt: number }>();
+
+export function clearSignedUrlCache(): void {
+  signedUrlCache.clear();
+}
+
 /**
- * Resolves a private storage path or full public/signed URL into a time-limited signed URL.
+ * Resolves a private storage path or full public/signed URL into a time-limited signed URL,
+ * cached in memory for 75% of `expiresInSeconds` so re-opening proofs/photos is instant (0ms).
  */
 export async function getSignedStorageUrl(
   bucket: string,
@@ -181,6 +189,13 @@ export async function getSignedStorageUrl(
     relativePath = parts[1] ? decodeURIComponent(parts[1].split('?')[0]) : trimmed;
   }
 
+  const cacheKey = `${bucket}:${relativePath}`;
+  const nowMs = Date.now();
+  const cached = signedUrlCache.get(cacheKey);
+  if (cached && cached.expiresAt > nowMs) {
+    return cached.url;
+  }
+
   try {
     const { data, error } = await supabase.storage
       .from(bucket)
@@ -191,7 +206,16 @@ export async function getSignedStorageUrl(
       return trimmed;
     }
 
-    return data?.signedUrl || trimmed;
+    const signed = data?.signedUrl || trimmed;
+    if (data?.signedUrl) {
+      if (signedUrlCache.size >= SIGNED_URL_CACHE_MAX_ENTRIES) {
+        const oldestKey = signedUrlCache.keys().next().value;
+        if (oldestKey) signedUrlCache.delete(oldestKey);
+      }
+      const ttlMs = Math.max(60_000, Math.floor(expiresInSeconds * 750));
+      signedUrlCache.set(cacheKey, { url: signed, expiresAt: nowMs + ttlMs });
+    }
+    return signed;
   } catch (err) {
     console.warn(`[Storage:${bucket}] Failed to create signed URL:`, err);
     return trimmed;

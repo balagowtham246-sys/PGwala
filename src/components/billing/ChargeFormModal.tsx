@@ -7,11 +7,16 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
 } from 'react-native';
-import { X } from 'lucide-react-native';
+import { AlertTriangle, X } from 'lucide-react-native';
+import {
+  HIGH_CONTRAST_SWITCH_COLORS,
+  SWITCH_THUMB_COLOR,
+} from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import {
   ResidentRentBillItem,
@@ -25,6 +30,10 @@ export type ChargeFormModalProps =
       monthLabel: string;
       rentInputRupees: string;
       onChangeRentInputRupees: (value: string) => void;
+      onlyFillMissingRent?: boolean;
+      onToggleOnlyFillMissingRent?: (value: boolean) => void;
+      missingRentCount?: number;
+      unpaidExistingCount?: number;
       submitting: boolean;
       onClose: () => void;
       onConfirm: () => void;
@@ -43,7 +52,9 @@ export type ChargeFormModalProps =
   | {
       mode: 'split-eb';
       visible: boolean;
+      monthLabel?: string;
       availableRooms: string[];
+      existingEbRooms?: string[];
       selectedRoom: string;
       onSelectRoom: (room: string) => void;
       ebTotalRupeesInput: string;
@@ -71,6 +82,36 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
       ? 'Save'
       : 'Split & Send';
 
+  let isConfirmDisabled = submitting;
+  if (mode === 'generate-rent') {
+    const parsed = parseFloat(props.rentInputRupees.trim());
+    const onlyMissing = props.onlyFillMissingRent ?? true;
+    const missingCount = props.missingRentCount ?? 0;
+    const unpaidCount = props.unpaidExistingCount ?? 0;
+    const targetCount = onlyMissing ? missingCount : missingCount + unpaidCount;
+    if (isNaN(parsed) || parsed <= 0 || targetCount === 0) {
+      isConfirmDisabled = true;
+    }
+  } else if (mode === 'edit-rent') {
+    const parsed = parseFloat(props.rentInputRupees.trim());
+    if (isNaN(parsed) || parsed <= 0) {
+      isConfirmDisabled = true;
+    }
+  } else if (mode === 'split-eb') {
+    const parsed = parseFloat(props.ebTotalRupeesInput.trim());
+    const occupants = props.allResidents.filter(
+      (r) => r.room_number === props.selectedRoom
+    );
+    if (
+      !props.selectedRoom ||
+      occupants.length === 0 ||
+      isNaN(parsed) ||
+      parsed <= 0
+    ) {
+      isConfirmDisabled = true;
+    }
+  }
+
   return (
     <Modal
       visible={visible}
@@ -88,27 +129,62 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
             </Pressable>
           </View>
 
-          {mode === 'generate-rent' && (
-            <>
-              <Text style={styles.modalExplanation}>
-                Set default room rent for {props.monthLabel}. Existing unpaid
-                rent bills for {props.monthLabel} will be updated automatically.
-                Paid bills are preserved.
-              </Text>
+          {mode === 'generate-rent' && (() => {
+            const onlyMissing = props.onlyFillMissingRent ?? true;
+            const missingCount = props.missingRentCount ?? 0;
+            const unpaidCount = props.unpaidExistingCount ?? 0;
+            const affectedCount = onlyMissing
+              ? missingCount
+              : missingCount + unpaidCount;
+            return (
+              <>
+                <Text style={styles.modalExplanation}>
+                  Set default room rent for {props.monthLabel}. Paid bills are
+                  always preserved.
+                </Text>
 
-              <Text style={styles.inputFieldLabel}>
-                Monthly Room Rent Amount (₹)
-              </Text>
-              <TextInput
-                style={styles.inputBox}
-                value={props.rentInputRupees}
-                onChangeText={props.onChangeRentInputRupees}
-                placeholder="e.g. 8000"
-                placeholderTextColor={OwnerTheme.colors.textMuted}
-                keyboardType="numeric"
-              />
-            </>
-          )}
+                <Text style={styles.inputFieldLabel}>
+                  Monthly Room Rent Amount (₹)
+                </Text>
+                <TextInput
+                  style={styles.inputBox}
+                  value={props.rentInputRupees}
+                  onChangeText={props.onChangeRentInputRupees}
+                  placeholder="e.g. 6000"
+                  placeholderTextColor={OwnerTheme.colors.textMuted}
+                  keyboardType="numeric"
+                />
+
+                {props.onToggleOnlyFillMissingRent && (
+                  <View style={styles.safeToggleBox}>
+                    <View style={styles.safeToggleTextCol}>
+                      <Text style={styles.safeToggleTitle}>
+                        Only fill residents without rent (₹0)
+                      </Text>
+                      <Text style={styles.safeToggleSub}>
+                        {onlyMissing
+                          ? missingCount > 0
+                            ? `Will set rent for ${missingCount} resident${
+                                missingCount === 1 ? '' : 's'
+                              }. Custom room rents stay safe.`
+                            : 'All residents already have rent set. Turn off to overwrite unpaid bills.'
+                          : `Will overwrite ${affectedCount} unpaid/unbilled resident${
+                              affectedCount === 1 ? '' : 's'
+                            }.`}
+                      </Text>
+                    </View>
+                    <Switch
+                      value={onlyMissing}
+                      onValueChange={props.onToggleOnlyFillMissingRent}
+                      trackColor={HIGH_CONTRAST_SWITCH_COLORS}
+                      thumbColor={SWITCH_THUMB_COLOR}
+                      ios_backgroundColor={HIGH_CONTRAST_SWITCH_COLORS.false}
+                    />
+                  </View>
+                )}
+              </>
+            );
+          })()}
 
           {mode === 'edit-rent' && props.resident && (
             <>
@@ -157,6 +233,18 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
                   </Pressable>
                 ))}
               </View>
+
+              {props.selectedRoom &&
+                props.existingEbRooms?.includes(props.selectedRoom) && (
+                  <View style={styles.duplicateEbWarning}>
+                    <AlertTriangle size={14} color="#B45309" />
+                    <Text style={styles.duplicateEbWarningText}>
+                      Room {props.selectedRoom} already has an EB bill for{' '}
+                      {props.monthLabel || 'this month'}. Splitting again will
+                      create/update charges.
+                    </Text>
+                  </View>
+                )}
 
               <Text style={styles.inputFieldLabel}>
                 Total Meter Bill Amount (₹)
@@ -218,9 +306,9 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
                   mode === 'split-eb' && {
                     backgroundColor: OwnerTheme.colors.warning,
                   },
-                  submitting && styles.btnDisabled,
+                  isConfirmDisabled && styles.btnDisabled,
                 ]}
-                disabled={submitting}
+                disabled={isConfirmDisabled}
                 onPress={onConfirm}>
                 {submitting ? (
                   <ActivityIndicator size="small" color="#FFFFFF" />
@@ -375,5 +463,49 @@ const styles = StyleSheet.create({
   noOccupantsText: {
     fontSize: 12,
     color: OwnerTheme.colors.textMuted,
+  },
+  safeToggleBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    borderRadius: OwnerTheme.radius.md,
+    padding: 12,
+    marginBottom: 14,
+  },
+  safeToggleTextCol: {
+    flex: 1,
+  },
+  safeToggleTitle: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+  },
+  safeToggleSub: {
+    fontSize: 12,
+    color: OwnerTheme.colors.textSecondary,
+    marginTop: 2,
+    lineHeight: 16,
+  },
+  duplicateEbWarning: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 10,
+    marginBottom: 12,
+  },
+  duplicateEbWarningText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#92400E',
+    lineHeight: 17,
   },
 });

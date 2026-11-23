@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  Image,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -12,6 +11,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { X } from 'lucide-react-native';
 import { OwnerTheme } from '@/constants/theme';
 import {
@@ -158,7 +158,9 @@ export function PaymentReportReviewModal({
                               undefined,
                           }}
                           style={styles.screenshotThumb}
-                          resizeMode="cover"
+                          contentFit="cover"
+                          cachePolicy="memory-disk"
+                          transition={150}
                         />
                       )}
                       <Text style={styles.tapToViewText}>
@@ -291,7 +293,9 @@ export function PaymentReportReviewModal({
             <Image
               source={{ uri: fullImageUrl }}
               style={{ width: '92%', height: '80%' }}
-              resizeMode="contain"
+              contentFit="contain"
+              cachePolicy="memory-disk"
+              transition={150}
             />
           )}
         </View>

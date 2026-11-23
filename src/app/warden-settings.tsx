@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   Alert,
-  Modal,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -11,29 +11,17 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import {
-  Building2,
-  ChevronRight,
-  LogOut,
-  Mail,
-  Phone,
-  ShieldCheck,
-  User,
-  X,
-} from 'lucide-react-native';
+import { Building2, LogOut, Phone, ShieldCheck } from 'lucide-react-native';
 
-import { OwnerTheme } from '@/constants/theme';
+import { SettingsComplianceSection } from '@/components/settings-compliance-section';
+import { OwnerHeader } from '@/components/ui/owner';
 import { useAuth } from '@/context/auth-context';
 import { supabase } from '@/lib/supabase';
-import { OwnerHeader } from '@/components/ui/owner';
-import { BiometricSettingsRow } from '@/components/biometric-settings-row';
-import { SettingsComplianceSection } from '@/components/settings-compliance-section';
 
 export default function WardenSettingsScreen() {
   const { user, profile, signOut } = useAuth();
-  const colors = OwnerTheme.colors;
   const [propertyName, setPropertyName] = useState<string | null>(null);
-  const [infoVisible, setInfoVisible] = useState(false);
+  const [ownerPhone, setOwnerPhone] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -41,22 +29,52 @@ export default function WardenSettingsScreen() {
       if (!user?.id) return;
       const { data } = await supabase
         .from('property_wardens')
-        .select('properties(name)')
+        .select('properties(name, owner_id)')
         .eq('warden_profile_id', user.id)
         .eq('is_active', true)
         .maybeSingle();
       if (!active || !data) return;
-      const rel = (data as any).properties;
-      setPropertyName(Array.isArray(rel) ? rel[0]?.name ?? null : rel?.name ?? null);
+
+      const rel = (data as { properties?: { name?: string; owner_id?: string } | { name?: string; owner_id?: string }[] }).properties;
+      const prop = Array.isArray(rel) ? rel[0] : rel;
+      setPropertyName(prop?.name ?? null);
+
+      if (prop?.owner_id) {
+        const { data: ownerProf } = await supabase
+          .from('profiles')
+          .select('phone_number')
+          .eq('id', prop.owner_id)
+          .maybeSingle();
+        if (active && ownerProf?.phone_number) {
+          setOwnerPhone(ownerProf.phone_number);
+        }
+      }
     })();
     return () => {
       active = false;
     };
   }, [user?.id]);
 
+  const handleCallOwner = () => {
+    if (!ownerPhone) {
+      Alert.alert(
+        'Owner Phone Unavailable',
+        'Ask the PG owner to add their phone number in Owner Settings.'
+      );
+      return;
+    }
+    const cleaned = ownerPhone.replace(/[^\d+]/g, '');
+    void Linking.openURL(`tel:${cleaned}`).catch(() => {
+      Alert.alert('Cannot Call', `Owner phone: ${ownerPhone}`);
+    });
+  };
+
   const handleLogout = async () => {
     if (Platform.OS === 'web') {
-      if (typeof window === 'undefined' || window.confirm('Log out of PGwala?')) {
+      if (
+        typeof window === 'undefined' ||
+        window.confirm('Log out of PGwala?')
+      ) {
         await signOut();
         router.replace('/login');
       }
@@ -75,167 +93,177 @@ export default function WardenSettingsScreen() {
     ]);
   };
 
-  const initials = (profile?.full_name || 'WD')
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((p) => p[0]?.toUpperCase() || '')
-    .join('');
-
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-      <OwnerHeader title="Settings" subtitle="Warden Portal" showBack />
+    <SafeAreaView style={styles.safeArea}>
+      <OwnerHeader title="Settings" subtitle="Warden" showBack />
 
-      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-        {/* Warden Info Card (Read-Only Modal) */}
-        <Pressable
-          accessibilityRole="button"
-          style={[styles.profileCard, { backgroundColor: colors.card, borderColor: colors.border }]}
-          onPress={() => setInfoVisible(true)}>
-          <View style={[styles.avatarCircle, { backgroundColor: colors.primary }]}>
-            <Text style={styles.avatarText}>{initials || 'WD'}</Text>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        showsVerticalScrollIndicator={false}>
+        {/* 1. Assigned PG Info Card */}
+        <View style={styles.pgCard}>
+          <View style={styles.pgIconCircle}>
+            <Building2 size={24} color="#38BDF8" />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={[styles.profileName, { color: colors.textPrimary }]}>
+            <Text style={styles.pgEyebrow}>ASSIGNED PG</Text>
+            <Text style={styles.pgName} numberOfLines={1}>
+              {propertyName || 'Not assigned yet'}
+            </Text>
+            <Text style={styles.wardenName} numberOfLines={1}>
               {profile?.full_name || 'Warden'}
             </Text>
-            <Text style={[styles.profileSub, { color: colors.textSecondary }]} numberOfLines={1}>
-              {propertyName ? `Warden • ${propertyName}` : user?.email || 'Warden Account'}
+          </View>
+        </View>
+
+        {/* 2. Call Owner (Giant 1-Tap Button) */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Call PG Owner"
+          style={({ pressed }) => [
+            styles.bigActionCard,
+            styles.callOwnerCard,
+            pressed && { opacity: 0.82 },
+          ]}
+          onPress={handleCallOwner}>
+          <View style={[styles.actionIconCircle, { backgroundColor: '#D1FAE5' }]}>
+            <Phone size={22} color="#047857" />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.actionTitle}>Call Owner</Text>
+            <Text style={styles.actionSub}>
+              {ownerPhone || 'Tap for kitchen or PG help'}
             </Text>
           </View>
-          <ChevronRight size={18} color={colors.textMuted} />
         </Pressable>
 
-        {/* Account & Security */}
-        <View style={styles.section}>
-          <Text style={[styles.sectionHeader, { color: colors.textMuted }]}>ACCOUNT & SECURITY</Text>
-          <View style={[styles.groupedCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Pressable
-              accessibilityRole="button"
-              style={styles.settingsRow}
-              onPress={() => router.push('/resident-profile-edit')}>
-              <View style={[styles.iconWrap, { backgroundColor: colors.successLight }]}>
-                <ShieldCheck size={18} color={colors.success} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.rowTitle, { color: colors.textPrimary }]}>Profile & Password</Text>
-                <Text style={[styles.rowSub, { color: colors.textSecondary }]}>
-                  Update contact phone & change password
-                </Text>
-              </View>
-              <ChevronRight size={18} color={colors.textMuted} />
-            </Pressable>
-            <BiometricSettingsRow />
+        {/* Change Password (for temporary password onboarding) */}
+        <Pressable
+          accessibilityRole="button"
+          style={({ pressed }) => [
+            styles.bigActionCard,
+            pressed && { opacity: 0.82 },
+          ]}
+          onPress={() => router.push('/resident-profile-edit')}>
+          <View style={[styles.actionIconCircle, { backgroundColor: '#F1F5F9' }]}>
+            <ShieldCheck size={22} color="#334155" />
           </View>
-        </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.actionTitle}>Change Password</Text>
+            <Text style={styles.actionSub}>Update phone or password</Text>
+          </View>
+        </Pressable>
+
+        {/* 3. Log Out (Giant Red Button) */}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Log Out of PGwala"
+          style={({ pressed }) => [
+            styles.logoutBtn,
+            pressed && { opacity: 0.82 },
+          ]}
+          onPress={handleLogout}>
+          <LogOut size={20} color="#B91C1C" />
+          <Text style={styles.logoutText}>Log Out</Text>
+        </Pressable>
 
         <SettingsComplianceSection role="warden" userEmail={user?.email} />
-
-        {/* Log Out */}
-        <View style={styles.section}>
-          <View style={[styles.groupedCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-            <Pressable accessibilityRole="button" style={styles.settingsRow} onPress={handleLogout}>
-              <View style={[styles.iconWrap, { backgroundColor: colors.dangerLight }]}>
-                <LogOut size={18} color={colors.danger} />
-              </View>
-              <Text style={[styles.logoutText, { color: colors.danger }]}>Log Out of PGwala</Text>
-            </Pressable>
-          </View>
-        </View>
       </ScrollView>
-
-      {/* Read-only Warden Information Modal */}
-      <Modal visible={infoVisible} transparent animationType="fade" onRequestClose={() => setInfoVisible(false)}>
-        <View style={styles.modalOverlay}>
-          <View style={[styles.modalCard, { backgroundColor: colors.surface }]}>
-            <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Warden Information</Text>
-              <Pressable hitSlop={8} onPress={() => setInfoVisible(false)}>
-                <X size={20} color={colors.textSecondary} />
-              </Pressable>
-            </View>
-            <View style={styles.infoRow}>
-              <User size={16} color={colors.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>Full Name</Text>
-                <Text style={[styles.infoValue, { color: colors.textPrimary }]}>
-                  {profile?.full_name || 'Warden'}
-                </Text>
-              </View>
-            </View>
-            <View style={styles.infoRow}>
-              <Mail size={16} color={colors.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>Email</Text>
-                <Text style={[styles.infoValue, { color: colors.textPrimary }]}>{user?.email || '—'}</Text>
-              </View>
-            </View>
-            <View style={styles.infoRow}>
-              <Phone size={16} color={colors.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>Phone</Text>
-                <Text style={[styles.infoValue, { color: colors.textPrimary }]}>
-                  {profile?.phone_number || 'Not added'}
-                </Text>
-              </View>
-            </View>
-            <View style={[styles.infoRow, { borderBottomWidth: 0 }]}>
-              <Building2 size={16} color={colors.primary} />
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.infoLabel, { color: colors.textSecondary }]}>Assigned Property</Text>
-                <Text style={[styles.infoValue, { color: colors.textPrimary }]}>
-                  {propertyName || 'Not assigned'}
-                </Text>
-              </View>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safeArea: { flex: 1 },
-  container: { padding: 16, gap: 14, paddingBottom: 40 },
-  profileCard: {
+  safeArea: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+  },
+  container: {
+    padding: 16,
+    gap: 14,
+    paddingBottom: 40,
+  },
+  pgCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 18,
+    padding: 18,
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 14,
+  },
+  pgIconCircle: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: 'rgba(56, 189, 248, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  pgEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94A3B8',
+    letterSpacing: 0.8,
+  },
+  pgName: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    marginTop: 2,
+  },
+  wardenName: {
+    fontSize: 13,
+    color: '#CBD5E1',
+    marginTop: 2,
+  },
+  bigActionCard: {
+    minHeight: 68,
+    backgroundColor: '#FFFFFF',
     borderRadius: 16,
     borderWidth: 1,
-    padding: 14,
-    gap: 12,
-  },
-  avatarCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: { fontSize: 16, fontWeight: '800', color: '#FFFFFF' },
-  profileName: { fontSize: 16, fontWeight: '700' },
-  profileSub: { fontSize: 13, marginTop: 2 },
-  section: { gap: 6 },
-  sectionHeader: { fontSize: 11, fontWeight: '700', letterSpacing: 0.6, marginLeft: 4 },
-  groupedCard: { borderRadius: 16, borderWidth: 1, overflow: 'hidden' },
-  settingsRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 14, gap: 12 },
-  iconWrap: { width: 34, height: 34, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
-  rowTitle: { fontSize: 14, fontWeight: '600' },
-  rowSub: { fontSize: 12, marginTop: 2 },
-  logoutText: { fontSize: 14, fontWeight: '700' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(15, 23, 42, 0.5)', justifyContent: 'center', padding: 20 },
-  modalCard: { borderRadius: 18, padding: 20 },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  modalTitle: { fontSize: 17, fontWeight: '700' },
-  infoRow: {
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
-    paddingVertical: 10,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(148, 163, 184, 0.2)',
+    gap: 14,
   },
-  infoLabel: { fontSize: 12 },
-  infoValue: { fontSize: 14, fontWeight: '600', marginTop: 2 },
+  callOwnerCard: {
+    backgroundColor: '#ECFDF5',
+    borderColor: '#A7F3D0',
+  },
+  actionIconCircle: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    color: '#0F172A',
+  },
+  actionSub: {
+    fontSize: 13,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  logoutBtn: {
+    minHeight: 58,
+    borderRadius: 16,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1.5,
+    borderColor: '#FECACA',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginTop: 4,
+  },
+  logoutText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#B91C1C',
+  },
 });

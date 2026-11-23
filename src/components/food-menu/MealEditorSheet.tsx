@@ -115,7 +115,7 @@ function MealEditorSheetBody({
     [existingMenu]
   );
   const initialNotes = existingMenu?.notes?.trim() ?? '';
-  const initialPublished = existingMenu ? existingMenu.is_published : false;
+  const initialPublished = existingMenu ? existingMenu.is_published : true;
   const initialMealTime = useMemo(
     () =>
       normalizeHhMm24(existingMenu?.meal_time) ??
@@ -129,6 +129,7 @@ function MealEditorSheetBody({
   const [mealTimeInput, setMealTimeInput] = useState<string>(
     () => initialMealTime ?? ''
   );
+  const [customTimeMode, setCustomTimeMode] = useState(false);
   const [mealTimeError, setMealTimeError] = useState<string | null>(null);
   const [isPublished, setIsPublished] = useState(() => initialPublished);
 
@@ -437,7 +438,11 @@ function MealEditorSheetBody({
                       ? styles.statusBadgeTextDirty
                       : styles.statusBadgeTextEditing,
                   ]}>
-                  {isDirty ? 'Unsaved changes' : 'Editing'}
+                  {isDirty
+                    ? 'Unsaved changes'
+                    : existingMenu
+                      ? 'Editing'
+                      : 'New menu'}
                 </Text>
               </View>
             </View>
@@ -497,7 +502,7 @@ function MealEditorSheetBody({
                       styles.customTriggerChipText,
                       showCustomInput && styles.customTriggerChipTextActive,
                     ]}>
-                    + Custom
+                    + Preset
                   </Text>
                 </Pressable>
 
@@ -525,16 +530,6 @@ function MealEditorSheetBody({
                   );
                 })}
               </ScrollView>
-
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Scroll right for more dishes"
-                style={styles.quickAddArrowCue}
-                onPress={() =>
-                  quickAddScrollRef.current?.scrollToEnd({ animated: true })
-                }>
-                <ChevronRight size={15} color="#475569" />
-              </Pressable>
             </View>
 
             {/* + Custom Inline Input */}
@@ -697,6 +692,7 @@ function MealEditorSheetBody({
                     ]}
                     onPress={() => {
                       triggerSelectionHaptic();
+                      setCustomTimeMode(false);
                       setMealTimeInput(preset24);
                       setMealTimeError(null);
                     }}>
@@ -710,35 +706,71 @@ function MealEditorSheetBody({
                   </Pressable>
                 );
               })}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{
+                  selected:
+                    customTimeMode ||
+                    (mealTimeInput.trim().length > 0 &&
+                      !timePresets.includes(mealTimeInput.trim())),
+                  disabled: saving,
+                }}
+                disabled={saving}
+                style={[
+                  styles.quickChip,
+                  (customTimeMode ||
+                    (mealTimeInput.trim().length > 0 &&
+                      !timePresets.includes(mealTimeInput.trim()))) &&
+                    styles.quickChipSelected,
+                ]}
+                onPress={() => {
+                  triggerSelectionHaptic();
+                  setCustomTimeMode((prev) => !prev);
+                }}>
+                <Text
+                  style={[
+                    styles.quickChipText,
+                    (customTimeMode ||
+                      (mealTimeInput.trim().length > 0 &&
+                        !timePresets.includes(mealTimeInput.trim()))) &&
+                      styles.quickChipTextSelected,
+                  ]}>
+                  Custom
+                </Text>
+              </Pressable>
             </View>
 
-            <View style={styles.customTimeRow}>
-              <TextInput
-                style={[
-                  styles.customTimeInput,
-                  mealTimeError ? styles.customTimeInputError : null,
-                ]}
-                placeholder={`Custom HH:mm (e.g. ${timePresets[1]})`}
-                placeholderTextColor="#94A3B8"
-                value={mealTimeInput}
-                onChangeText={handleMealTimeChange}
-                onBlur={() => validateMealTime(mealTimeInput)}
-                keyboardType={
-                  Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'
-                }
-                autoCapitalize="none"
-                autoCorrect={false}
-                maxLength={5}
-                editable={!saving}
-              />
-              {mealTimePreview ? (
-                <View style={styles.timePreviewBadge}>
-                  <Text style={styles.timePreviewBadgeText}>
-                    {mealTimePreview}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
+            {(customTimeMode ||
+              (mealTimeInput.trim().length > 0 &&
+                !timePresets.includes(mealTimeInput.trim()))) && (
+              <View style={styles.customTimeRow}>
+                <TextInput
+                  style={[
+                    styles.customTimeInput,
+                    mealTimeError ? styles.customTimeInputError : null,
+                  ]}
+                  placeholder={`Custom HH:mm (e.g. ${timePresets[1]})`}
+                  placeholderTextColor="#94A3B8"
+                  value={mealTimeInput}
+                  onChangeText={handleMealTimeChange}
+                  onBlur={() => validateMealTime(mealTimeInput)}
+                  keyboardType={
+                    Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'default'
+                  }
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  maxLength={5}
+                  editable={!saving}
+                />
+                {mealTimePreview ? (
+                  <View style={styles.timePreviewBadge}>
+                    <Text style={styles.timePreviewBadgeText}>
+                      {mealTimePreview}
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            )}
             {mealTimeError ? (
               <Text style={styles.timeErrorText}>{mealTimeError}</Text>
             ) : null}

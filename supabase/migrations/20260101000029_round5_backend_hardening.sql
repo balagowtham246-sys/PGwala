@@ -1024,4 +1024,91 @@ REVOKE EXECUTE ON FUNCTION public.get_owner_wardens() FROM PUBLIC, anon;
 GRANT EXECUTE ON FUNCTION public.get_owner_wardens() TO authenticated;
 ALTER FUNCTION public.get_owner_wardens() OWNER TO postgres;
 
+-- ------------------------------------------------------------------------------
+-- 7. Single-RPC Residents Directory Summary (exact gate status + unpaid dues)
+-- ------------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.get_residents_directory_summary(
+    p_property_id UUID
+)
+RETURNS TABLE (
+    id UUID,
+    property_id UUID,
+    full_name TEXT,
+    room_number TEXT,
+    bed_label TEXT,
+    phone_number TEXT,
+    gender TEXT,
+    joining_date DATE,
+    monthly_rent_paise BIGINT,
+    deposit_paise INTEGER,
+    is_active BOOLEAN,
+    updated_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ,
+    gate_status TEXT,
+    last_gate_event_time TIMESTAMPTZ,
+    pending_dues_paise BIGINT
+)
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = ''
+STABLE
+AS $$
+    WITH latest_gate AS (
+        SELECT DISTINCT ON (ml.resident_id)
+            ml.resident_id,
+            ml.direction::TEXT AS direction,
+            ml.event_time
+        FROM public.movement_logs ml
+        WHERE ml.property_id = p_property_id
+        ORDER BY ml.resident_id, ml.event_time DESC
+    ),
+    unpaid_dues AS (
+        SELECT
+            c.resident_id,
+            COALESCE(SUM(c.amount_paise), 0)::BIGINT AS total_due_paise
+        FROM public.charges c
+        WHERE c.property_id = p_property_id
+          AND c.status::TEXT NOT IN ('settled', 'voided', 'paid', 'cancelled')
+        GROUP BY c.resident_id
+    )
+    SELECT
+        r.id,
+        r.property_id,
+        r.full_name,
+        r.room_number,
+        r.bed_label,
+        r.phone_number,
+        r.gender,
+        r.joining_date,
+        COALESCE(r.monthly_rent_paise, 0)::BIGINT AS monthly_rent_paise,
+        COALESCE(r.deposit_paise, 0)::INTEGER AS deposit_paise,
+        r.is_active,
+        r.updated_at,
+        r.created_at,
+        COALESCE(lg.direction, 'IN') AS gate_status,
+        lg.event_time AS last_gate_event_time,
+        COALESCE(ud.total_due_paise, 0)::BIGINT AS pending_dues_paise
+    FROM public.residents r
+    JOIN public.properties p ON p.id = r.property_id
+    LEFT JOIN latest_gate lg ON lg.resident_id = r.id
+    LEFT JOIN unpaid_dues ud ON ud.resident_id = r.id
+    WHERE r.property_id = p_property_id
+      AND r.is_active = true
+      AND (
+          (p.owner_id = (SELECT auth.uid()) AND public.is_owner())
+          OR EXISTS (
+              SELECT 1
+              FROM public.property_wardens pw
+              WHERE pw.property_id = p.id
+                AND pw.warden_profile_id = (SELECT auth.uid())
+                AND pw.is_active = true
+          )
+      )
+    ORDER BY r.room_number ASC, r.full_name ASC;
+$$;
+
+REVOKE EXECUTE ON FUNCTION public.get_residents_directory_summary(UUID) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.get_residents_directory_summary(UUID) TO authenticated;
+ALTER FUNCTION public.get_residents_directory_summary(UUID) OWNER TO postgres;
+
 COMMIT;

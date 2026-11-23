@@ -157,6 +157,22 @@ function CardHeader({
   );
 }
 
+function formatReadableReceiptDate(isoDate?: string | null): string | null {
+  if (!isoDate) return null;
+  const trimmed = isoDate.trim();
+  if (!trimmed) return null;
+  const datePart = trimmed.split('T')[0];
+  const [y, m, d] = datePart.split('-').map(Number);
+  if (!y || !m || !d) return trimmed;
+  const parsed = new Date(y, m - 1, d);
+  if (Number.isNaN(parsed.getTime())) return trimmed;
+  return parsed.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
 function RejectedBanner({
   rejectedReport,
 }: {
@@ -235,7 +251,7 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
             </Text>
           </View>
 
-          <View style={styles.breakdownRow}>
+          <View style={[styles.breakdownRow, isPaid && { opacity: 0.7 }]}>
             <View style={styles.wmRow}>
               <View
                 style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -243,6 +259,10 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
                 {res.wm_request_pending && !res.opt_in_wm ? (
                   <View style={styles.wmPendingBadge}>
                     <Text style={styles.wmPendingBadgeText}>Requested</Text>
+                  </View>
+                ) : isPaid ? (
+                  <View style={styles.wmNextMonthBadge}>
+                    <Text style={styles.wmNextMonthBadgeText}>Next month</Text>
                   </View>
                 ) : null}
               </View>
@@ -300,7 +320,9 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
             <Text style={styles.paidInfoText}>
               Receipt #{res.receipt_number || 'Confirmed'}
               {res.paid_method ? ` • ${res.paid_method.toUpperCase()}` : ''}
-              {res.paid_date ? ` • ${res.paid_date}` : ''}
+              {formatReadableReceiptDate(res.paid_date)
+                ? ` • ${formatReadableReceiptDate(res.paid_date)}`
+                : ''}
             </Text>
           </View>
         ) : hasReport && res.pending_report && res.charge_id ? (
@@ -439,6 +461,9 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
             <Text style={styles.paidInfoText}>
               Receipt #{res.receipt_number || 'Confirmed'}
               {res.paid_method ? ` • ${res.paid_method.toUpperCase()}` : ''}
+              {formatReadableReceiptDate(res.paid_date)
+                ? ` • ${formatReadableReceiptDate(res.paid_date)}`
+                : ''}
             </Text>
           </View>
         ) : hasReport && res.pending_report && res.charge_id ? (
@@ -691,6 +716,17 @@ const styles = StyleSheet.create({
     borderRadius: OwnerTheme.radius.sm,
     padding: 10,
     gap: 8,
+  },
+  wmNextMonthBadge: {
+    backgroundColor: '#E2E8F0',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  wmNextMonthBadgeText: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: '#475569',
   },
   breakdownRow: {
     flexDirection: 'row',

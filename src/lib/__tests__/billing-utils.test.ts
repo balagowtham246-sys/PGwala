@@ -11,6 +11,7 @@ import {
   buildWhatsAppReminderUrl,
   buildMonthlyRentSummaryText,
   buildMonthlyRentCsv,
+  buildPaymentReceiptShareText,
 } from '../billing-utils';
 
 describe('billing-utils', () => {
@@ -289,6 +290,54 @@ describe('billing-utils', () => {
       expect(lines).toHaveLength(3);
       expect(lines[1]).toBe('Sunrise PG,November 2026,101,Arun Kumar,9876543210,8000,500,8500,Paid');
       expect(lines[2]).toBe('Sunrise PG,November 2026,102,"Karthik, Raj",9876543211,7500,0,7500,Pending');
+    });
+  });
+
+  describe('buildPaymentReceiptShareText', () => {
+    it('formats a paid receipt with line items and reference notes', () => {
+      const text = buildPaymentReceiptShareText({
+        receiptNumber: 'RCT-202611-0012',
+        propertyName: 'Shalom Residency',
+        residentName: 'Balagowtham V S',
+        roomNumber: 'D',
+        amountPaise: 650000,
+        method: 'upi',
+        paymentDate: '2026-11-06',
+        status: 'approved',
+        notes: 'GPay Ref 482910',
+        allocations: [
+          { description: 'Room Rent (Nov 2026)', amountPaise: 600000 },
+          { description: 'Washing Machine', amountPaise: 50000 },
+        ],
+      });
+
+      expect(text).toContain('*PG Rent Receipt (PAID)*');
+      expect(text).toContain('Receipt No: RCT-202611-0012');
+      expect(text).toContain('PG: Shalom Residency');
+      expect(text).toContain('Resident: Balagowtham V S · Room D');
+      expect(text).toContain('Amount: ₹6,500');
+      expect(text).toContain('Method: UPI');
+      expect(text).toContain('• Room Rent (Nov 2026): ₹6,000');
+      expect(text).toContain('• Washing Machine: ₹500');
+      expect(text).toContain('Note: GPay Ref 482910');
+    });
+
+    it('marks reversed receipts and reversed allocations clearly', () => {
+      const text = buildPaymentReceiptShareText({
+        receiptNumber: 'RCT-202611-0013',
+        propertyName: 'Shalom Residency',
+        residentName: 'Naveen J M',
+        amountPaise: 10000,
+        method: 'cash',
+        paymentDate: '2026-11-07',
+        status: 'reversed',
+        allocations: [
+          { description: 'EB Meter Share', amountPaise: 10000, status: 'reversed' },
+        ],
+      });
+
+      expect(text).toContain('*PG Rent Receipt (REVERSED)*');
+      expect(text).toContain('• EB Meter Share (Reversed): ₹100');
     });
   });
 });

@@ -129,7 +129,8 @@ export default function SimplifiedBillingManagementScreen() {
   // Rent Bills Modals State
   const [generateRentModalVisible, setGenerateRentModalVisible] =
     useState(false);
-  const [rentInputRupees, setRentInputRupees] = useState('8000');
+  const [rentInputRupees, setRentInputRupees] = useState('6000');
+  const [onlyFillMissingRent, setOnlyFillMissingRent] = useState(true);
 
   // Edit Individual Resident Rent State
   const [editRentModalVisible, setEditRentModalVisible] = useState(false);
@@ -312,6 +313,60 @@ export default function SimplifiedBillingManagementScreen() {
     }
   };
 
+  // Derived safe-billing helpers
+  const defaultRentRupees = useMemo(() => {
+    const counts = new Map<number, number>();
+    for (const r of rentBills) {
+      const paise = r.rent_paise > 0 ? r.rent_paise : r.monthly_rent_paise;
+      if (paise > 0) {
+        counts.set(paise, (counts.get(paise) || 0) + 1);
+      }
+    }
+    let bestPaise = 0;
+    let bestCount = 0;
+    for (const [paise, count] of counts.entries()) {
+      if (count > bestCount) {
+        bestPaise = paise;
+        bestCount = count;
+      }
+    }
+    return bestPaise > 0 ? String(Math.round(bestPaise / 100)) : '6000';
+  }, [rentBills]);
+
+  const missingRentResidents = useMemo(
+    () =>
+      rentBills.filter(
+        (r) =>
+          r.status === 'not_generated' ||
+          (r.status === 'unpaid' && r.rent_paise <= 0)
+      ),
+    [rentBills]
+  );
+
+  const unpaidExistingRentCount = useMemo(
+    () =>
+      rentBills.filter((r) => r.status === 'unpaid' && r.rent_paise > 0).length,
+    [rentBills]
+  );
+
+  const existingEbRooms = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          ebBills
+            .filter((e) => e.status !== 'not_generated' && e.amount_paise > 0)
+            .map((e) => e.room_number)
+        )
+      ),
+    [ebBills]
+  );
+
+  const handleOpenGenerateRent = () => {
+    setRentInputRupees(defaultRentRupees);
+    setOnlyFillMissingRent(true);
+    setGenerateRentModalVisible(true);
+  };
+
   // Generate or update monthly Rent bills with custom rent amount
   const handleConfirmGenerateRent = async () => {
     if (!propertyId || generatingRent) return;
@@ -327,6 +382,32 @@ export default function SimplifiedBillingManagementScreen() {
 
     const rentPaise = Math.round(parsedRupees * 100);
     try {
+      // Safe mode: when preserving existing custom unpaid rents, only update ₹0/unbilled residents
+      if (onlyFillMissingRent && unpaidExistingRentCount > 0) {
+        if (missingRentResidents.length === 0) {
+          setGenerateRentModalVisible(false);
+          return;
+        }
+        for (const res of missingRentResidents) {
+          await updateRentMutation.mutateAsync({
+            propertyId,
+            residentId: res.resident_id,
+            rentPaise,
+            monthIsoStart,
+          });
+        }
+        setGenerateRentModalVisible(false);
+        showToast(
+          `Set rent to ₹${parsedRupees.toLocaleString('en-IN')} for ${
+            missingRentResidents.length
+          } resident${missingRentResidents.length > 1 ? 's' : ''}. Existing custom rents preserved.`
+        );
+        if (mountedRef.current) {
+          setShowBillsGeneratedBanner(true);
+        }
+        return;
+      }
+
       const data = await generateBillsMutation.mutateAsync({
         propertyId,
         monthIsoStart,
@@ -993,7 +1074,7 @@ export default function SimplifiedBillingManagementScreen() {
         rentUngeneratedCount={rentUngeneratedCount}
         filterTab={filterTab}
         onSelectFilterTab={setFilterTab}
-        onOpenGenerateRent={() => setGenerateRentModalVisible(true)}
+        onOpenGenerateRent={handleOpenGenerateRent}
         showGeneratedBanner={showBillsGeneratedBanner}
         onDismissGeneratedBanner={() => setShowBillsGeneratedBanner(false)}
       />
@@ -1154,7 +1235,7 @@ export default function SimplifiedBillingManagementScreen() {
         showBack
         rightAction={
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            {billingMode === 'RENT' && rentBills.length > 0 && (
+            {rentBills.length > 0 && (
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Export monthly rent report"
@@ -1191,7 +1272,7 @@ export default function SimplifiedBillingManagementScreen() {
                   styles.headerActionBtn,
                   pressed && styles.cardPressed,
                 ]}
-                onPress={() => setGenerateRentModalVisible(true)}>
+                onPress={handleOpenGenerateRent}>
                 <Edit3 size={15} color={OwnerTheme.colors.primary} />
                 <Text style={styles.headerActionBtnText}>Set Rent</Text>
               </Pressable>
@@ -1315,7 +1396,11 @@ export default function SimplifiedBillingManagementScreen() {
         monthLabel={monthLabel}
         rentInputRupees={rentInputRupees}
         onChangeRentInputRupees={setRentInputRupees}
-        submitting={generatingRent}
+        onlyFillMissingRent={onlyFillMissingRent}
+        onToggleOnlyFillMissingRent={setOnlyFillMissingRent}
+        missingRentCount={missingRentResidents.length}
+        unpaidExistingCount={unpaidExistingRentCount}
+        submitting={generatingRent || updatingRent}
         onClose={() => setGenerateRentModalVisible(false)}
         onConfirm={() => void handleConfirmGenerateRent()}
       />
@@ -1337,7 +1422,9 @@ export default function SimplifiedBillingManagementScreen() {
       <ChargeFormModal
         mode="split-eb"
         visible={splitEbModalVisible}
+        monthLabel={monthLabel}
         availableRooms={availableRooms}
+        existingEbRooms={existingEbRooms}
         selectedRoom={selectedRoomForEb}
         onSelectRoom={setSelectedRoomForEb}
         ebTotalRupeesInput={ebTotalRupeesInput}

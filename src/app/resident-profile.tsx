@@ -453,7 +453,7 @@ export default function ResidentProfileScreen() {
             />
           ) : null}
 
-          {/* Summary Card */}
+          {/* Fintech-Modern Dark-Slate Resident Hero Card */}
           <View style={styles.summaryCard}>
             <View style={styles.summaryTopRow}>
               <View style={{ flex: 1, minWidth: 0 }}>
@@ -465,6 +465,31 @@ export default function ResidentProfileScreen() {
                 {!profile.isActive && (
                   <StatusBadge label="Checked out" variant="neutral" size="sm" />
                 )}
+              </View>
+            </View>
+
+            {/* Quick Financial Snapshot Pills */}
+            <View style={styles.heroFinanceRow}>
+              <View style={styles.heroFinancePill}>
+                <Text style={styles.heroFinanceLabel}>Monthly Rent</Text>
+                <Text style={styles.heroFinanceValue}>
+                  {formatPaiseToRupees(profile.monthlyRentPaise)}
+                </Text>
+              </View>
+              <View style={styles.heroFinancePill}>
+                <Text style={styles.heroFinanceLabel}>Pending Dues</Text>
+                <Text
+                  style={[
+                    styles.heroFinanceValue,
+                    {
+                      color:
+                        profile.pendingDuesPaise > 0 ? '#FCA5A5' : '#34D399',
+                    },
+                  ]}>
+                  {profile.pendingDuesPaise > 0
+                    ? formatPaiseToRupees(profile.pendingDuesPaise)
+                    : 'Settled'}
+                </Text>
               </View>
             </View>
 
@@ -484,7 +509,7 @@ export default function ResidentProfileScreen() {
                 pressed && hasPhone && styles.pressedSoft,
               ]}>
               <View style={styles.phoneLeft}>
-                <Phone size={15} color={OwnerTheme.colors.textSecondary} />
+                <Phone size={15} color="#94A3B8" />
                 <Text style={styles.phoneText}>
                   {showFullPhone ? fullFormattedPhone : maskedPhone}
                 </Text>
@@ -492,12 +517,12 @@ export default function ResidentProfileScreen() {
               {hasPhone ? (
                 <View style={styles.phoneTogglePill}>
                   {showFullPhone ? (
-                    <EyeOff size={13} color={OwnerTheme.colors.primary} />
+                    <EyeOff size={13} color="#38BDF8" />
                   ) : (
-                    <Eye size={13} color={OwnerTheme.colors.primary} />
+                    <Eye size={13} color="#38BDF8" />
                   )}
                   <Text style={styles.phoneToggleText}>
-                    {showFullPhone ? 'Hide' : 'Tap to reveal'}
+                    {showFullPhone ? 'Hide' : 'Reveal'}
                   </Text>
                 </View>
               ) : null}
@@ -515,7 +540,7 @@ export default function ResidentProfileScreen() {
                   pressed && hasPhone && styles.pressedFade,
                 ]}
                 onPress={handleCallResident}>
-                <Phone size={16} color={OwnerTheme.colors.primary} />
+                <Phone size={16} color="#38BDF8" />
                 <Text style={styles.callBtnText}>Call</Text>
               </Pressable>
 
@@ -529,7 +554,7 @@ export default function ResidentProfileScreen() {
                   pressed && hasPhone && styles.pressedFade,
                 ]}
                 onPress={handleWhatsAppResident}>
-                <MessageCircle size={16} color={OwnerTheme.colors.success} />
+                <MessageCircle size={16} color="#34D399" />
                 <Text style={styles.whatsappBtnText}>WhatsApp</Text>
               </Pressable>
             </View>
@@ -615,13 +640,10 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   summaryCard: {
-    backgroundColor: OwnerTheme.colors.card,
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
+    backgroundColor: '#0F172A',
+    borderRadius: 18,
     padding: 16,
     gap: 12,
-    ...OwnerTheme.shadow,
   },
   summaryTopRow: {
     flexDirection: 'row',
@@ -630,29 +652,53 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   residentName: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
+    fontSize: 21,
+    fontWeight: '800',
+    color: '#FFFFFF',
     letterSpacing: -0.3,
   },
   roomBedSub: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
+    color: '#94A3B8',
     marginTop: 2,
   },
   summaryBadgeCol: {
     alignItems: 'flex-end',
     gap: 6,
   },
+  heroFinanceRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  heroFinancePill: {
+    flex: 1,
+    backgroundColor: 'rgba(255,255,255,0.07)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  heroFinanceLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#94A3B8',
+  },
+  heroFinanceValue: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    marginTop: 2,
+  },
   phoneRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: OwnerTheme.colors.surfaceElevated,
+    backgroundColor: 'rgba(255,255,255,0.06)',
     borderWidth: 1,
-    borderColor: OwnerTheme.colors.borderLight,
-    borderRadius: OwnerTheme.radius.md,
+    borderColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
@@ -664,7 +710,7 @@ const styles = StyleSheet.create({
   phoneText: {
     fontSize: 14,
     fontWeight: '600',
-    color: OwnerTheme.colors.textPrimary,
+    color: '#F1F5F9',
   },
   phoneTogglePill: {
     flexDirection: 'row',
@@ -673,8 +719,8 @@ const styles = StyleSheet.create({
   },
   phoneToggleText: {
     fontSize: 12,
-    fontWeight: '600',
-    color: OwnerTheme.colors.primary,
+    fontWeight: '700',
+    color: '#38BDF8',
   },
   contactButtonsRow: {
     flexDirection: 'row',
@@ -683,7 +729,7 @@ const styles = StyleSheet.create({
   contactBtn: {
     flex: 1,
     height: 42,
-    borderRadius: OwnerTheme.radius.md,
+    borderRadius: 12,
     borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
@@ -691,30 +737,30 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   callBtn: {
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    borderColor: '#BAE6FD',
+    backgroundColor: 'rgba(56,189,248,0.14)',
+    borderColor: 'rgba(56,189,248,0.3)',
   },
   callBtnText: {
     fontSize: 14,
     fontWeight: '700',
-    color: OwnerTheme.colors.primary,
+    color: '#38BDF8',
   },
   whatsappBtn: {
-    backgroundColor: OwnerTheme.colors.successLight,
-    borderColor: '#BBF7D0',
+    backgroundColor: 'rgba(16,185,129,0.14)',
+    borderColor: 'rgba(16,185,129,0.32)',
   },
   whatsappBtnText: {
     fontSize: 14,
     fontWeight: '700',
-    color: OwnerTheme.colors.success,
+    color: '#34D399',
   },
   contactBtnDisabled: {
-    opacity: 0.5,
+    opacity: 0.45,
   },
   pressedFade: {
     opacity: 0.78,
   },
   pressedSoft: {
-    backgroundColor: '#F1F5F9',
+    backgroundColor: 'rgba(255,255,255,0.12)',
   },
 });

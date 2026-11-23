@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
 import {
   Alert,
   FlatList,
@@ -401,6 +402,15 @@ export default function OwnerAnnouncementsScreen() {
             }
             ListHeaderComponent={
               <View style={styles.historyList}>
+                <DarkSlateHeroCard
+                  eyebrow="BROADCAST CENTER"
+                  title={selectedProperty?.name || 'PG Announcements'}
+                  subtitle="Push alerts & WhatsApp drafts for residents"
+                  badgeLabel={`${announcements.length} sent`}
+                  badgeTone="info"
+                  style={{ marginBottom: 4 }}
+                />
+
                 {/* Compose Card */}
                 <View style={styles.card}>
                   <View style={styles.cardHeaderRow}>

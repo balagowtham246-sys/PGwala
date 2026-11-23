@@ -1,4 +1,5 @@
 import {
+  clearSignedUrlCache,
   decodeBase64ToBytes,
   getSignedComplaintPhotoUrl,
   getSignedPaymentProofUrl,
@@ -12,6 +13,7 @@ jest.mock('@react-native-async-storage/async-storage', () =>
 describe('getSignedPaymentProofUrl', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    clearSignedUrlCache();
   });
 
   it('returns null for null, undefined, or empty string', async () => {
@@ -82,11 +84,35 @@ describe('getSignedPaymentProofUrl', () => {
       'https://xyz.supabase.co/storage/v1/object/sign/payment-proofs/sub/old.jpg?token=new'
     );
   });
+
+  it('returns cached signed URL on repeat calls without re-signing', async () => {
+    const mockCreateSignedUrl = jest.fn().mockResolvedValue({
+      data: {
+        signedUrl:
+          'https://xyz.supabase.co/storage/v1/object/sign/payment-proofs/cached/proof.jpg?token=first',
+      },
+      error: null,
+    });
+
+    jest.spyOn(supabase.storage, 'from').mockReturnValue({
+      createSignedUrl: mockCreateSignedUrl,
+    } as any);
+
+    const first = await getSignedPaymentProofUrl('cached/proof.jpg', 3600);
+    const second = await getSignedPaymentProofUrl('cached/proof.jpg', 3600);
+
+    expect(first).toBe(
+      'https://xyz.supabase.co/storage/v1/object/sign/payment-proofs/cached/proof.jpg?token=first'
+    );
+    expect(second).toBe(first);
+    expect(mockCreateSignedUrl).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('getSignedComplaintPhotoUrl', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    clearSignedUrlCache();
   });
 
   it('signs complaint-photos path using complaint-photos storage bucket', async () => {

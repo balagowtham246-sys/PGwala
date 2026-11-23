@@ -308,41 +308,66 @@ export default function ResidentAccommodationScreen() {
                 </Pressable>
               </View>
 
-              {/* Primary Room Card */}
-              <View style={styles.card}>
+              {/* Fintech-Modern Dark-Slate Stay Pass Hero Card */}
+              <View
+                style={[
+                  styles.card,
+                  {
+                    backgroundColor: '#0F172A',
+                    borderColor: '#0F172A',
+                    borderRadius: 18,
+                  },
+                ]}>
                 <View style={styles.cardHeader}>
-                  <Building2 size={20} color={OwnerTheme.colors.primary} />
+                  <Building2 size={20} color="#38BDF8" />
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.propertyName}>{accommodation.propertyName}</Text>
+                    <Text style={[styles.propertyName, { color: '#FFFFFF' }]}>
+                      {accommodation.propertyName}
+                    </Text>
                     {accommodation.propertyAddress ? (
                       <View style={styles.addressRow}>
-                        <MapPin size={13} color={OwnerTheme.colors.textMuted} />
-                        <Text style={styles.addressText} numberOfLines={1}>
+                        <MapPin size={13} color="#94A3B8" />
+                        <Text
+                          style={[styles.addressText, { color: '#94A3B8' }]}
+                          numberOfLines={1}>
                           {accommodation.propertyAddress}
                         </Text>
                       </View>
                     ) : null}
                   </View>
-                  <View style={styles.activeBadge}>
-                    <CheckCircle2 size={13} color="#FFFFFF" />
-                    <Text style={styles.activeBadgeText}>
+                  <View
+                    style={[
+                      styles.activeBadge,
+                      { backgroundColor: 'rgba(16,185,129,0.2)' },
+                    ]}>
+                    <CheckCircle2 size={13} color="#34D399" />
+                    <Text style={[styles.activeBadgeText, { color: '#34D399' }]}>
                       {toSentenceCaseStatus('active')}
                     </Text>
                   </View>
                 </View>
 
-                <View style={styles.divider} />
+                <View
+                  style={[
+                    styles.divider,
+                    { backgroundColor: 'rgba(255,255,255,0.12)' },
+                  ]}
+                />
 
                 <View style={styles.detailsGrid}>
                   <View style={styles.detailCol}>
-                    <Text style={styles.detailLabel}>Assigned Room</Text>
-                    <Text style={styles.detailValue}>
+                    <Text style={[styles.detailLabel, { color: '#94A3B8' }]}>
+                      Assigned Room
+                    </Text>
+                    <Text style={[styles.detailValue, { color: '#FFFFFF' }]}>
                       {formatRoomLabel(accommodation.roomNumber)}
                     </Text>
                   </View>
                   <View style={styles.detailCol}>
-                    <Text style={styles.detailLabel}>Resident Status</Text>
-                    <Text style={[styles.detailValue, { color: OwnerTheme.colors.success }]}>
+                    <Text style={[styles.detailLabel, { color: '#94A3B8' }]}>
+                      Resident Status
+                    </Text>
+                    <Text style={[styles.detailValue, { color: '#34D399' }]}>
                       Enrolled Resident
                     </Text>
                   </View>

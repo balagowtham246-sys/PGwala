@@ -567,18 +567,6 @@ export default function ResidentDashboardScreen() {
           <DashboardSkeleton />
         ) : resident ? (
           <>
-            {/* Simple Greeting */}
-            <View style={styles.greetingSimpleRow}>
-              <Text style={styles.greetingSimpleText} numberOfLines={1}>
-                Hi, {getFirstName(resident.full_name)}
-              </Text>
-              <View style={styles.roomPill}>
-                <Text style={styles.roomPillText}>
-                  {formatRoomLabel(resident.room_number)}
-                </Text>
-              </View>
-            </View>
-
             {/* Unread Notice Preview Card */}
             {unreadSummary.latestUnreadAnnouncement && (
               <Pressable
@@ -604,11 +592,11 @@ export default function ResidentDashboardScreen() {
               </Pressable>
             )}
 
-            {/* Food Alerts: today's latest status per meal (delayed / cancelled highlighted) */}
-            <FoodStatusBanner refreshKey={foodRefreshKey} />
-
-            {/* Lead Hero Card + Washing Machine & Gate Attendance 1x2 Hero */}
+            {/* Fintech-Modern Dark-Slate Resident Pass + Washing Machine & Gate 1x2 */}
             <ResidentQuickTiles
+              residentName={getFirstName(resident.full_name)}
+              roomLabel={formatRoomLabel(resident.room_number)}
+              propertyName={resident.property?.name || 'My PG'}
               pendingDuesPaise={pendingDuesPaise}
               pendingReviewPaise={pendingReviewPaise}
               currentMonthBillGenerated={dashData?.currentMonthBillGenerated}
@@ -633,6 +621,9 @@ export default function ResidentDashboardScreen() {
               onOpenGoingOut={() => setGoingOutModalVisible(true)}
               onMarkBackIn={handleMarkBackIn}
             />
+
+            {/* Live Food Status Banner (from Warden) */}
+            <FoodStatusBanner refreshKey={foodRefreshKey} />
 
             {/* Running Late Banner when expected return time has passed */}
             {isRunningLate && latestMovement && (

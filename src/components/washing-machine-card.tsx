@@ -19,6 +19,7 @@ import { OwnerTheme } from '@/constants/theme';
 import { useToast } from '@/context/toast-context';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import {
+  CYCLE_DURATION_MINUTES,
   fetchWashingMachineStatus,
   formatCountdown,
   getRemainingWashSeconds,
@@ -66,6 +67,57 @@ interface QueueState extends QueueStoragePayload {
 
 const getQueueStorageKey = (propertyId: string) =>
   `@pgwala_wm_queue:${propertyId}`;
+
+const getMyWashTimerKey = (propertyId: string) =>
+  `@pgwala_wm_my_timer:${propertyId}`;
+
+async function cancelMyWashCompletionNotification(propertyId: string): Promise<void> {
+  try {
+    const existingId = await AsyncStorage.getItem(getMyWashTimerKey(propertyId));
+    if (existingId) {
+      if (Platform.OS !== 'web') {
+        await Notifications.cancelScheduledNotificationAsync(existingId).catch(() => {});
+      }
+      await AsyncStorage.removeItem(getMyWashTimerKey(propertyId));
+    }
+  } catch {
+    // Non-fatal
+  }
+}
+
+async function scheduleMyWashCompletionNotification(
+  propertyId: string,
+  machineName: string
+): Promise<boolean> {
+  await cancelMyWashCompletionNotification(propertyId);
+  if (Platform.OS === 'web') return false;
+  try {
+    const existing = await Notifications.getPermissionsAsync();
+    let granted = existing.granted || existing.status === 'granted';
+    if (!granted && existing.canAskAgain !== false) {
+      const req = await Notifications.requestPermissionsAsync();
+      granted = req.granted || req.status === 'granted';
+    }
+    if (!granted) return false;
+    const notifId = await Notifications.scheduleNotificationAsync({
+      content: {
+        title: 'Laundry cycle complete!',
+        body: `Your wash in ${machineName} is done. Please collect your clothes and mark the machine free.`,
+        sound: true,
+        data: { type: 'washing_machine' },
+      },
+      trigger: {
+        type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL,
+        seconds: CYCLE_DURATION_MINUTES * 60,
+        repeats: false,
+      },
+    });
+    await AsyncStorage.setItem(getMyWashTimerKey(propertyId), notifId);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export function WashingMachineCard({
   propertyId,
@@ -544,11 +596,22 @@ export function WashingMachineCard({
       }
 
       await fetchStatus(false);
+      const resolvedMachineName = result.data.machineName || 'selected machine';
+      const alarmScheduled =
+        userRole === 'student'
+          ? await scheduleMyWashCompletionNotification(propertyId, resolvedMachineName)
+          : false;
       if (result.data.usedLegacyFallback) {
-        showToast('Wash started — mark machine free when done');
+        showToast(
+          alarmScheduled
+            ? `Wash started · ${CYCLE_DURATION_MINUTES}m completion alarm set`
+            : 'Wash started — mark machine free when done'
+        );
       } else {
         showToast(
-          `Wash started on ${result.data.machineName || 'selected machine'}`
+          alarmScheduled
+            ? `Wash started on ${resolvedMachineName} · ${CYCLE_DURATION_MINUTES}m alarm set`
+            : `Wash started on ${resolvedMachineName}`
         );
       }
     } catch (err: unknown) {
@@ -598,6 +661,7 @@ export function WashingMachineCard({
                 throw new Error(result.error.message);
               }
 
+              await cancelMyWashCompletionNotification(propertyId);
               await fetchStatus(false);
               showToast('Machine marked free for fellow residents');
             } catch (err: unknown) {

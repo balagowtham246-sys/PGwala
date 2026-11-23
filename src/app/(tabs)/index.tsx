@@ -26,7 +26,6 @@ import {
   PropertySwitcherModal,
 } from '@/components/owner-dashboard/OwnerDashboardModals';
 import { OwnerMetricsGrid } from '@/components/owner-dashboard/OwnerMetricsGrid';
-import { OwnerQuickActions } from '@/components/owner-dashboard/OwnerQuickActions';
 import { RecentActivitySection } from '@/components/owner-dashboard/RecentActivitySection';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { DashboardSkeleton, ErrorState } from '@/components/ui/owner';
@@ -403,10 +402,13 @@ export default function OwnerDashboard() {
           <DashboardSkeleton />
         ) : (
           <>
-            {/* Priority Area 0 & 1: Needs Attention Strip + 4-Card Operational KPI Grid */}
-            <OwnerMetricsGrid stats={stats} />
+            {/* Fintech-Modern Hero Financial Card + Quick Action Dock + Live Ops Strip */}
+            <OwnerMetricsGrid
+              stats={stats}
+              totalBeds={selectedProperty?.total_beds ?? 0}
+            />
 
-            {/* Priority Area 2: Compact Single-Row Food Menu Card */}
+            {/* Today's Food Menu Strip */}
             <Pressable
               accessibilityRole="button"
               accessibilityLabel="Manage today's food menu"
@@ -441,17 +443,7 @@ export default function OwnerDashboard() {
               <Text style={styles.menuManageText}>Manage ›</Text>
             </Pressable>
 
-            {/* Priority Area 3: Residents Insights & Announcements */}
-            <OwnerQuickActions
-              totalResidents={stats.totalResidents}
-              studentsInside={stats.studentsInside}
-              unpaidResidentsCount={stats.unpaidResidentsCount ?? 0}
-              totalBeds={selectedProperty?.total_beds ?? 0}
-              rentCollectedPaise={stats.rentCollectedPaise}
-              rentTotalPaise={stats.rentTotalPaise}
-            />
-
-            {/* Priority Area 4: Recent Gate Movements */}
+            {/* Recent Gate Movements */}
             <RecentActivitySection loading={loading} activities={recentActivities} />
           </>
         )}

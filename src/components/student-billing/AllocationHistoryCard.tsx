@@ -8,12 +8,27 @@ export interface AllocationHistoryCardProps {
   bill: StudentBillCardItem;
 }
 
+function formatHistoryDate(iso?: string | null): string | null {
+  if (!iso) return null;
+  const datePart = iso.trim().split('T')[0];
+  const [y, m, d] = datePart.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const parsed = new Date(y, m - 1, d);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
 export function AllocationHistoryCard({ bill }: AllocationHistoryCardProps) {
+  const paidDateLabel = formatHistoryDate(bill.paid_date);
   return (
     <View style={styles.historyCard}>
       <View style={styles.historyCardLeft}>
         <Text style={styles.historyMonth}>
-          {bill.month_label} ({bill.title})
+          {bill.month_label} · {bill.title}
         </Text>
         <Text style={styles.historyAmount}>
           {formatPaiseToRupees(bill.total_paise)}
@@ -23,6 +38,9 @@ export function AllocationHistoryCard({ bill }: AllocationHistoryCardProps) {
             Rent: {formatPaiseToRupees(bill.rent_paise || 0)}
             {(bill.wm_paise || 0) > 0 ? ' + WM: ₹500' : ''}
           </Text>
+        )}
+        {paidDateLabel && (
+          <Text style={styles.historyMeta}>Paid {paidDateLabel}</Text>
         )}
       </View>
 
@@ -60,8 +78,8 @@ export function AllocationHistoryCard({ bill }: AllocationHistoryCardProps) {
 const styles = StyleSheet.create({
   historyCard: {
     backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 12,
+    borderRadius: 16,
+    padding: 14,
     borderWidth: 1,
     borderColor: '#E2E8F0',
     flexDirection: 'row',

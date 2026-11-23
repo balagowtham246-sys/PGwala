@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -35,6 +35,7 @@ import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
 import { supabase } from '@/lib/supabase';
+import { isDeveloperAccessAllowed } from '@/lib/dev-tasks';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader } from '@/components/ui/owner';
 import { WmUnitsModal } from '@/components/owner-dashboard/OwnerDashboardModals';
@@ -61,6 +62,32 @@ export default function OwnerSettingsScreen() {
   const { showToast } = useToast();
   const colors = OwnerTheme.colors;
   const [ownerInfoVisible, setOwnerInfoVisible] = useState(false);
+  const devTapCountRef = useRef(0);
+  const devTapResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (devTapResetTimerRef.current) {
+        clearTimeout(devTapResetTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleVersionFooterTap = useCallback(() => {
+    if (!isDeveloperAccessAllowed(user?.email)) return;
+    devTapCountRef.current += 1;
+    if (devTapResetTimerRef.current) {
+      clearTimeout(devTapResetTimerRef.current);
+    }
+    if (devTapCountRef.current >= 5) {
+      devTapCountRef.current = 0;
+      router.push('/dev-monitor');
+      return;
+    }
+    devTapResetTimerRef.current = setTimeout(() => {
+      devTapCountRef.current = 0;
+    }, 3000);
+  }, [user?.email]);
 
   const [wmModalVisible, setWmModalVisible] = useState(false);
   const [wmCount, setWmCount] = useState<number>(2);
@@ -410,8 +437,8 @@ export default function OwnerSettingsScreen() {
           accessibilityRole="button"
           style={({ pressed }) => [
             styles.profileCard,
-            { backgroundColor: colors.card, borderColor: colors.border },
-            pressed && { backgroundColor: colors.surfaceElevated },
+            { backgroundColor: '#0F172A', borderColor: '#0F172A', borderRadius: 18 },
+            pressed && { opacity: 0.9 },
           ]}
           onPress={() => setOwnerInfoVisible(true)}>
           <View style={styles.avatarCircle}>
@@ -420,14 +447,16 @@ export default function OwnerSettingsScreen() {
             </Text>
           </View>
           <View style={styles.profileInfo}>
-            <Text style={styles.profileName}>
+            <Text style={[styles.profileName, { color: '#FFFFFF' }]}>
               {profile?.full_name || 'PG Owner'}
             </Text>
-            <Text style={styles.profileSubtitle} numberOfLines={1}>
+            <Text
+              style={[styles.profileSubtitle, { color: '#94A3B8' }]}
+              numberOfLines={1}>
               {profile?.phone_number || user?.email || 'Owner Account'}
             </Text>
           </View>
-          <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
+          <ChevronRight size={18} color="#94A3B8" />
         </Pressable>
 
         {/* Group 1: Properties & Admissions */}
@@ -638,9 +667,13 @@ export default function OwnerSettingsScreen() {
           </View>
         </View>
 
-        <Text style={[styles.versionText, { color: colors.textMuted }]}>
-          PGwala v{Constants.expoConfig?.version || '1.0.0'} • Owner Portal
-        </Text>
+        <Pressable
+          accessibilityRole="text"
+          onPress={handleVersionFooterTap}>
+          <Text style={[styles.versionText, { color: colors.textMuted }]}>
+            PGwala v{Constants.expoConfig?.version || '1.0.0'} • Owner Portal
+          </Text>
+        </Pressable>
       </ScrollView>
 
       {/* Read-only Owner Information Modal */}

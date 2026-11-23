@@ -1,4 +1,5 @@
 import React, { useCallback, useMemo, useState } from 'react';
+import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
 import {
   ActivityIndicator,
   Alert,
@@ -291,6 +292,15 @@ export default function StudentMenuScreen() {
             colors={[OwnerTheme.colors.primary]}
           />
         }>
+        {/* Dark-Slate Mess Menu Hero */}
+        <DarkSlateHeroCard
+          eyebrow="PG MESS MENU"
+          title={`${activeDay.topLabel}, ${activeDay.dayNumber}`}
+          subtitle={propertyName}
+          badgeLabel={hasAnyMenu ? 'Published' : 'Not set'}
+          badgeTone={hasAnyMenu ? 'success' : 'warning'}
+        />
+
         {/* Horizontal 7-Day Rolling Date Strip */}
         <ScrollView
           horizontal

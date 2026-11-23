@@ -156,6 +156,7 @@ function RootNavigationLayout() {
       <Stack.Screen name="warden-settings" />
       <Stack.Screen name="resident-announcements" />
       <Stack.Screen name="resident-notifications" />
+      <Stack.Screen name="dev-monitor" />
     </Stack>
   );
 }

@@ -1,186 +1,490 @@
 import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
-import { router } from 'expo-router';
-import { LogIn, LogOut, Receipt, Wrench } from 'lucide-react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Href, router } from 'expo-router';
+import {
+  Building2,
+  ChevronRight,
+  LogIn,
+  LogOut,
+  Megaphone,
+  UserPlus,
+  Users,
+  Wrench,
+  Zap,
+} from 'lucide-react-native';
 
-import { StatisticCard } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useResidentTabs } from '@/context/resident-tabs-context';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
-import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import type { OwnerDashboardStats } from '@/services/dashboard.service';
 
 interface OwnerMetricsGridProps {
   stats: OwnerDashboardStats;
+  totalBeds?: number;
 }
 
-export function OwnerMetricsGrid({ stats }: OwnerMetricsGridProps) {
+export function OwnerMetricsGrid({ stats, totalBeds = 0 }: OwnerMetricsGridProps) {
   const { isInsidePager, navigateToTab } = useResidentTabs();
-  const pendingRentPaise = Math.max(0, stats.rentTotalPaise - stats.rentCollectedPaise);
-  const hasAttentionItems =
-    stats.pendingProofsCount > 0 ||
-    stats.studentsOutside > 0 ||
-    stats.openComplaintsCount > 0;
 
-  const openOwnerTab = (tab: 'bill' | 'maintenance' | 'gate', fallbackRoute: string) => {
+  const pendingRentPaise = Math.max(0, stats.rentTotalPaise - stats.rentCollectedPaise);
+  const collectionPct =
+    stats.rentTotalPaise > 0
+      ? Math.min(100, Math.round((stats.rentCollectedPaise / stats.rentTotalPaise) * 100))
+      : 0;
+  const unpaidCount = stats.unpaidResidentsCount ?? 0;
+  const occupancyLabel =
+    totalBeds > 0
+      ? `${stats.totalResidents}/${totalBeds} beds`
+      : `${stats.totalResidents} active`;
+
+  const goBilling = () => {
     if (isInsidePager) {
-      navigateToTab(tab);
+      navigateToTab('bill');
     } else {
-      router.push(fallbackRoute as any);
+      router.push('/billing-management');
+    }
+  };
+
+  const goGate = () => {
+    if (isInsidePager) {
+      navigateToTab('gate');
+    } else {
+      router.push('/resident-in-out');
+    }
+  };
+
+  const goMaintenance = () => {
+    if (isInsidePager) {
+      navigateToTab('maintenance');
+    } else {
+      router.push('/owner-complaints');
     }
   };
 
   return (
-    <>
-      {/* Priority Area 0: Needs Attention Strip (Actionable Alerts) */}
-      {hasAttentionItems && (
-        <View style={styles.attentionSection}>
-          <Text style={styles.attentionTitle}>Needs Attention</Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.attentionStrip}>
-            {stats.pendingProofsCount > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.attentionChip, styles.attentionChipPrimary]}
-                onPress={() => openOwnerTab('bill', '/billing-management')}>
-                <Text style={[styles.attentionChipText, styles.attentionTextPrimary]}>
-                  {stats.pendingProofsCount} proof
-                  {stats.pendingProofsCount > 1 ? 's' : ''} to verify
-                </Text>
-              </Pressable>
-            )}
-            {stats.studentsOutside > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.attentionChip, styles.attentionChipWarning]}
-                onPress={() => openOwnerTab('gate', '/resident-in-out')}>
-                <Text style={[styles.attentionChipText, styles.attentionTextWarning]}>
-                  {stats.studentsOutside} outside PG
-                </Text>
-              </Pressable>
-            )}
-            {stats.openComplaintsCount > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                style={[styles.attentionChip, styles.attentionChipWarning]}
-                onPress={() => openOwnerTab('maintenance', '/owner-complaints')}>
-                <Text style={[styles.attentionChipText, styles.attentionTextWarning]}>
-                  {stats.openComplaintsCount} open issue
-                  {stats.openComplaintsCount > 1 ? 's' : ''}
-                </Text>
-              </Pressable>
-            )}
-          </ScrollView>
+    <View style={styles.root}>
+      {/* Fintech-Modern Dark-Slate Hero Revenue & Occupancy Card */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Open monthly billing and rent collection"
+        style={({ pressed }) => [styles.heroCard, pressed && styles.cardPressed]}
+        onPress={goBilling}>
+        <View style={styles.heroTopRow}>
+          <Text style={styles.heroEyebrow}>MONTHLY RENT COLLECTION</Text>
+          <View style={styles.occupancyPill}>
+            <Building2 size={11} color="#CBD5E1" />
+            <Text style={styles.occupancyPillText}>{occupancyLabel}</Text>
+          </View>
         </View>
-      )}
 
-      {/* Priority Area 1: 4-Card Operational KPI Grid (Money & Alerts First) */}
-      <View style={styles.kpiGrid}>
-        <View style={styles.gateStatsRow}>
-          <StatisticCard
-            label="Pending Rent"
-            value={formatPaiseToRupees(pendingRentPaise)}
-            accentColor={
-              pendingRentPaise > 0 ? OwnerTheme.colors.danger : OwnerTheme.colors.success
-            }
-            icon={Receipt}
-            sublabel={
-              stats.pendingProofsCount > 0
-                ? `${stats.pendingProofsCount} proof${stats.pendingProofsCount > 1 ? 's' : ''} pending`
-                : `${formatPaiseToRupees(stats.rentCollectedPaise)} collected`
-            }
-            onPress={() => openOwnerTab('bill', '/billing-management')}
-            style={styles.gateStatHalfCard}
-          />
-          <StatisticCard
-            label="Open Maintenance"
-            value={stats.openComplaintsCount}
-            accentColor={
-              stats.openComplaintsCount > 0
-                ? OwnerTheme.colors.warning
-                : OwnerTheme.colors.textSecondary
-            }
-            icon={Wrench}
-            sublabel={stats.openComplaintsCount > 0 ? 'Needs attention' : 'All resolved'}
-            onPress={() => openOwnerTab('maintenance', '/owner-complaints')}
-            style={styles.gateStatHalfCard}
+        <View style={styles.heroAmountRow}>
+          <View style={styles.heroAmountCol}>
+            <Text style={styles.heroAmount}>
+              {formatPaiseToRupees(stats.rentCollectedPaise)}
+            </Text>
+            <Text style={styles.heroTotalSub}>
+              {stats.rentTotalPaise > 0
+                ? `of ${formatPaiseToRupees(stats.rentTotalPaise)} billed`
+                : 'No bills generated yet'}
+            </Text>
+          </View>
+
+          <View
+            style={[
+              styles.pendingBadge,
+              pendingRentPaise > 0 ? styles.pendingBadgeDue : styles.pendingBadgeClear,
+            ]}>
+            <Text
+              style={[
+                styles.pendingBadgeText,
+                pendingRentPaise > 0
+                  ? styles.pendingBadgeTextDue
+                  : styles.pendingBadgeTextClear,
+              ]}>
+              {pendingRentPaise > 0
+                ? `${formatPaiseToRupees(pendingRentPaise)} pending`
+                : 'All settled'}
+            </Text>
+          </View>
+        </View>
+
+        {/* Visual Progress Bar */}
+        <View style={styles.progressTrack}>
+          <View
+            style={[
+              styles.progressFill,
+              {
+                width: `${stats.rentTotalPaise > 0 ? Math.max(collectionPct, 4) : 0}%`,
+                backgroundColor:
+                  collectionPct >= 80 ? '#10B981' : '#38BDF8',
+              },
+            ]}
           />
         </View>
-        <View style={styles.gateStatsRow}>
-          <StatisticCard
-            label="Residents Inside"
-            value={stats.studentsInside}
-            accentColor={OwnerTheme.colors.success}
-            icon={LogIn}
-            sublabel={`of ${stats.totalResidents} active`}
-            onPress={() => openOwnerTab('gate', '/resident-in-out')}
-            style={styles.gateStatHalfCard}
-          />
-          <StatisticCard
-            label={toSentenceCaseStatus('outside')}
-            value={stats.studentsOutside}
-            accentColor={OwnerTheme.colors.warning}
-            icon={LogOut}
-            sublabel="Checked out"
-            onPress={() => openOwnerTab('gate', '/resident-in-out')}
-            style={styles.gateStatHalfCard}
-          />
+
+        <View style={styles.heroFooterRow}>
+          <Text style={styles.heroFooterMeta}>
+            {stats.rentTotalPaise > 0
+              ? `${collectionPct}% collected · ${unpaidCount} with dues`
+              : `${stats.totalResidents} active residents`}
+          </Text>
+          {stats.pendingProofsCount > 0 ? (
+            <View style={styles.proofAlertPill}>
+              <Text style={styles.proofAlertText}>
+                {stats.pendingProofsCount} proof{stats.pendingProofsCount > 1 ? 's' : ''} to verify ›
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.heroLinkRow}>
+              <Text style={styles.heroLinkText}>Billing</Text>
+              <ChevronRight size={13} color="#38BDF8" />
+            </View>
+          )}
         </View>
+      </Pressable>
+
+      {/* 4-Icon Quick Action Dock */}
+      <View style={styles.quickDock}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Add new resident"
+          style={({ pressed }) => [styles.dockItem, pressed && styles.cardPressed]}
+          onPress={() => router.push('/add-resident')}>
+          <View style={[styles.dockIconWrap, { backgroundColor: '#E0F2FE' }]}>
+            <UserPlus size={19} color="#0284C7" />
+          </View>
+          <Text style={styles.dockLabel} numberOfLines={1}>
+            Add Resident
+          </Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open electricity and billing"
+          style={({ pressed }) => [styles.dockItem, pressed && styles.cardPressed]}
+          onPress={goBilling}>
+          <View style={[styles.dockIconWrap, { backgroundColor: '#FEF3C7' }]}>
+            <Zap size={19} color="#D97706" />
+          </View>
+          <Text style={styles.dockLabel} numberOfLines={1}>
+            Split EB
+          </Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Send announcement"
+          style={({ pressed }) => [styles.dockItem, pressed && styles.cardPressed]}
+          onPress={() => router.push('/owner-announcements' as Href)}>
+          <View style={[styles.dockIconWrap, { backgroundColor: '#F3E8FF' }]}>
+            <Megaphone size={19} color="#7C3AED" />
+          </View>
+          <Text style={styles.dockLabel} numberOfLines={1}>
+            Notice
+          </Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="View residents directory"
+          style={({ pressed }) => [styles.dockItem, pressed && styles.cardPressed]}
+          onPress={() => router.push('/residents-directory' as Href)}>
+          <View style={[styles.dockIconWrap, { backgroundColor: '#DCFCE7' }]}>
+            <Users size={19} color="#059669" />
+          </View>
+          <Text style={styles.dockLabel} numberOfLines={1}>
+            Residents
+          </Text>
+        </Pressable>
       </View>
-    </>
+
+      {/* Single-Source-of-Truth Live Operations Strip (Zero Duplication) */}
+      <View style={styles.opsStrip}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Residents inside PG"
+          style={({ pressed }) => [styles.opsTile, pressed && styles.cardPressed]}
+          onPress={goGate}>
+          <View style={styles.opsTileHeader}>
+            <View style={[styles.opsIconDot, { backgroundColor: '#DCFCE7' }]}>
+              <LogIn size={13} color="#16A34A" />
+            </View>
+            <Text style={styles.opsLabel}>Inside</Text>
+          </View>
+          <Text style={[styles.opsValue, { color: '#15803D' }]}>
+            {stats.studentsInside}
+          </Text>
+          <Text style={styles.opsSub} numberOfLines={1}>
+            of {stats.totalResidents} active
+          </Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Residents outside PG"
+          style={({ pressed }) => [styles.opsTile, pressed && styles.cardPressed]}
+          onPress={goGate}>
+          <View style={styles.opsTileHeader}>
+            <View style={[styles.opsIconDot, { backgroundColor: '#FEF3C7' }]}>
+              <LogOut size={13} color="#D97706" />
+            </View>
+            <Text style={styles.opsLabel}>Outside</Text>
+          </View>
+          <Text
+            style={[
+              styles.opsValue,
+              { color: stats.studentsOutside > 0 ? '#D97706' : '#0F172A' },
+            ]}>
+            {stats.studentsOutside}
+          </Text>
+          <Text style={styles.opsSub} numberOfLines={1}>
+            Checked out
+          </Text>
+        </Pressable>
+
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Open maintenance issues"
+          style={({ pressed }) => [styles.opsTile, pressed && styles.cardPressed]}
+          onPress={goMaintenance}>
+          <View style={styles.opsTileHeader}>
+            <View
+              style={[
+                styles.opsIconDot,
+                {
+                  backgroundColor:
+                    stats.openComplaintsCount > 0 ? '#FEE2E2' : '#F1F5F9',
+                },
+              ]}>
+              <Wrench
+                size={13}
+                color={stats.openComplaintsCount > 0 ? '#DC2626' : '#64748B'}
+              />
+            </View>
+            <Text style={styles.opsLabel}>Issues</Text>
+          </View>
+          <Text
+            style={[
+              styles.opsValue,
+              { color: stats.openComplaintsCount > 0 ? '#DC2626' : '#0F172A' },
+            ]}>
+            {stats.openComplaintsCount}
+          </Text>
+          <Text style={styles.opsSub} numberOfLines={1}>
+            {stats.openComplaintsCount > 0 ? 'Needs action' : 'All clear'}
+          </Text>
+        </Pressable>
+      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  attentionSection: {
+  root: {
+    gap: 12,
+  },
+  heroCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    shadowColor: '#0F172A',
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.16,
+    shadowRadius: 16,
+    elevation: 6,
+  },
+  heroTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  heroEyebrow: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.8,
+    color: '#94A3B8',
+  },
+  occupancyPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+  },
+  occupancyPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#E2E8F0',
+  },
+  heroAmountRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 10,
+    marginTop: 12,
+  },
+  heroAmountCol: {
+    flex: 1,
+    minWidth: 0,
+  },
+  heroAmount: {
+    fontSize: 30,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.8,
+  },
+  heroTotalSub: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  pendingBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  pendingBadgeClear: {
+    backgroundColor: 'rgba(16, 185, 129, 0.18)',
+  },
+  pendingBadgeDue: {
+    backgroundColor: 'rgba(244, 63, 94, 0.22)',
+  },
+  pendingBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  pendingBadgeTextClear: {
+    color: '#34D399',
+  },
+  pendingBadgeTextDue: {
+    color: '#FDA4AF',
+  },
+  progressTrack: {
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+    marginTop: 16,
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  heroFooterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    marginTop: 12,
+  },
+  heroFooterMeta: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#CBD5E1',
+    flex: 1,
+  },
+  proofAlertPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: 'rgba(56, 189, 248, 0.2)',
+  },
+  proofAlertText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#7DD3FC',
+  },
+  heroLinkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  heroLinkText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#38BDF8',
+  },
+  quickDock: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 18,
+    paddingVertical: 12,
+    paddingHorizontal: 6,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...OwnerTheme.shadow,
+  },
+  dockItem: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 2,
+  },
+  dockIconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dockLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textPrimary,
+    textAlign: 'center',
+  },
+  opsStrip: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  opsTile: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    ...OwnerTheme.shadow,
+  },
+  opsTileHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 6,
   },
-  attentionTitle: {
+  opsIconDot: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  opsLabel: {
     fontSize: 12,
-    fontWeight: '700',
+    fontWeight: '600',
     color: OwnerTheme.colors.textSecondary,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
   },
-  attentionStrip: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingVertical: 2,
+  opsValue: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.4,
+    marginTop: 8,
   },
-  attentionChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: OwnerTheme.radius.full,
-    borderWidth: 1,
+  opsSub: {
+    fontSize: 11,
+    fontWeight: '500',
+    color: OwnerTheme.colors.textMuted,
+    marginTop: 2,
   },
-  attentionChipPrimary: {
-    backgroundColor: OwnerTheme.colors.primaryLight,
-    borderColor: '#BAE6FD',
-  },
-  attentionChipWarning: {
-    backgroundColor: OwnerTheme.colors.warningLight,
-    borderColor: '#FDE68A',
-  },
-  attentionChipText: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  attentionTextPrimary: {
-    color: OwnerTheme.colors.primary,
-  },
-  attentionTextWarning: {
-    color: '#B45309',
-  },
-  kpiGrid: {
-    gap: 8,
-  },
-  gateStatsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  gateStatHalfCard: {
-    flex: 1,
+  cardPressed: {
+    opacity: 0.86,
+    transform: [{ scale: 0.99 }],
   },
 });

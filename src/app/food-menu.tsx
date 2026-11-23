@@ -16,6 +16,7 @@ import {
 } from '@/components/food-menu/MealEditorSheet';
 import { WeeklyMenuEditor } from '@/components/food-menu/WeeklyMenuEditor';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
 import { OwnerHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -423,8 +424,17 @@ export default function FoodMenuScreen() {
     return [{ meal, title: MEAL_CONFIG[meal].title, timeLabel: formatted }];
   });
 
+  const publishedCount = MEAL_ORDER.filter((m) => menus[m]?.is_published).length;
   const topNotice = (
     <>
+      <DarkSlateHeroCard
+        eyebrow="DAILY FOOD MENU"
+        title={formatDayMonth(selectedDate)}
+        subtitle={property?.name || 'PG Mess'}
+        badgeLabel={`${publishedCount}/3 published`}
+        badgeTone={publishedCount === 3 ? 'success' : publishedCount > 0 ? 'info' : 'warning'}
+        style={{ marginBottom: 10 }}
+      />
       {configuredMealTimes.length > 0 && (
         <View style={styles.mealTimesStrip}>
           <View style={styles.mealTimesHeaderRow}>

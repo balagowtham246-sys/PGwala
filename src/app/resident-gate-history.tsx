@@ -585,35 +585,56 @@ export default function StudentGateHistoryScreen() {
     if (loading || !resident) return undefined;
     return (
       <>
-        {/* Status Card */}
+        {/* Dark-Slate Gate Status Hero Card */}
         <View
           style={[
             styles.statusCard,
-            currentStatus === 'IN'
-              ? styles.statusCardIn
-              : currentStatus === 'OUT'
-                ? styles.statusCardOut
-                : styles.statusCardUnknown,
+            {
+              backgroundColor: '#0F172A',
+              borderColor:
+                currentStatus === 'IN'
+                  ? 'rgba(16,185,129,0.38)'
+                  : currentStatus === 'OUT'
+                    ? 'rgba(251,191,36,0.4)'
+                    : '#1E293B',
+              borderRadius: 18,
+            },
           ]}>
-          <View style={styles.statusIconWrap}>
+          <View
+            style={[
+              styles.statusIconWrap,
+              {
+                backgroundColor:
+                  currentStatus === 'IN'
+                    ? 'rgba(16,185,129,0.16)'
+                    : currentStatus === 'OUT'
+                      ? 'rgba(251,191,36,0.16)'
+                      : 'rgba(148,163,184,0.16)',
+              },
+            ]}>
             {currentStatus === 'IN' ? (
-              <Home size={22} color="#16A34A" />
+              <Home size={22} color="#34D399" />
             ) : currentStatus === 'OUT' ? (
-              <LogOut size={22} color="#D97706" />
+              <LogOut size={22} color="#FCD34D" />
             ) : (
-              <HelpCircle size={22} color="#64748B" />
+              <HelpCircle size={22} color="#94A3B8" />
             )}
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.statusLabel}>Current Gate Status</Text>
+            <Text style={[styles.statusLabel, { color: '#94A3B8' }]}>
+              Current Gate Status
+            </Text>
             <Text
               style={[
                 styles.statusValue,
-                currentStatus === 'IN'
-                  ? styles.textIn
-                  : currentStatus === 'OUT'
-                    ? styles.textOut
-                    : styles.textUnknown,
+                {
+                  color:
+                    currentStatus === 'IN'
+                      ? '#34D399'
+                      : currentStatus === 'OUT'
+                        ? '#FCD34D'
+                        : '#E2E8F0',
+                },
               ]}>
               {currentStatus === 'IN'
                 ? 'Checked in'
@@ -622,7 +643,7 @@ export default function StudentGateHistoryScreen() {
                   : 'No Gate Logs Recorded'}
             </Text>
             {lastEventTime && (
-              <Text style={styles.statusSub}>
+              <Text style={[styles.statusSub, { color: '#CBD5E1' }]}>
                 Last recorded: {lastEventDate} at {lastEventTime}
               </Text>
             )}

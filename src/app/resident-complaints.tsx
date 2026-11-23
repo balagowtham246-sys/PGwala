@@ -2,15 +2,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Alert,
+  FlatList,
   Pressable,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
 import { OwnerHeader } from '@/components/ui/owner';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
@@ -394,6 +395,18 @@ export default function StudentComplaintsScreen() {
     ? `${propertyName} · ${formatRoomLabel(resident.room_number)}`
     : propertyName;
 
+  const renderComplaintItem = useCallback(
+    ({ item }: { item: ComplaintRecord }) => (
+      <StudentComplaintCard
+        item={item}
+        onViewPhoto={(url) => void handleViewPhoto(url)}
+      />
+    ),
+    []
+  );
+
+  const complaintKeyExtractor = useCallback((item: ComplaintRecord) => item.id, []);
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
@@ -405,8 +418,17 @@ export default function StudentComplaintsScreen() {
         }
       />
 
-      <ScrollView
+      <FlatList
+        data={loading || !resident ? [] : filteredComplaints}
+        keyExtractor={complaintKeyExtractor}
+        renderItem={renderComplaintItem}
         contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        initialNumToRender={10}
+        maxToRenderPerBatch={10}
+        windowSize={7}
+        onEndReached={loadMoreComplaints}
+        onEndReachedThreshold={0.4}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -424,130 +446,141 @@ export default function StudentComplaintsScreen() {
             }}
             colors={['#0284C7']}
           />
-        }>
-        {loading ? (
-          <View style={styles.loadingBox}>
-            <ActivityIndicator size="small" color="#0284C7" />
-            <Text style={styles.loadingText}>Loading complaints & requests...</Text>
-          </View>
-        ) : !resident ? (
-          <View style={styles.unlinkedCard}>
-            <Text style={styles.unlinkedTitle}>Room Not Linked</Text>
-            <Text style={styles.unlinkedSub}>
-              Your account has not yet been linked to an active room.
-            </Text>
-          </View>
-        ) : (
-          <>
-            {/* Action Bar */}
-            <View style={styles.actionBanner}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.actionBannerTitle}>Facing an issue in your room?</Text>
-                <Text style={styles.actionBannerSub}>
-                  Report repairs or requests directly to your PG owner.
-                </Text>
-              </View>
-              <Pressable
-                style={styles.raiseBtn}
-                onPress={() => setShowModal(true)}>
-                <Text style={styles.raiseBtnText}>+ Raise Issue</Text>
-              </Pressable>
-            </View>
+        }
+        ListHeaderComponent={
+          !loading && resident ? (
+            <>
+              <DarkSlateHeroCard
+                eyebrow="MAINTENANCE & ISSUES"
+                title={
+                  activeCount > 0
+                    ? `${activeCount} active ticket${activeCount === 1 ? '' : 's'}`
+                    : 'All issues resolved'
+                }
+                subtitle={resident.property?.name || 'My PG'}
+                badgeLabel={activeCount > 0 ? 'In progress' : 'All clear'}
+                badgeTone={activeCount > 0 ? 'warning' : 'success'}
+                stats={[
+                  { label: 'Active', value: activeCount, tone: activeCount > 0 ? 'warning' : 'default' },
+                  { label: 'Resolved', value: complaints.length - activeCount, tone: 'success' },
+                  { label: 'Total', value: complaints.length, tone: 'info' },
+                ]}
+              />
 
-            {pendingOfflineCount > 0 && (
-              <View style={styles.offlineBanner}>
-                <Text style={styles.offlineBannerText}>
-                  {pendingOfflineCount} offline update{pendingOfflineCount > 1 ? 's' : ''} queued — will submit automatically when connected
-                </Text>
-              </View>
-            )}
-
-            {/* Filter Tabs (hide zero-count tabs) */}
-            {complaints.length > 0 && (
-              <View style={styles.filterRow}>
-                {activeCount > 0 && (
-                  <Pressable
-                    style={[styles.filterBtn, filter === 'active' && styles.filterBtnActive]}
-                    onPress={() => setFilter('active')}>
-                    <Text
-                      style={[
-                        styles.filterBtnText,
-                        filter === 'active' && styles.filterBtnTextActive,
-                      ]}>
-                      Active ({activeCount})
-                    </Text>
-                  </Pressable>
-                )}
-                {complaints.length - activeCount > 0 && (
-                  <Pressable
-                    style={[styles.filterBtn, filter === 'resolved' && styles.filterBtnActive]}
-                    onPress={() => setFilter('resolved')}>
-                    <Text
-                      style={[
-                        styles.filterBtnText,
-                        filter === 'resolved' && styles.filterBtnTextActive,
-                      ]}>
-                      Resolved ({complaints.length - activeCount})
-                    </Text>
-                  </Pressable>
-                )}
-                {activeCount > 0 && complaints.length - activeCount > 0 && (
-                  <Pressable
-                    style={[styles.filterBtn, filter === 'all' && styles.filterBtnActive]}
-                    onPress={() => setFilter('all')}>
-                    <Text
-                      style={[
-                        styles.filterBtnText,
-                        filter === 'all' && styles.filterBtnTextActive,
-                      ]}>
-                      All ({complaints.length})
-                    </Text>
-                  </Pressable>
-                )}
-              </View>
-            )}
-
-            {/* Complaints List */}
-            {filteredComplaints.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <View style={styles.emptyIconCircle}>
-                  <CheckCircle2 size={26} color="#16A34A" />
+              {/* Action Bar */}
+              <View style={styles.actionBanner}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.actionBannerTitle}>Facing an issue in your room?</Text>
+                  <Text style={styles.actionBannerSub}>
+                    Report repairs or requests directly to your PG owner.
+                  </Text>
                 </View>
-                <Text style={styles.emptyTitle}>
-                  {filter === 'active' ? 'All clear' : 'No matching requests'}
-                </Text>
-                <Text style={styles.emptySub}>
-                  {filter === 'active'
-                    ? 'No open maintenance requests. If anything needs attention, tap + to report it.'
-                    : 'No maintenance requests match the selected filter.'}
-                </Text>
+                <Pressable
+                  style={styles.raiseBtn}
+                  onPress={() => setShowModal(true)}>
+                  <Text style={styles.raiseBtnText}>+ Raise Issue</Text>
+                </Pressable>
               </View>
-            ) : (
-              <>
-                {filteredComplaints.map((item) => (
-                  <StudentComplaintCard
-                    key={item.id}
-                    item={item}
-                    onViewPhoto={(url) => void handleViewPhoto(url)}
-                  />
-                ))}
-                {hasMore && (
-                  <Pressable
-                    style={styles.loadMoreBtn}
-                    disabled={loadingMore}
-                    onPress={() => void loadMoreComplaints()}>
-                    {loadingMore ? (
-                      <ActivityIndicator size="small" color="#0284C7" />
-                    ) : (
-                      <Text style={styles.loadMoreText}>Load older complaints</Text>
-                    )}
-                  </Pressable>
-                )}
-              </>
-            )}
-          </>
-        )}
-      </ScrollView>
+
+              {pendingOfflineCount > 0 && (
+                <View style={styles.offlineBanner}>
+                  <Text style={styles.offlineBannerText}>
+                    {pendingOfflineCount} offline update{pendingOfflineCount > 1 ? 's' : ''} queued — will submit automatically when connected
+                  </Text>
+                </View>
+              )}
+
+              {/* Filter Tabs (hide zero-count tabs) */}
+              {complaints.length > 0 && (
+                <View style={styles.filterRow}>
+                  {activeCount > 0 && (
+                    <Pressable
+                      style={[styles.filterBtn, filter === 'active' && styles.filterBtnActive]}
+                      onPress={() => setFilter('active')}>
+                      <Text
+                        style={[
+                          styles.filterBtnText,
+                          filter === 'active' && styles.filterBtnTextActive,
+                        ]}>
+                        Active ({activeCount})
+                      </Text>
+                    </Pressable>
+                  )}
+                  {complaints.length - activeCount > 0 && (
+                    <Pressable
+                      style={[styles.filterBtn, filter === 'resolved' && styles.filterBtnActive]}
+                      onPress={() => setFilter('resolved')}>
+                      <Text
+                        style={[
+                          styles.filterBtnText,
+                          filter === 'resolved' && styles.filterBtnTextActive,
+                        ]}>
+                        Resolved ({complaints.length - activeCount})
+                      </Text>
+                    </Pressable>
+                  )}
+                  {activeCount > 0 && complaints.length - activeCount > 0 && (
+                    <Pressable
+                      style={[styles.filterBtn, filter === 'all' && styles.filterBtnActive]}
+                      onPress={() => setFilter('all')}>
+                      <Text
+                        style={[
+                          styles.filterBtnText,
+                          filter === 'all' && styles.filterBtnTextActive,
+                        ]}>
+                        All ({complaints.length})
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              )}
+            </>
+          ) : undefined
+        }
+        ListEmptyComponent={
+          loading ? (
+            <View style={styles.loadingBox}>
+              <ActivityIndicator size="small" color="#0284C7" />
+              <Text style={styles.loadingText}>Loading complaints & requests...</Text>
+            </View>
+          ) : !resident ? (
+            <View style={styles.unlinkedCard}>
+              <Text style={styles.unlinkedTitle}>Room Not Linked</Text>
+              <Text style={styles.unlinkedSub}>
+                Your account has not yet been linked to an active room.
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.emptyCard}>
+              <View style={styles.emptyIconCircle}>
+                <CheckCircle2 size={26} color="#16A34A" />
+              </View>
+              <Text style={styles.emptyTitle}>
+                {filter === 'active' ? 'All clear' : 'No matching requests'}
+              </Text>
+              <Text style={styles.emptySub}>
+                {filter === 'active'
+                  ? 'No open maintenance requests. If anything needs attention, tap + to report it.'
+                  : 'No maintenance requests match the selected filter.'}
+              </Text>
+            </View>
+          )
+        }
+        ListFooterComponent={
+          !loading && resident && hasMore ? (
+            <Pressable
+              style={styles.loadMoreBtn}
+              disabled={loadingMore}
+              onPress={() => void loadMoreComplaints()}>
+              {loadingMore ? (
+                <ActivityIndicator size="small" color="#0284C7" />
+              ) : (
+                <Text style={styles.loadMoreText}>Load older complaints</Text>
+              )}
+            </Pressable>
+          ) : undefined
+        }
+      />
 
       <RaiseComplaintModal
         visible={showModal}

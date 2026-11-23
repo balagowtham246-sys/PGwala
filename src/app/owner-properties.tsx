@@ -673,6 +673,32 @@ export default function OwnerPropertiesScreen() {
                               : `${occupiedCount} ${occupiedCount === 1 ? 'resident' : 'residents'}`}
                           </Text>
                         </View>
+                        <Text style={styles.metaDot}>•</Text>
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 4,
+                            paddingHorizontal: 7,
+                            paddingVertical: 2,
+                            borderRadius: 999,
+                            backgroundColor: isValidUpiId(prop.upi_id)
+                              ? '#DCFCE7'
+                              : '#FEF3C7',
+                          }}>
+                          <Text
+                            style={{
+                              fontSize: 10,
+                              fontWeight: '700',
+                              color: isValidUpiId(prop.upi_id)
+                                ? '#166534'
+                                : '#92400E',
+                            }}>
+                            {isValidUpiId(prop.upi_id)
+                              ? 'UPI Active'
+                              : 'Add UPI ID'}
+                          </Text>
+                        </View>
                       </View>
 
                       {prop.address ? (

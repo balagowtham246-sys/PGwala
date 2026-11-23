@@ -1,4 +1,5 @@
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
 import { router, useLocalSearchParams } from 'expo-router';
 import {
   CheckCircle2,
@@ -347,8 +348,7 @@ export default function OwnerComplaintsScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
         title="Maintenance & Issues"
-        subtitle={`${propertyName} • Complaints`}
-        showBack
+        subtitle={propertyName}
         rightAction={
           propertyId ? (
             <Pressable
@@ -401,6 +401,23 @@ export default function OwnerComplaintsScreen() {
         ListHeaderComponent={
           loading || !propertyId ? undefined : (
             <>
+              <DarkSlateHeroCard
+                eyebrow="MAINTENANCE OVERVIEW"
+                title={
+                  openCount > 0
+                    ? `${openCount} open issue${openCount === 1 ? '' : 's'}`
+                    : 'All issues cleared'
+                }
+                subtitle={propertyName}
+                badgeLabel={openCount > 0 ? 'Action needed' : 'All clear'}
+                badgeTone={openCount > 0 ? 'warning' : 'success'}
+                stats={[
+                  { label: 'Open', value: openCount, tone: openCount > 0 ? 'warning' : 'default' },
+                  { label: 'In Progress', value: inProgressCount, tone: 'info' },
+                  { label: 'Resolved', value: resolvedCount, tone: 'success' },
+                ]}
+              />
+
               {/* Resident Filter Banner */}
               {activeResidentFilterId && (
                 <Pressable

@@ -74,29 +74,29 @@ export default function ResidentSettingsScreen() {
       />
 
       <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
-        {/* Profile Card Header (Read-only Info View) */}
+        {/* Dark-Slate Resident Profile Hero Card */}
         <Pressable
           accessibilityRole="button"
           style={({ pressed }) => [
             styles.profileCard,
-            { backgroundColor: colors.card, borderColor: colors.border },
-            pressed && { backgroundColor: colors.surfaceElevated },
+            { backgroundColor: '#0F172A', borderColor: '#0F172A', borderRadius: 18 },
+            pressed && { opacity: 0.9 },
           ]}
           onPress={() => router.push('/resident-accommodation')}>
           <View style={[styles.avatarCircle, { backgroundColor: colors.primary }]}>
             <Text style={styles.avatarText}>{getInitials(profile?.full_name)}</Text>
           </View>
           <View style={styles.profileInfo}>
-            <Text style={[styles.profileName, { color: colors.textPrimary }]}>
+            <Text style={[styles.profileName, { color: '#FFFFFF' }]}>
               {profile?.full_name || 'Resident'}
             </Text>
-            <Text style={[styles.profileSubtitle, { color: colors.textSecondary }]} numberOfLines={1}>
+            <Text style={[styles.profileSubtitle, { color: '#94A3B8' }]} numberOfLines={1}>
               {summary
                 ? `${formatRoomLabel(summary.roomNumber)} · ${summary.propertyName}`
                 : profile?.phone_number || user?.email || 'Resident Account'}
             </Text>
           </View>
-          <ChevronRight size={18} color={colors.textMuted} />
+          <ChevronRight size={18} color="#94A3B8" />
         </Pressable>
 
         {/* Preferences & Alerts */}

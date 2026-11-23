@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
 import {
   EmptyState,
   ErrorState,
@@ -435,6 +436,18 @@ export default function StudentAnnouncementsScreen() {
           windowSize={7}
           ListHeaderComponent={
             <View style={styles.listContainer}>
+              <DarkSlateHeroCard
+                eyebrow="PG NOTICES & ALERTS"
+                title={propertyInfo.propertyName}
+                subtitle={
+                  propertyInfo.roomNumber
+                    ? formatRoomLabel(propertyInfo.roomNumber)
+                    : 'Resident Notices'
+                }
+                badgeLabel={`${items.length} notice${items.length === 1 ? '' : 's'}`}
+                badgeTone="info"
+                style={{ marginBottom: 4 }}
+              />
               <SegmentedFilter
                 options={filterOptions}
                 activeKey={filter}

@@ -19,6 +19,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Href, router, useFocusEffect } from 'expo-router';
 import {
   ChevronRight,
+  MessageCircle,
   Phone,
   Search,
   SlidersHorizontal,
@@ -36,7 +37,10 @@ import {
 import { OwnerTheme } from '@/constants/theme';
 import { useProperty } from '@/context/property-context';
 import { useResidentsDirectoryQuery } from '@/hooks/use-residents';
-import { formatPaiseToRupees } from '@/lib/billing-utils';
+import {
+  buildWhatsAppReminderUrl,
+  formatPaiseToRupees,
+} from '@/lib/billing-utils';
 import { triggerSelectionHaptic } from '@/lib/haptics';
 import { queryKeys } from '@/lib/query-keys';
 import {
@@ -107,29 +111,61 @@ const ResidentDirectoryRow = memo(function ResidentDirectoryRow({
 
       <View style={styles.residentRight}>
         {phoneDigits.length >= 10 && (
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Call ${resident.fullName}`}
-            hitSlop={8}
-            style={({ pressed }) => [
-              {
-                width: 30,
-                height: 30,
-                borderRadius: 15,
-                backgroundColor: OwnerTheme.colors.primaryLight,
-                alignItems: 'center',
-                justifyContent: 'center',
-              },
-              pressed && { opacity: 0.7 },
-            ]}
-            onPress={(e) => {
-              e.stopPropagation();
-              Linking.openURL(`tel:${phoneDigits}`).catch(() => {
-                Alert.alert('Unable to Call', 'Could not open the phone dialer.');
-              });
-            }}>
-            <Phone size={14} color={OwnerTheme.colors.primary} />
-          </Pressable>
+          <>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`WhatsApp ${resident.fullName}`}
+              hitSlop={6}
+              style={({ pressed }) => [
+                {
+                  width: 30,
+                  height: 30,
+                  borderRadius: 15,
+                  backgroundColor: '#DCFCE7',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                },
+                pressed && { opacity: 0.7 },
+              ]}
+              onPress={(e) => {
+                e.stopPropagation();
+                const msg =
+                  resident.pendingDuesPaise > 0
+                    ? `Hi ${resident.fullName}, friendly reminder regarding your pending PG dues of ${formatPaiseToRupees(resident.pendingDuesPaise)}.`
+                    : `Hi ${resident.fullName}, reaching out regarding your PG stay (Room ${resident.roomNumber}).`;
+                const url = buildWhatsAppReminderUrl(resident.phoneNumber, msg);
+                if (url) {
+                  Linking.openURL(url).catch(() => {
+                    Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp.');
+                  });
+                }
+              }}>
+              <MessageCircle size={14} color="#15803D" />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Call ${resident.fullName}`}
+              hitSlop={6}
+              style={({ pressed }) => [
+                {
+                  width: 30,
+                  height: 30,
+                  borderRadius: 15,
+                  backgroundColor: OwnerTheme.colors.primaryLight,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                },
+                pressed && { opacity: 0.7 },
+              ]}
+              onPress={(e) => {
+                e.stopPropagation();
+                Linking.openURL(`tel:${phoneDigits}`).catch(() => {
+                  Alert.alert('Unable to Call', 'Could not open the phone dialer.');
+                });
+              }}>
+              <Phone size={14} color={OwnerTheme.colors.primary} />
+            </Pressable>
+          </>
         )}
         <View style={styles.badgesCol}>
           <StatusBadge label={statusLabel} variant={statusVariant} size="sm" />
@@ -260,6 +296,23 @@ export default function ResidentsDirectoryScreen() {
     () => residents.filter((r) => r.isActive !== false),
     [residents]
   );
+
+  const quickCounts = useMemo(() => {
+    let unpaid = 0;
+    let outside = 0;
+    let inside = 0;
+    for (const r of activeResidents) {
+      if (r.pendingDuesPaise > 0) unpaid += 1;
+      if (r.gateStatus === 'OUT') outside += 1;
+      else inside += 1;
+    }
+    return {
+      all: activeResidents.length,
+      unpaid,
+      outside,
+      inside,
+    };
+  }, [activeResidents]);
 
   const filteredResidents = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -417,6 +470,53 @@ export default function ResidentsDirectoryScreen() {
         <View style={styles.directoryBody}>
           {/* Live Search & Filter Toolbar pinned outside SectionList so TextInput keeps focus */}
           <View style={styles.toolbarHeaderWrap}>
+            {/* Compact Fintech Occupancy & Dues Strip */}
+            <View
+              style={{
+                flexDirection: 'row',
+                backgroundColor: '#0F172A',
+                borderRadius: 16,
+                paddingVertical: 12,
+                paddingHorizontal: 14,
+                marginBottom: 10,
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}>
+              <View style={{ flex: 1, alignItems: 'center' }}>
+                <Text style={{ fontSize: 18, fontWeight: '800', color: '#FFFFFF' }}>
+                  {quickCounts.all}
+                </Text>
+                <Text style={{ fontSize: 11, color: '#94A3B8', fontWeight: '600' }}>
+                  Active
+                </Text>
+              </View>
+              <View style={{ width: 1, height: 24, backgroundColor: 'rgba(255,255,255,0.14)' }} />
+              <View style={{ flex: 1, alignItems: 'center' }}>
+                <Text style={{ fontSize: 18, fontWeight: '800', color: '#38BDF8' }}>
+                  {selectedProperty?.total_beds
+                    ? `${quickCounts.all}/${selectedProperty.total_beds}`
+                    : `${quickCounts.inside}`}
+                </Text>
+                <Text style={{ fontSize: 11, color: '#94A3B8', fontWeight: '600' }}>
+                  {selectedProperty?.total_beds ? 'Beds' : 'Inside'}
+                </Text>
+              </View>
+              <View style={{ width: 1, height: 24, backgroundColor: 'rgba(255,255,255,0.14)' }} />
+              <View style={{ flex: 1, alignItems: 'center' }}>
+                <Text
+                  style={{
+                    fontSize: 18,
+                    fontWeight: '800',
+                    color: quickCounts.unpaid > 0 ? '#FCA5A5' : '#34D399',
+                  }}>
+                  {quickCounts.unpaid}
+                </Text>
+                <Text style={{ fontSize: 11, color: '#94A3B8', fontWeight: '600' }}>
+                  With Dues
+                </Text>
+              </View>
+            </View>
+
             <View style={styles.searchBarWrap}>
               <Search size={16} color={OwnerTheme.colors.textMuted} />
               <TextInput
@@ -438,6 +538,73 @@ export default function ResidentsDirectoryScreen() {
                 </Pressable>
               )}
             </View>
+
+            {/* 1-Tap Quick-Filter Chips */}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.quickChipsRow}
+              keyboardShouldPersistTaps="handled">
+              {(
+                [
+                  {
+                    key: 'all',
+                    label: `All (${quickCounts.all})`,
+                    active: statusFilter === 'all' && duesFilter === 'all',
+                    onPress: () => {
+                      triggerSelectionHaptic();
+                      setStatusFilter('all');
+                      setDuesFilter('all');
+                    },
+                  },
+                  {
+                    key: 'unpaid',
+                    label: `Unpaid Dues (${quickCounts.unpaid})`,
+                    active: duesFilter === 'pending',
+                    onPress: () => {
+                      triggerSelectionHaptic();
+                      setDuesFilter((prev) => (prev === 'pending' ? 'all' : 'pending'));
+                    },
+                  },
+                  {
+                    key: 'outside',
+                    label: `Outside (${quickCounts.outside})`,
+                    active: statusFilter === 'OUT',
+                    onPress: () => {
+                      triggerSelectionHaptic();
+                      setStatusFilter((prev) => (prev === 'OUT' ? 'all' : 'OUT'));
+                    },
+                  },
+                  {
+                    key: 'inside',
+                    label: `Inside (${quickCounts.inside})`,
+                    active: statusFilter === 'IN',
+                    onPress: () => {
+                      triggerSelectionHaptic();
+                      setStatusFilter((prev) => (prev === 'IN' ? 'all' : 'IN'));
+                    },
+                  },
+                ] as const
+              ).map((chip) => (
+                <Pressable
+                  key={chip.key}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: chip.active }}
+                  style={[
+                    styles.quickChip,
+                    chip.active && styles.quickChipActive,
+                  ]}
+                  onPress={chip.onPress}>
+                  <Text
+                    style={[
+                      styles.quickChipText,
+                      chip.active && styles.quickChipTextActive,
+                    ]}>
+                    {chip.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </ScrollView>
 
             <View style={styles.filterToolbarRow}>
               <View style={styles.filterToolbarLeft}>
@@ -805,6 +972,34 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: OwnerTheme.colors.textPrimary,
     paddingVertical: 0,
+  },
+  quickChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+    paddingRight: 4,
+  },
+  quickChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: OwnerTheme.radius.full,
+    backgroundColor: OwnerTheme.colors.surface,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+  },
+  quickChipActive: {
+    backgroundColor: OwnerTheme.colors.primary,
+    borderColor: OwnerTheme.colors.primary,
+  },
+  quickChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  quickChipTextActive: {
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
   filterToolbarRow: {
     flexDirection: 'row',

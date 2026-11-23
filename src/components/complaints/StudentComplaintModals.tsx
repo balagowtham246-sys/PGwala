@@ -83,7 +83,15 @@ export const StudentComplaintCard = memo(function StudentComplaintCard({
   });
 
   return (
-    <View style={styles.complaintCard}>
+    <View
+      style={[
+        styles.complaintCard,
+        {
+          borderRadius: 16,
+          borderLeftWidth: 4,
+          borderLeftColor: prioInfo.color,
+        },
+      ]}>
       <View style={styles.cardHeaderRow}>
         <View style={styles.catBadge}>
           <catInfo.Icon size={14} color="#475569" />

@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
+  Linking,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -14,33 +17,36 @@ import { Href, router, useLocalSearchParams } from 'expo-router';
 import {
   LogIn,
   LogOut,
+  MessageCircle,
   Search,
-  UserPlus,
-  Utensils,
   X,
 } from 'lucide-react-native';
+import { useQueryClient } from '@tanstack/react-query';
 
 import { GateHistoryModal } from '@/components/student-gate/GateHistoryModal';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { useToast } from '@/context/toast-context';
 import {
   MovementLogItem,
   MovementResidentRecord,
   useOwnerMovementQuery,
 } from '@/hooks/use-movement';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
+import { buildWhatsAppReminderUrl } from '@/lib/billing-utils';
 import {
   groupLogsByLocalDay,
   isLateReturn,
 } from '@/lib/movement-utils';
+import { queryKeys } from '@/lib/query-keys';
+import { supabase } from '@/lib/supabase';
 import {
   formatGateEventTimestamp,
   toSentenceCaseStatus,
 } from '@/lib/ux-utils';
 import {
   OwnerHeader,
-  StatisticCard,
   StatusBadge,
   SegmentedFilter,
   EmptyState,
@@ -69,6 +75,8 @@ function formatEventTime(isoString: string): string {
 export default function StudentInOutScreen() {
   const { user } = useAuth();
   const { selectedProperty, selectedPropertyId } = useProperty();
+  const { showToast } = useToast();
+  const queryClient = useQueryClient();
   const params = useLocalSearchParams<{ residentId?: string | string[] }>();
   const rawParamResidentId = Array.isArray(params.residentId)
     ? params.residentId[0]
@@ -80,6 +88,48 @@ export default function StudentInOutScreen() {
   const activeSelectedPropertyName = selectedProperty?.name;
 
   const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [togglingResidentId, setTogglingResidentId] = useState<string | null>(
+    null
+  );
+
+  const handleOwnerToggleGate = useCallback(
+    async (resident: MovementResidentRecord, currentlyInside: boolean) => {
+      if (!userId || togglingResidentId) return;
+      const nextDirection: 'IN' | 'OUT' = currentlyInside ? 'OUT' : 'IN';
+      setTogglingResidentId(resident.id);
+      try {
+        const { error } = await supabase.from('movement_logs').insert({
+          property_id: resident.property_id,
+          resident_id: resident.id,
+          direction: nextDirection,
+          event_time: new Date().toISOString(),
+          food_required: nextDirection === 'IN',
+          note: 'Updated by owner',
+          recorded_by: userId,
+        });
+        if (error) throw error;
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.movement.all }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
+        ]);
+        showToast(
+          `${resident.full_name} marked ${
+            nextDirection === 'IN' ? 'Inside PG' : 'Outside PG'
+          }.`
+        );
+      } catch (err) {
+        Alert.alert(
+          'Update Failed',
+          err instanceof Error
+            ? err.message
+            : 'Could not update gate status.'
+        );
+      } finally {
+        setTogglingResidentId(null);
+      }
+    },
+    [queryClient, showToast, togglingResidentId, userId]
+  );
   const [clearedResidentId, setClearedResidentId] = useState<string | null>(
     null
   );
@@ -107,7 +157,7 @@ export default function StudentInOutScreen() {
   };
 
   // Filter Tabs & Search
-  type FilterTab = 'ALL' | 'OUT' | 'IN';
+  type FilterTab = 'ALL' | 'OUT' | 'IN' | 'LATE';
   const [activeTab, setActiveTab] = useState<FilterTab>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -183,50 +233,88 @@ export default function StudentInOutScreen() {
     [latestLogByResident]
   );
 
-  // Live count derivation
-  const counts = residents.reduce(
-    (acc, r) => {
-      const status = getResidentCurrentStatus(r.id);
-      if (status === 'IN') acc.inside += 1;
-      else acc.outside += 1;
-      return acc;
-    },
-    { inside: 0, outside: 0 }
-  );
+  // Live count derivation (memoized)
+  const { counts, outsideMealsCount, lateReturnCount } = useMemo(() => {
+    let inside = 0;
+    let outside = 0;
+    let outsideMeals = 0;
+    let late = 0;
 
-  const outsideMealsCount = residents.reduce((acc, r) => {
-    const status = getResidentCurrentStatus(r.id);
-    const latest = getLatestResidentLog(r.id);
-    if (status === 'OUT' && latest && latest.food_required) {
-      return acc + 1;
+    for (const r of residents) {
+      const status = getResidentCurrentStatus(r.id);
+      if (status === 'IN') {
+        inside += 1;
+      } else {
+        outside += 1;
+        const latest = getLatestResidentLog(r.id);
+        if (latest?.food_required) {
+          outsideMeals += 1;
+        }
+        if (latest && isLateReturn(latest.expected_return_time)) {
+          late += 1;
+        }
+      }
     }
-    return acc;
-  }, 0);
+
+    return {
+      counts: { inside, outside },
+      outsideMealsCount: outsideMeals,
+      lateReturnCount: late,
+    };
+  }, [residents, getResidentCurrentStatus, getLatestResidentLog]);
 
   const mealsRequiredCount = counts.inside + outsideMealsCount;
 
-  const lateReturnCount = residents.reduce((acc, r) => {
-    const status = getResidentCurrentStatus(r.id);
-    const latest = getLatestResidentLog(r.id);
-    if (status === 'OUT' && latest && isLateReturn(latest.expected_return_time)) {
-      return acc + 1;
-    }
-    return acc;
-  }, 0);
+  const effectiveTab: FilterTab =
+    activeTab === 'LATE' && lateReturnCount === 0 ? 'ALL' : activeTab;
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
-  const filteredResidents = residents.filter((r) => {
-    if (activeResidentFilterId && r.id !== activeResidentFilterId) return false;
-    const status = getResidentCurrentStatus(r.id);
-    if (activeTab === 'OUT' && status !== 'OUT') return false;
-    if (activeTab === 'IN' && status !== 'IN') return false;
-    if (normalizedSearch) {
-      const matchesName = r.full_name.toLowerCase().includes(normalizedSearch);
-      const matchesRoom = r.room_number.toLowerCase().includes(normalizedSearch);
-      return matchesName || matchesRoom;
-    }
-    return true;
-  });
+  const filteredResidents = useMemo(
+    () =>
+      residents.filter((r) => {
+        if (activeResidentFilterId && r.id !== activeResidentFilterId) return false;
+        const status = getResidentCurrentStatus(r.id);
+        if (effectiveTab === 'OUT' && status !== 'OUT') return false;
+        if (effectiveTab === 'IN' && status !== 'IN') return false;
+        if (effectiveTab === 'LATE') {
+          const latest = getLatestResidentLog(r.id);
+          if (status !== 'OUT' || !latest || !isLateReturn(latest.expected_return_time)) {
+            return false;
+          }
+        }
+        if (normalizedSearch) {
+          const matchesName = r.full_name.toLowerCase().includes(normalizedSearch);
+          const matchesRoom = r.room_number.toLowerCase().includes(normalizedSearch);
+          return matchesName || matchesRoom;
+        }
+        return true;
+      }),
+    [
+      residents,
+      activeResidentFilterId,
+      effectiveTab,
+      normalizedSearch,
+      getResidentCurrentStatus,
+      getLatestResidentLog,
+    ]
+  );
+
+  const handleWhatsAppCheckIn = useCallback(
+    (resident: MovementResidentRecord, isLate: boolean, expectedReturn?: string | null) => {
+      const message = isLate
+        ? `Hi ${resident.full_name}, this is a quick safety check-in from ${propertyName}. Your expected return time${expectedReturn ? ` (${expectedReturn})` : ''} has passed — please confirm when you will be back at the PG.`
+        : `Hi ${resident.full_name}, quick check-in from ${propertyName}. Hope everything is well — please let us know your expected return time.`;
+      const waUrl = buildWhatsAppReminderUrl(resident.phone_number, message);
+      if (!waUrl) {
+        Alert.alert('No Phone Number', 'This resident does not have a valid phone number on file.');
+        return;
+      }
+      Linking.openURL(waUrl).catch(() => {
+        Alert.alert('WhatsApp Unavailable', 'Could not open WhatsApp on this device.');
+      });
+    },
+    [propertyName]
+  );
 
   const residentMap = useMemo(() => {
     const map = new Map<string, ResidentRecord>();
@@ -387,10 +475,84 @@ export default function StudentInOutScreen() {
               </View>
             )}
           </Pressable>
+
+          <View style={styles.cardActionRow}>
+            {isOutside &&
+              (resident.phone_number ?? '').replace(/\D/g, '').length >= 10 && (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={`Send WhatsApp safety check-in to ${resident.full_name}`}
+                  style={({ pressed }) => [
+                    styles.checkInBtn,
+                    { flex: 1, marginTop: 0 },
+                    isLate && styles.checkInBtnLate,
+                    pressed && styles.cardPressed,
+                  ]}
+                  onPress={() =>
+                    handleWhatsAppCheckIn(
+                      resident,
+                      isLate,
+                      latestLog?.expected_return_time
+                    )
+                  }>
+                  <MessageCircle
+                    size={14}
+                    color={isLate ? '#B91C1C' : '#15803D'}
+                  />
+                  <Text
+                    style={[
+                      styles.checkInBtnText,
+                      isLate && styles.checkInBtnTextLate,
+                    ]}
+                    numberOfLines={1}>
+                    {isLate ? 'Late Check-In' : 'WhatsApp'}
+                  </Text>
+                </Pressable>
+              )}
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Mark ${resident.full_name} ${
+                isInside ? 'outside' : 'inside'
+              }`}
+              disabled={togglingResidentId === resident.id}
+              style={({ pressed }) => [
+                styles.ownerOverrideBtn,
+                isInside
+                  ? styles.ownerOverrideBtnOut
+                  : styles.ownerOverrideBtnIn,
+                togglingResidentId === resident.id && { opacity: 0.6 },
+                pressed && styles.cardPressed,
+              ]}
+              onPress={() => void handleOwnerToggleGate(resident, isInside)}>
+              {togglingResidentId === resident.id ? (
+                <ActivityIndicator
+                  size="small"
+                  color={isInside ? '#B45309' : '#047857'}
+                />
+              ) : isInside ? (
+                <>
+                  <LogOut size={14} color="#B45309" />
+                  <Text style={styles.ownerOverrideBtnTextOut}>Mark Out</Text>
+                </>
+              ) : (
+                <>
+                  <LogIn size={14} color="#047857" />
+                  <Text style={styles.ownerOverrideBtnTextIn}>Mark In</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
         </View>
       );
     },
-    [getResidentCurrentStatus, getLatestResidentLog]
+    [
+      getResidentCurrentStatus,
+      getLatestResidentLog,
+      handleWhatsAppCheckIn,
+      handleOwnerToggleGate,
+      togglingResidentId,
+    ]
   );
 
   const residentKeyExtractor = useCallback((item: MovementResidentRecord) => item.id, []);
@@ -400,20 +562,6 @@ export default function StudentInOutScreen() {
       <OwnerHeader
         title="Gate Attendance"
         subtitle={propertyName}
-        showBack
-        rightAction={
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Add Resident"
-            style={({ pressed }) => [
-              styles.headerAddBtn,
-              pressed && styles.cardPressed,
-            ]}
-            onPress={() => router.push('/add-resident')}>
-            <UserPlus size={16} color={OwnerTheme.colors.primary} />
-            <Text style={styles.headerAddBtnText}>Add</Text>
-          </Pressable>
-        }
       />
 
       <FlatList
@@ -440,41 +588,63 @@ export default function StudentInOutScreen() {
               <ErrorState message={errorMessage} onRetry={loadData} />
             )}
 
-            {/* Top 3 Real-Time Statistics */}
-            <View style={styles.statsRow}>
-              <StatisticCard
-                label="Inside"
-                value={counts.inside}
-                accentColor={OwnerTheme.colors.success}
-                icon={LogIn}
-                sublabel="Checked in"
-                onPress={() => setActiveTab('IN')}
-              />
-              <StatisticCard
-                label="Outside"
-                value={counts.outside}
-                accentColor={OwnerTheme.colors.warning}
-                icon={LogOut}
-                sublabel="Checked out"
-                onPress={() => setActiveTab('OUT')}
-              />
-              <StatisticCard
-                label="Dinner"
-                value={mealsRequiredCount}
-                accentColor={OwnerTheme.colors.primary}
-                icon={Utensils}
-                sublabel={`${counts.inside} in + ${outsideMealsCount} out`}
-              />
-            </View>
+            {/* Dark-Slate Gate Attendance Hero */}
+            <DarkSlateHeroCard
+              eyebrow="LIVE GATE ATTENDANCE"
+              title={`${counts.inside} of ${counts.inside + counts.outside} inside PG`}
+              subtitle={`${mealsRequiredCount} dinner meals (${counts.inside} in + ${outsideMealsCount} out)`}
+              badgeLabel={
+                lateReturnCount > 0
+                  ? `${lateReturnCount} late`
+                  : counts.outside > 0
+                    ? `${counts.outside} outside`
+                    : 'All inside'
+              }
+              badgeTone={
+                lateReturnCount > 0
+                  ? 'danger'
+                  : counts.outside > 0
+                    ? 'warning'
+                    : 'success'
+              }
+              stats={[
+                { label: 'Inside', value: counts.inside, tone: 'success' },
+                {
+                  label: 'Outside',
+                  value: counts.outside,
+                  tone: counts.outside > 0 ? 'warning' : 'default',
+                },
+                { label: 'Dinner', value: mealsRequiredCount, tone: 'info' },
+              ]}
+            />
 
             {/* Late Return Alert Strip (only shown when overdue returns exist) */}
             {lateReturnCount > 0 && (
               <View style={styles.lateAlertRow}>
-                <View style={styles.lateChip}>
-                  <Text style={styles.lateChipText}>
-                    {lateReturnCount} late return{lateReturnCount > 1 ? 's' : ''}
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    effectiveTab === 'LATE'
+                      ? 'Showing late returns, tap to show all'
+                      : `Filter ${lateReturnCount} late return${lateReturnCount > 1 ? 's' : ''}`
+                  }
+                  style={({ pressed }) => [
+                    styles.lateChip,
+                    effectiveTab === 'LATE' && styles.lateChipActive,
+                    pressed && styles.cardPressed,
+                  ]}
+                  onPress={() =>
+                    setActiveTab((prev) => (prev === 'LATE' ? 'ALL' : 'LATE'))
+                  }>
+                  <Text
+                    style={[
+                      styles.lateChipText,
+                      effectiveTab === 'LATE' && styles.lateChipTextActive,
+                    ]}>
+                    {lateReturnCount} late return{lateReturnCount > 1 ? 's' : ''} ·{' '}
+                    {effectiveTab === 'LATE' ? 'Showing' : 'Tap to filter'}
                   </Text>
-                </View>
+                </Pressable>
               </View>
             )}
 
@@ -502,8 +672,11 @@ export default function StudentInOutScreen() {
                 { key: 'ALL', label: 'All', count: residents.length },
                 { key: 'OUT', label: 'Outside', count: counts.outside },
                 { key: 'IN', label: 'Inside', count: counts.inside },
+                ...(lateReturnCount > 0
+                  ? [{ key: 'LATE', label: 'Late', count: lateReturnCount }]
+                  : []),
               ]}
-              activeKey={activeTab}
+              activeKey={effectiveTab}
               onSelect={(key) => setActiveTab(key as FilterTab)}
               style={{ marginTop: 14, marginBottom: 10 }}
             />
@@ -556,9 +729,11 @@ export default function StudentInOutScreen() {
             <EmptyState
               title="No residents found"
               description={
-                activeTab === 'OUT'
+                effectiveTab === 'LATE'
+                  ? 'No residents are currently past their expected return time.'
+                  : effectiveTab === 'OUT'
                   ? 'No residents are currently marked outside.'
-                  : activeTab === 'IN'
+                  : effectiveTab === 'IN'
                   ? 'No residents are currently marked inside.'
                   : 'No active residents registered in this property.'
               }
@@ -702,12 +877,46 @@ const styles = StyleSheet.create({
   lateChip: {
     backgroundColor: '#FEE2E2',
     borderRadius: OwnerTheme.radius.full,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  lateChipActive: {
+    backgroundColor: '#DC2626',
+    borderColor: '#B91C1C',
   },
   lateChipText: {
     fontSize: 11,
     fontWeight: '700',
+    color: '#B91C1C',
+  },
+  lateChipTextActive: {
+    color: '#FFFFFF',
+  },
+  checkInBtn: {
+    marginTop: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: OwnerTheme.radius.sm,
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  checkInBtnLate: {
+    backgroundColor: '#FEE2E2',
+    borderColor: '#FECACA',
+  },
+  checkInBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#15803D',
+  },
+  checkInBtnTextLate: {
     color: '#B91C1C',
   },
   residentFilterBanner: {
@@ -882,5 +1091,40 @@ const styles = StyleSheet.create({
     marginTop: 8,
     fontSize: 13,
     color: OwnerTheme.colors.textSecondary,
+  },
+  cardActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 10,
+  },
+  ownerOverrideBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: OwnerTheme.radius.sm,
+    borderWidth: 1,
+  },
+  ownerOverrideBtnIn: {
+    backgroundColor: '#ECFDF5',
+    borderColor: '#A7F3D0',
+  },
+  ownerOverrideBtnOut: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  ownerOverrideBtnTextIn: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#047857',
+  },
+  ownerOverrideBtnTextOut: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B45309',
   },
 });

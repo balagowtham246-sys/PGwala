@@ -6,6 +6,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -14,9 +15,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
 import { useLocalSearchParams } from 'expo-router';
-import { AlertTriangle } from 'lucide-react-native';
+import { AlertTriangle, CheckCircle2, Share2 } from 'lucide-react-native';
 
 import { useAuth } from '@/context/auth-context';
+import { buildPaymentReceiptShareText } from '@/lib/billing-utils';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { invalidatePrefix } from '@/lib/query-cache';
 import { queryKeys } from '@/lib/query-keys';
@@ -208,12 +210,59 @@ export default function ReceiptDetailScreen() {
   const isOwner = profile?.role === 'owner';
   const isReversed = payment?.status === 'reversed';
 
+  const handleShareReceipt = useCallback(async () => {
+    if (!payment) return;
+    try {
+      const message = buildPaymentReceiptShareText({
+        receiptNumber: payment.receipt_number,
+        propertyName: payment.property?.name || 'PG Accommodation',
+        propertyAddress: payment.property?.address,
+        residentName: payment.resident?.full_name || 'Resident',
+        roomNumber: payment.resident?.room_number,
+        amountPaise: payment.amount_paise,
+        method: payment.method,
+        paymentDate: payment.payment_date,
+        status: payment.status,
+        notes: payment.notes,
+        allocations: (payment.allocations ?? []).map((alloc) => ({
+          description: alloc.charge?.description || 'Monthly Bill',
+          amountPaise: alloc.settled_amount_paise,
+          status: alloc.status,
+        })),
+      });
+      await Share.share({
+        title: `Rent Receipt ${payment.receipt_number}`,
+        message,
+      });
+    } catch (err: unknown) {
+      Alert.alert(
+        'Share Failed',
+        extractErrorMessage(err, 'Could not open the share sheet.')
+      );
+    }
+  }, [payment]);
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <OwnerHeader
         title="Payment Summary"
         subtitle={payment?.payment_date || 'Loading...'}
         showBack
+        rightAction={
+          payment ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Share payment receipt"
+              style={({ pressed }) => [
+                styles.headerShareBtn,
+                pressed && styles.btnDisabled,
+              ]}
+              onPress={handleShareReceipt}>
+              <Share2 size={15} color="#0284C7" />
+              <Text style={styles.headerShareText}>Share</Text>
+            </Pressable>
+          ) : undefined
+        }
       />
       <ScrollView contentContainerStyle={styles.scrollContent}>
 
@@ -246,35 +295,68 @@ export default function ReceiptDetailScreen() {
               </View>
             )}
 
-            {/* Simplified Payment Summary Card */}
+            {/* Fintech-Modern Digital Payment Receipt Card */}
             <View style={styles.receiptPaper}>
-              <View style={styles.receiptHeader}>
+              <View
+                style={[
+                  styles.receiptHeader,
+                  {
+                    backgroundColor: '#0F172A',
+                    marginHorizontal: -20,
+                    marginTop: -20,
+                    paddingHorizontal: 20,
+                    paddingTop: 22,
+                    paddingBottom: 20,
+                    borderTopLeftRadius: 16,
+                    borderTopRightRadius: 16,
+                    marginBottom: 18,
+                  },
+                ]}>
                 <View
-                  style={[
-                    styles.footerStamp,
-                    {
-                      borderTopWidth: 0,
-                      marginTop: 0,
-                      paddingTop: 0,
-                      marginBottom: 8,
-                    },
-                  ]}>
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 6,
+                    backgroundColor: isReversed
+                      ? 'rgba(239,68,68,0.18)'
+                      : 'rgba(16,185,129,0.18)',
+                    paddingHorizontal: 12,
+                    paddingVertical: 5,
+                    borderRadius: 999,
+                    marginBottom: 10,
+                  }}>
+                  {isReversed ? (
+                    <AlertTriangle size={14} color="#FCA5A5" />
+                  ) : (
+                    <CheckCircle2 size={14} color="#34D399" />
+                  )}
                   <Text
-                    style={[
-                      styles.footerStampText,
-                      {
-                        color: isReversed ? '#DC2626' : '#16A34A',
-                        letterSpacing: 0.6,
-                      },
-                    ]}>
-                    {isReversed ? 'REVERSED' : 'PAID'}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: '800',
+                      color: isReversed ? '#FCA5A5' : '#34D399',
+                      letterSpacing: 0.8,
+                    }}>
+                    {isReversed ? 'REVERSED' : 'PAYMENT VERIFIED'}
                   </Text>
                 </View>
-                <Text style={styles.totalAmount}>
+                <Text style={[styles.totalAmount, { color: '#FFFFFF' }]}>
                   ₹{(payment.amount_paise / 100).toLocaleString('en-IN')}
                 </Text>
-                <Text style={styles.propertyName}>{payment.property?.name || 'PG Accommodation'}</Text>
-                <View style={styles.divider} />
+                <Text style={[styles.propertyName, { color: '#CBD5E1' }]}>
+                  {payment.property?.name || 'PG Accommodation'}
+                </Text>
+                {payment.receipt_number ? (
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      fontWeight: '600',
+                      color: '#94A3B8',
+                      marginTop: 6,
+                    }}>
+                    Receipt #{payment.receipt_number}
+                  </Text>
+                ) : null}
               </View>
 
               <View style={styles.metaRow}>
@@ -327,6 +409,19 @@ export default function ReceiptDetailScreen() {
                 </View>
               )}
             </View>
+
+            {/* 1-Tap Share Receipt Action */}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Share payment receipt"
+              style={({ pressed }) => [
+                styles.shareReceiptBtn,
+                pressed && styles.shareReceiptBtnPressed,
+              ]}
+              onPress={handleShareReceipt}>
+              <Share2 size={16} color="#FFFFFF" />
+              <Text style={styles.shareReceiptBtnText}>Share Receipt</Text>
+            </Pressable>
 
             {/* Owner Reversal Button */}
             {isOwner && !isReversed && (
@@ -737,8 +832,43 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
   },
   reversalWrap: {
-    marginTop: 20,
+    marginTop: 14,
     alignItems: 'center',
+  },
+  headerShareBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#E0F2FE',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  headerShareText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#0284C7',
+  },
+  shareReceiptBtn: {
+    marginTop: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: '#0284C7',
+    borderRadius: 12,
+    paddingVertical: 13,
+    paddingHorizontal: 20,
+  },
+  shareReceiptBtnPressed: {
+    opacity: 0.86,
+  },
+  shareReceiptBtnText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   reverseBtn: {
     borderWidth: 1,

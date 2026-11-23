@@ -185,7 +185,7 @@ export function BillingSummaryHeader({
             )}
           </View>
         ) : null
-      ) : billingMode === 'EB' ? (
+      ) : billingMode === 'EB' && totalCount === 0 ? (
         <View style={styles.ebSplitterBanner}>
           <View style={{ flex: 1 }}>
             <Text style={styles.ebSplitterTitle}>Room EB Splitter</Text>
@@ -245,72 +245,72 @@ const styles = StyleSheet.create({
     color: OwnerTheme.colors.textPrimary,
   },
   summaryStripCard: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    borderWidth: 1,
-    borderColor: OwnerTheme.colors.border,
-    padding: 14,
+    backgroundColor: '#0F172A',
+    borderRadius: 18,
+    padding: 16,
     marginBottom: 10,
   },
   summaryTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-end',
-    marginBottom: 10,
+    marginBottom: 12,
   },
   summaryLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#94A3B8',
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
   },
   summaryTotalValue: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: OwnerTheme.colors.textPrimary,
-    letterSpacing: -0.4,
-    marginTop: 2,
+    fontSize: 26,
+    fontWeight: '800',
+    color: '#FFFFFF',
+    letterSpacing: -0.5,
+    marginTop: 3,
   },
   summaryRightCol: {
     alignItems: 'flex-end',
   },
   summaryProgressLabel: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
+    color: '#94A3B8',
   },
   summaryProgressPercent: {
     fontSize: 13,
     fontWeight: '700',
-    color: OwnerTheme.colors.primary,
+    color: '#38BDF8',
     marginTop: 2,
   },
   progressTrack: {
-    height: 6,
+    height: 7,
     borderRadius: OwnerTheme.radius.full,
-    backgroundColor: '#E2E8F0',
+    backgroundColor: 'rgba(255,255,255,0.14)',
     overflow: 'hidden',
-    marginBottom: 8,
+    marginBottom: 10,
   },
   progressFill: {
     height: '100%',
     borderRadius: OwnerTheme.radius.full,
-    backgroundColor: OwnerTheme.colors.success,
+    backgroundColor: '#10B981',
   },
   collectionBreakdownText: {
     fontSize: 13,
     fontWeight: '600',
-    color: OwnerTheme.colors.textSecondary,
+    color: '#94A3B8',
   },
   collectedHighlight: {
-    color: OwnerTheme.colors.success,
-    fontWeight: '600',
+    color: '#34D399',
+    fontWeight: '700',
   },
   pendingHighlight: {
-    color: OwnerTheme.colors.danger,
-    fontWeight: '600',
+    color: '#FCA5A5',
+    fontWeight: '700',
   },
   settledHighlight: {
-    color: OwnerTheme.colors.textSecondary,
+    color: '#CBD5E1',
     fontWeight: '600',
   },
   reviewBanner: {

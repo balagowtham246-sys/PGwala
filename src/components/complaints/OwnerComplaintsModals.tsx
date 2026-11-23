@@ -2,7 +2,6 @@ import React, { memo } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Image,
   KeyboardAvoidingView,
   Linking,
   Modal,
@@ -14,6 +13,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { Href, router } from 'expo-router';
 import {
   Armchair,
@@ -126,7 +126,15 @@ export const OwnerComplaintRow = memo(function OwnerComplaintRow({
   });
 
   return (
-    <View style={styles.complaintCard}>
+    <View
+      style={[
+        styles.complaintCard,
+        {
+          borderRadius: 16,
+          borderLeftWidth: 4,
+          borderLeftColor: prioInfo.color,
+        },
+      ]}>
       <View style={styles.cardTopRow}>
         <View style={{ flex: 1, paddingRight: 8 }}>
           <Pressable
@@ -543,7 +551,7 @@ export function LogComplaintModal({
       }}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={OwnerSharedStyles.modalOverlay}>
+        style={styles.createSheetOverlay}>
         <View style={styles.createModalContent}>
           <View style={styles.createModalHeader}>
             <View style={{ flex: 1 }}>
@@ -563,7 +571,8 @@ export function LogComplaintModal({
           <ScrollView
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
-            style={styles.createModalScroll}>
+            style={styles.createModalScroll}
+            contentContainerStyle={{ paddingBottom: 16 }}>
             <Text style={OwnerSharedStyles.inputLabel}>Resident *</Text>
             {activeResidents.length === 0 ? (
               <View style={styles.noResidentsNotice}>
@@ -765,7 +774,9 @@ export function ComplaintPhotoPreviewModal({
           <Image
             source={{ uri: fullImageUrl }}
             style={styles.fullImageView}
-            resizeMode="contain"
+            contentFit="contain"
+            cachePolicy="memory-disk"
+            transition={150}
           />
         ) : null}
       </View>
@@ -912,18 +923,27 @@ const styles = StyleSheet.create({
   },
   modalSaveText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
   btnDisabled: { opacity: 0.6 },
+  createSheetOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.5)',
+    justifyContent: 'flex-end',
+  },
   createModalContent: {
     backgroundColor: '#FFFFFF',
-    borderRadius: OwnerTheme.radius.card,
-    padding: 20,
-    maxHeight: '88%',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 18,
+    paddingBottom: 24,
+    maxHeight: '92%',
   },
   createModalHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
     justifyContent: 'space-between',
+    marginBottom: 8,
   },
-  createModalScroll: { maxHeight: 460 },
+  createModalScroll: { flexShrink: 1 },
   residentSearchInput: {
     backgroundColor: '#F8FAFC',
     borderWidth: 1,

@@ -534,6 +534,68 @@ export async function fetchResidentsDirectory(
   startTrace(traceLabel);
 
   try {
+    // Fast Path: Single-query Postgres RPC (exact latest gate status + unpaid dues in 1 round-trip)
+    try {
+      const rpcRes = await supabase.rpc('get_residents_directory_summary', {
+        p_property_id: propertyId,
+      });
+      if (!rpcRes.error && Array.isArray(rpcRes.data)) {
+        recordRoundTrip(traceLabel, 1);
+        const rows = rpcRes.data as {
+          id: string;
+          property_id: string;
+          full_name: string;
+          room_number: string;
+          bed_label?: string | null;
+          phone_number: string | null;
+          gender?: ResidentGender | null;
+          joining_date?: string | null;
+          monthly_rent_paise?: number | null;
+          deposit_paise?: number | null;
+          is_active: boolean;
+          updated_at?: string | null;
+          created_at?: string | null;
+          gate_status?: 'IN' | 'OUT' | null;
+          last_gate_event_time?: string | null;
+          pending_dues_paise?: number | null;
+        }[];
+        const residentIds = rows.map((r) => r.id);
+        const localMetaMap = await readLocalResidentMetaBatch(residentIds);
+        const items: ResidentDirectoryItem[] = rows.map((r) => {
+          const meta = localMetaMap.get(r.id);
+          return {
+            id: r.id,
+            propertyId: r.property_id,
+            fullName: r.full_name,
+            roomNumber: r.room_number,
+            bedLabel: r.bed_label ?? meta?.bed_label ?? null,
+            phoneNumber: r.phone_number,
+            gender: (r.gender ?? meta?.gender ?? null) as ResidentGender | null,
+            joiningDate:
+              r.joining_date ??
+              meta?.joining_date ??
+              (r.created_at ? r.created_at.slice(0, 10) : null),
+            monthlyRentPaise: Number(r.monthly_rent_paise ?? 0),
+            depositPaise: Number(r.deposit_paise ?? meta?.deposit_paise ?? 0),
+            isActive: r.is_active,
+            updatedAt: r.updated_at ?? null,
+            gateStatus: r.gate_status === 'OUT' ? 'OUT' : 'IN',
+            lastGateEventTime: r.last_gate_event_time ?? null,
+            pendingDuesPaise: Number(r.pending_dues_paise ?? 0),
+          };
+        });
+        items.sort((a, b) => {
+          const roomCmp = sortRoomCodes(a.roomNumber, b.roomNumber);
+          if (roomCmp !== 0) return roomCmp;
+          return a.fullName.localeCompare(b.fullName);
+        });
+        await setCached(directoryCacheKey(propertyId), items);
+        return ok(items);
+      }
+    } catch {
+      // Fallback to multi-query path if RPC is not deployed or unmocked in tests
+    }
+
     const rawResidents = await fetchActiveResidentsRaw(propertyId, traceLabel);
     if (rawResidents.length === 0) {
       await setCached(directoryCacheKey(propertyId), []);
@@ -554,7 +616,8 @@ export async function fetchResidentsDirectory(
         .from('charges')
         .select('resident_id, amount_paise, status, billing_period_start')
         .eq('property_id', propertyId)
-        .in('resident_id', residentIds),
+        .in('resident_id', residentIds)
+        .neq('status', 'settled'),
     ]);
     recordRoundTrip(traceLabel, 2);
 
