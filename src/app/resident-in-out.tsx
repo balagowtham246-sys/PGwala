@@ -367,6 +367,13 @@ export default function StudentInOutScreen() {
         isOutside && latestLog && isLateReturn(latestLog.expected_return_time)
       );
 
+      const initials = resident.full_name
+        .split(/\s+/)
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((p) => p[0]?.toUpperCase() ?? '')
+        .join('') || 'R';
+
       return (
         <View
           style={[
@@ -384,15 +391,46 @@ export default function StudentInOutScreen() {
               } as Href)
             }>
             <View style={styles.residentCardHeader}>
-              <View style={{ flex: 1, paddingRight: 8 }}>
-                <Text style={styles.residentName}>
-                  {resident.full_name}
-                </Text>
-                <Text style={styles.residentRoom}>
-                  Room {resident.room_number}
-                </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1, paddingRight: 8 }}>
+                <View
+                  style={{
+                    width: 34,
+                    height: 34,
+                    borderRadius: 17,
+                    backgroundColor: isLate
+                      ? '#FEE2E2'
+                      : isInside
+                        ? '#DCFCE7'
+                        : '#FEF3C7',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}>
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      fontWeight: '800',
+                      color: isLate
+                        ? '#B91C1C'
+                        : isInside
+                          ? '#15803D'
+                          : '#B45309',
+                    }}>
+                    {initials}
+                  </Text>
+                </View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.residentName} numberOfLines={1}>
+                    {resident.full_name}
+                  </Text>
+                  <Text style={styles.residentRoom} numberOfLines={1}>
+                    Room {resident.room_number}
+                    {latestLog
+                      ? ` · ${isInside ? 'In' : 'Out'} ${formatGateEventTimestamp(latestLog.event_time)}`
+                      : ' · No gate logs yet'}
+                  </Text>
+                </View>
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                 {isLate && (
                   <StatusBadge
                     label={toSentenceCaseStatus('late')}
@@ -408,77 +446,58 @@ export default function StudentInOutScreen() {
               </View>
             </View>
 
-            {/* Clean information rows */}
-            {isOutside && latestLog ? (
-              <View style={styles.detailsBox}>
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Checked out:</Text>
-                  <Text style={styles.detailValue}>
-                    {formatGateEventTimestamp(latestLog.event_time)}
+            {/* Compact Modern Metadata Chips */}
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 }}>
+              {isOutside && latestLog?.purpose ? (
+                <View style={{ backgroundColor: '#F1F5F9', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+                  <Text style={{ fontSize: 11, fontWeight: '600', color: '#334155' }}>
+                    {latestLog.purpose}
                   </Text>
                 </View>
-                {latestLog.purpose ? (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Purpose:</Text>
-                    <Text style={styles.detailValueBold}>
-                      {latestLog.purpose}
-                    </Text>
-                  </View>
-                ) : null}
-                {latestLog.expected_return_time ? (
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>
-                      Expected return:
-                    </Text>
-                    <Text style={styles.detailValue}>
-                      {latestLog.expected_return_time}
-                    </Text>
-                  </View>
-                ) : null}
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Dinner:</Text>
+              ) : null}
+              {isOutside && latestLog?.expected_return_time ? (
+                <View
+                  style={{
+                    backgroundColor: isLate ? '#FEE2E2' : '#F1F5F9',
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    borderRadius: 6,
+                  }}>
                   <Text
-                    style={[
-                      styles.dinnerText,
-                      latestLog.food_required
-                        ? { color: OwnerTheme.colors.success }
-                        : { color: OwnerTheme.colors.textMuted },
-                    ]}>
-                    {latestLog.food_required ? 'Required' : 'Not required'}
+                    style={{
+                      fontSize: 11,
+                      fontWeight: '600',
+                      color: isLate ? '#B91C1C' : '#334155',
+                    }}>
+                    ETA {latestLog.expected_return_time}
                   </Text>
                 </View>
+              ) : null}
+              <View
+                style={{
+                  backgroundColor:
+                    isInside || latestLog?.food_required ? '#DCFCE7' : '#F1F5F9',
+                  paddingHorizontal: 8,
+                  paddingVertical: 3,
+                  borderRadius: 6,
+                }}>
+                <Text
+                  style={{
+                    fontSize: 11,
+                    fontWeight: '600',
+                    color:
+                      isInside || latestLog?.food_required ? '#15803D' : '#64748B',
+                  }}>
+                  Dinner: {isInside || latestLog?.food_required ? 'Yes' : 'No'}
+                </Text>
               </View>
-            ) : (
-              <View style={styles.detailsBox}>
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Checked in:</Text>
-                  <Text
-                    style={[
-                      styles.detailValue,
-                      !latestLog && { color: OwnerTheme.colors.textMuted },
-                    ]}>
-                    {latestLog
-                      ? formatGateEventTimestamp(latestLog.event_time)
-                      : 'No gate logs yet'}
-                  </Text>
-                </View>
-                <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Dinner:</Text>
-                  <Text
-                    style={[
-                      styles.dinnerText,
-                      { color: OwnerTheme.colors.success },
-                    ]}>
-                    Included (Inside PG)
-                  </Text>
-                </View>
-              </View>
-            )}
+            </View>
           </Pressable>
 
-          <View style={styles.cardActionRow}>
-            {isOutside &&
-              (resident.phone_number ?? '').replace(/\D/g, '').length >= 10 && (
+          {/* Actions shown ONLY for outside residents (owners do not mark residents out) */}
+          {isOutside && (
+            <View style={styles.cardActionRow}>
+              {(resident.phone_number ?? '').replace(/\D/g, '').length >= 10 && (
                 <Pressable
                   accessibilityRole="button"
                   accessibilityLabel={`Send WhatsApp safety check-in to ${resident.full_name}`}
@@ -510,39 +529,28 @@ export default function StudentInOutScreen() {
                 </Pressable>
               )}
 
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel={`Mark ${resident.full_name} ${
-                isInside ? 'outside' : 'inside'
-              }`}
-              disabled={togglingResidentId === resident.id}
-              style={({ pressed }) => [
-                styles.ownerOverrideBtn,
-                isInside
-                  ? styles.ownerOverrideBtnOut
-                  : styles.ownerOverrideBtnIn,
-                togglingResidentId === resident.id && { opacity: 0.6 },
-                pressed && styles.cardPressed,
-              ]}
-              onPress={() => void handleOwnerToggleGate(resident, isInside)}>
-              {togglingResidentId === resident.id ? (
-                <ActivityIndicator
-                  size="small"
-                  color={isInside ? '#B45309' : '#047857'}
-                />
-              ) : isInside ? (
-                <>
-                  <LogOut size={14} color="#B45309" />
-                  <Text style={styles.ownerOverrideBtnTextOut}>Mark Out</Text>
-                </>
-              ) : (
-                <>
-                  <LogIn size={14} color="#047857" />
-                  <Text style={styles.ownerOverrideBtnTextIn}>Mark In</Text>
-                </>
-              )}
-            </Pressable>
-          </View>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Mark ${resident.full_name} inside`}
+                disabled={togglingResidentId === resident.id}
+                style={({ pressed }) => [
+                  styles.ownerOverrideBtn,
+                  styles.ownerOverrideBtnIn,
+                  togglingResidentId === resident.id && { opacity: 0.6 },
+                  pressed && styles.cardPressed,
+                ]}
+                onPress={() => void handleOwnerToggleGate(resident, false)}>
+                {togglingResidentId === resident.id ? (
+                  <ActivityIndicator size="small" color="#047857" />
+                ) : (
+                  <>
+                    <LogIn size={14} color="#047857" />
+                    <Text style={styles.ownerOverrideBtnTextIn}>Mark In</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          )}
         </View>
       );
     },

@@ -1,0 +1,36 @@
+# Standard Expo / Git ignores (EAS uses .easignore instead of .gitignore when present)
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+.DS_Store
+desktop.ini
+*.pem
+.env
+.env.test
+.env*.local
+*.tsbuildinfo
+/ios
+/android
+
+# Non-build workspace folders & docs excluded from EAS upload archive
+.agents/
+.claude/
+.vscode/
+docs/
+scratch/
+scripts/
+supabase/
+*.md

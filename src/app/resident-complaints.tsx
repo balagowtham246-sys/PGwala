@@ -44,7 +44,7 @@ import {
   getPendingCount,
 } from '@/lib/offline-queue';
 import { isLikelyNetworkError } from '@/lib/service-result';
-import { getSignedComplaintPhotoUrl } from '@/lib/supabase';
+import { getSignedComplaintPhotoUrl, supabase } from '@/lib/supabase';
 import { formatRoomLabel } from '@/lib/ux-utils';
 import {
   ComplaintOfflinePayload,
@@ -395,14 +395,48 @@ export default function StudentComplaintsScreen() {
     ? `${propertyName} · ${formatRoomLabel(resident.room_number)}`
     : propertyName;
 
+  const handleDeleteComplaint = useCallback(
+    (item: ComplaintRecord) => {
+      Alert.alert(
+        'Delete Issue?',
+        `Remove "${item.title}"? This cannot be undone.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                const { error } = await supabase
+                  .from('complaints')
+                  .delete()
+                  .eq('id', item.id);
+                if (error) throw error;
+                showToast('Issue deleted');
+                await refetchComplaints();
+              } catch (err: unknown) {
+                Alert.alert(
+                  'Delete Failed',
+                  extractErrorMessage(err, 'Could not delete this issue.')
+                );
+              }
+            },
+          },
+        ]
+      );
+    },
+    [refetchComplaints, showToast]
+  );
+
   const renderComplaintItem = useCallback(
     ({ item }: { item: ComplaintRecord }) => (
       <StudentComplaintCard
         item={item}
         onViewPhoto={(url) => void handleViewPhoto(url)}
+        onDelete={handleDeleteComplaint}
       />
     ),
-    []
+    [handleDeleteComplaint]
   );
 
   const complaintKeyExtractor = useCallback((item: ComplaintRecord) => item.id, []);

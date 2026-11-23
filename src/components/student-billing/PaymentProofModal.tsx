@@ -12,13 +12,10 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { AlertTriangle, Camera, CheckCircle2, ShieldAlert, Sparkles, X } from 'lucide-react-native';
+import { Camera, X } from 'lucide-react-native';
 import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
-import {
-  formatExtractedUpiSummary,
-  UpiProofScanResult,
-} from '@/lib/upi-verification';
+import { normalizeUpiUtr } from '@/lib/upi-verification';
 import {
   PaymentMethod,
   StudentBillCardItem,
@@ -38,8 +35,6 @@ export interface PaymentProofModalProps {
   referenceNumber: string;
   studentNotes: string;
   selectedScreenshot: SelectedScreenshotAsset | null;
-  scanningProof?: boolean;
-  scanResult?: UpiProofScanResult | null;
   submitting: boolean;
   onClose: () => void;
   onSelectBill: (bill: StudentBillCardItem) => void;
@@ -59,8 +54,6 @@ export function PaymentProofModal({
   referenceNumber,
   studentNotes,
   selectedScreenshot,
-  scanningProof = false,
-  scanResult = null,
   submitting,
   onClose,
   onSelectBill,
@@ -71,6 +64,12 @@ export function PaymentProofModal({
   onSubmit,
 }: PaymentProofModalProps) {
   useModalBackHandler(visible, onClose, submitting);
+
+  const normalizedUtr = normalizeUpiUtr(referenceNumber);
+  const isUpiMethod = paymentMethod === 'upi';
+  const showUtrError =
+    isUpiMethod && referenceNumber.trim().length > 0 && !normalizedUtr;
+  const submitDisabled = submitting || (isUpiMethod && !normalizedUtr);
 
   return (
     <Modal
@@ -220,90 +219,33 @@ export function PaymentProofModal({
                       Upload Payment Screenshot
                     </Text>
                     <Text style={styles.uploadPhotoSub}>
-                      AI auto-reads your UPI UTR &amp; amount
+                      Attach your GPay / PhonePe / Paytm receipt
                     </Text>
                   </Pressable>
                 )}
 
-                {/* Live AI Receipt Scan Feedback Card */}
-                {scanningProof ? (
-                  <View style={styles.scanCardNeutral}>
-                    <ActivityIndicator size="small" color="#0284C7" />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.scanTitleNeutral}>
-                        Scanning UPI receipt...
-                      </Text>
-                      <Text style={styles.scanSubNeutral}>
-                        Auto-extracting UTR, amount &amp; checking duplicates
-                      </Text>
-                    </View>
-                  </View>
-                ) : scanResult?.hard_blocked ? (
-                  <View style={styles.scanCardBlocked}>
-                    <ShieldAlert size={18} color="#DC2626" />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.scanTitleBlocked}>
-                        Duplicate Proof Blocked
-                      </Text>
-                      <Text style={styles.scanSubBlocked}>
-                        {scanResult.block_message ||
-                          'This UPI screenshot or UTR was already used for another bill.'}
-                      </Text>
-                    </View>
-                  </View>
-                ) : scanResult?.verification_status === 'verified_match' ? (
-                  <View style={styles.scanCardVerified}>
-                    <CheckCircle2 size={18} color="#15803D" />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.scanTitleVerified}>
-                        AI Verified Match
-                      </Text>
-                      {formatExtractedUpiSummary(scanResult.extracted) ? (
-                        <Text style={styles.scanSubVerified}>
-                          {formatExtractedUpiSummary(scanResult.extracted)}
-                        </Text>
-                      ) : null}
-                    </View>
-                  </View>
-                ) : scanResult?.verification_status === 'warning' ? (
-                  <View style={styles.scanCardWarning}>
-                    <AlertTriangle size={18} color="#B45309" />
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.scanTitleWarning}>
-                        Receipt Check Notice
-                      </Text>
-                      {formatExtractedUpiSummary(scanResult.extracted) ? (
-                        <Text style={styles.scanMetaWarning}>
-                          Detected: {formatExtractedUpiSummary(scanResult.extracted)}
-                        </Text>
-                      ) : null}
-                      {scanResult.warnings.map((w, idx) => (
-                        <Text key={idx} style={styles.scanSubWarning}>
-                          • {w}
-                        </Text>
-                      ))}
-                    </View>
-                  </View>
-                ) : selectedScreenshot && scanResult ? (
-                  <View style={styles.scanCardNeutral}>
-                    <Sparkles size={16} color="#0284C7" />
-                    <Text style={styles.scanSubNeutral}>
-                      Screenshot attached — owner will verify manually
-                    </Text>
-                  </View>
-                ) : null}
-
-                {/* Transaction / Reference ID */}
+                {/* Transaction / Reference ID (Required for UPI duplicate protection) */}
                 <Text style={styles.inputLabel}>
-                  UPI Transaction ID / Ref No. (Optional)
+                  12-Digit UPI UTR / Transaction ID *
                 </Text>
                 <TextInput
-                  style={styles.inputBox}
-                  placeholder="e.g. 123456789012"
+                  style={[styles.inputBox, showUtrError && styles.inputBoxError]}
+                  placeholder="e.g. 432819203948"
                   placeholderTextColor="#94A3B8"
                   value={referenceNumber}
                   onChangeText={onChangeReferenceNumber}
+                  autoCapitalize="none"
+                  autoCorrect={false}
                 />
+                {showUtrError ? (
+                  <Text style={styles.utrErrorText}>
+                    Enter a valid 12-digit UPI UTR / Ref No. from your receipt
+                  </Text>
+                ) : (
+                  <Text style={styles.utrHintText}>
+                    Required to prevent duplicate or reused payment proofs
+                  </Text>
+                )}
               </>
             ) : (
               <View style={styles.cashNoticeBox}>
@@ -336,20 +278,15 @@ export function PaymentProofModal({
             <Pressable
               style={[
                 styles.submitProofBtn,
-                (submitting || scanningProof || scanResult?.hard_blocked) &&
-                  styles.disabledBtn,
+                submitDisabled && styles.disabledBtn,
               ]}
-              disabled={submitting || scanningProof || Boolean(scanResult?.hard_blocked)}
+              disabled={submitDisabled}
               onPress={onSubmit}>
               {submitting ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
                 <Text style={styles.submitProofBtnText}>
-                  {scanResult?.hard_blocked
-                    ? 'Upload a Different Receipt'
-                    : scanningProof
-                    ? 'Scanning Receipt...'
-                    : 'Submit Payment Proof'}
+                  Submit Payment Proof
                 </Text>
               )}
             </Pressable>
@@ -565,101 +502,19 @@ const styles = StyleSheet.create({
   disabledBtn: {
     opacity: 0.6,
   },
-  scanCardNeutral: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#F0F9FF',
-    borderWidth: 1,
-    borderColor: '#BAE6FD',
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 6,
-    marginBottom: 4,
+  inputBoxError: {
+    borderColor: '#DC2626',
+    backgroundColor: '#FEF2F2',
   },
-  scanTitleNeutral: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#0369A1',
-  },
-  scanSubNeutral: {
+  utrHintText: {
     fontSize: 11,
-    color: '#0369A1',
-    flex: 1,
+    color: '#64748B',
+    marginTop: 4,
   },
-  scanCardVerified: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#F0FDF4',
-    borderWidth: 1,
-    borderColor: '#BBF7D0',
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 6,
-    marginBottom: 4,
-  },
-  scanTitleVerified: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#15803D',
-  },
-  scanSubVerified: {
+  utrErrorText: {
     fontSize: 11,
     fontWeight: '600',
-    color: '#166534',
-    marginTop: 2,
-  },
-  scanCardWarning: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: '#FFFBEB',
-    borderWidth: 1,
-    borderColor: '#FDE68A',
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 6,
-    marginBottom: 4,
-  },
-  scanTitleWarning: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#B45309',
-  },
-  scanMetaWarning: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#92400E',
-    marginTop: 2,
-  },
-  scanSubWarning: {
-    fontSize: 11,
-    color: '#92400E',
-    marginTop: 2,
-    lineHeight: 15,
-  },
-  scanCardBlocked: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 10,
-    backgroundColor: '#FEF2F2',
-    borderWidth: 1,
-    borderColor: '#FECACA',
-    borderRadius: 10,
-    padding: 10,
-    marginTop: 6,
-    marginBottom: 4,
-  },
-  scanTitleBlocked: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#B91C1C',
-  },
-  scanSubBlocked: {
-    fontSize: 11,
-    color: '#991B1B',
-    marginTop: 2,
-    lineHeight: 15,
+    color: '#DC2626',
+    marginTop: 4,
   },
 });

@@ -22,7 +22,6 @@ import {
   LogOut,
   Bell,
   ShieldCheck,
-  UserPlus,
   UserCog,
   Disc3,
   Minus,
@@ -38,7 +37,6 @@ import { supabase } from '@/lib/supabase';
 import { isDeveloperAccessAllowed } from '@/lib/dev-tasks';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { OwnerHeader } from '@/components/ui/owner';
-import { WmUnitsModal } from '@/components/owner-dashboard/OwnerDashboardModals';
 import { BiometricSettingsRow } from '@/components/biometric-settings-row';
 import { SettingsComplianceSection } from '@/components/settings-compliance-section';
 import {
@@ -90,6 +88,7 @@ export default function OwnerSettingsScreen() {
   }, [user?.email]);
 
   const [wmModalVisible, setWmModalVisible] = useState(false);
+  const [wmModalTab, setWmModalTab] = useState<'live' | 'configure'>('live');
   const [wmCount, setWmCount] = useState<number>(2);
   const [initialWmCount, setInitialWmCount] = useState<number>(2);
   const [wmNames, setWmNames] = useState<Record<number, string>>({
@@ -98,13 +97,12 @@ export default function OwnerSettingsScreen() {
   });
   const [wmCountLoading, setWmCountLoading] = useState(false);
   const [savingWm, setSavingWm] = useState(false);
-  const [wmLiveModalVisible, setWmLiveModalVisible] = useState(false);
 
   const selectedPropertyId = selectedProperty?.id ?? null;
 
   const dashboardQuery = useOwnerDashboardQuery(
     selectedPropertyId,
-    Boolean(selectedPropertyId) && wmLiveModalVisible
+    Boolean(selectedPropertyId) && wmModalVisible
   );
   const releaseWmMutation = useOwnerReleaseWmMutation();
   const outOfOrderWmMutation = useOwnerSetWmOutOfOrderMutation();
@@ -459,7 +457,7 @@ export default function OwnerSettingsScreen() {
           <ChevronRight size={18} color="#94A3B8" />
         </Pressable>
 
-        {/* Group 1: Properties & Admissions */}
+        {/* Group 1: Properties & Operations */}
         <View style={styles.section}>
           <Text style={styles.sectionHeader}>ACCOMMODATIONS</Text>
           <View style={styles.groupedCard}>
@@ -516,34 +514,12 @@ export default function OwnerSettingsScreen() {
               accessibilityRole="button"
               style={({ pressed }) => [
                 styles.settingsRow,
-                styles.rowDivider,
                 pressed && styles.rowPressed,
               ]}
-              onPress={() => router.push('/add-resident')}>
-              <View
-                style={[
-                  styles.iconWrap,
-                  { backgroundColor: OwnerTheme.colors.successLight },
-                ]}>
-                <UserPlus size={18} color={OwnerTheme.colors.success} />
-              </View>
-              <View style={styles.rowContent}>
-                <Text style={styles.rowTitle}>Resident Admission</Text>
-                <Text style={styles.rowSubtitle}>
-                  Register a new resident & set up credentials
-                </Text>
-              </View>
-              <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.settingsRow,
-                styles.rowDivider,
-                pressed && styles.rowPressed,
-              ]}
-              onPress={openWmModal}>
+              onPress={() => {
+                setWmModalTab('live');
+                void openWmModal();
+              }}>
               <View
                 style={[
                   styles.iconWrap,
@@ -556,30 +532,7 @@ export default function OwnerSettingsScreen() {
                 <Text style={styles.rowSubtitle}>
                   {wmCountLoading
                     ? 'Checking units...'
-                    : `${wmCount} unit${wmCount === 1 ? '' : 's'} configured · Capacity & names`}
-                </Text>
-              </View>
-              <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
-            </Pressable>
-
-            <Pressable
-              accessibilityRole="button"
-              style={({ pressed }) => [
-                styles.settingsRow,
-                pressed && styles.rowPressed,
-              ]}
-              onPress={() => setWmLiveModalVisible(true)}>
-              <View
-                style={[
-                  styles.iconWrap,
-                  { backgroundColor: OwnerTheme.colors.infoLight },
-                ]}>
-                <Disc3 size={18} color={OwnerTheme.colors.info} />
-              </View>
-              <View style={styles.rowContent}>
-                <Text style={styles.rowTitle}>Live Machine Status</Text>
-                <Text style={styles.rowSubtitle}>
-                  Inspect active washes, force-free, or mark out of order
+                    : `${wmCount} unit${wmCount === 1 ? '' : 's'} · Live status, force-free & setup`}
                 </Text>
               </View>
               <ChevronRight size={18} color={OwnerTheme.colors.textMuted} />
@@ -742,7 +695,7 @@ export default function OwnerSettingsScreen() {
         </View>
       </Modal>
 
-      {/* Configure Washing Machines Stepper & Names Modal */}
+      {/* Unified Washing Machines Modal (Live Status + Configure) */}
       <Modal
         visible={wmModalVisible}
         transparent
@@ -763,7 +716,7 @@ export default function OwnerSettingsScreen() {
           <View style={styles.modalCard}>
             <View style={styles.modalHeader}>
               <View style={{ flex: 1 }}>
-                <Text style={styles.modalTitle}>Washing Machine Units</Text>
+                <Text style={styles.modalTitle}>Washing Machines</Text>
                 <Text style={styles.modalSubtitle} numberOfLines={1}>
                   {selectedProperty?.name || 'Active Property'}
                 </Text>
@@ -777,131 +730,233 @@ export default function OwnerSettingsScreen() {
               </Pressable>
             </View>
 
-            <Text style={styles.stepperHelpText}>
-              Set the total number of washing machines available in this PG and
-              label each unit. Residents will be able to select from these units
-              in their portal.
-            </Text>
-
-            <View style={styles.stepperContainer}>
+            {/* Unified Tab Switcher */}
+            <View style={styles.wmTabRow}>
               <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Decrease units"
-                disabled={wmCount <= 1 || savingWm}
                 style={[
-                  styles.stepperBtn,
-                  (wmCount <= 1 || savingWm) && styles.stepperBtnDisabled,
+                  styles.wmTabBtn,
+                  wmModalTab === 'live' && styles.wmTabBtnActive,
                 ]}
-                onPress={() => setWmCount((prev) => Math.max(1, prev - 1))}>
-                <Minus
-                  size={22}
-                  color={
-                    wmCount <= 1 ? '#CBD5E1' : OwnerTheme.colors.primary
-                  }
-                />
-              </Pressable>
-
-              <View style={styles.stepperCountBox}>
-                <Text style={styles.stepperCountText}>{wmCount}</Text>
-                <Text style={styles.stepperCountLabel}>
-                  {wmCount === 1 ? 'Machine Unit' : 'Machine Units'}
+                onPress={() => setWmModalTab('live')}>
+                <Text
+                  style={[
+                    styles.wmTabText,
+                    wmModalTab === 'live' && styles.wmTabTextActive,
+                  ]}>
+                  Live Status ({wmSummary.inUseCount} active)
                 </Text>
-              </View>
-
+              </Pressable>
               <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Increase units"
-                disabled={wmCount >= 20 || savingWm}
                 style={[
-                  styles.stepperBtn,
-                  (wmCount >= 20 || savingWm) && styles.stepperBtnDisabled,
+                  styles.wmTabBtn,
+                  wmModalTab === 'configure' && styles.wmTabBtnActive,
                 ]}
-                onPress={() => {
-                  setWmCount((prev) => {
-                    const next = Math.min(20, prev + 1);
-                    setWmNames((prevNames) =>
-                      prevNames[next]
-                        ? prevNames
-                        : { ...prevNames, [next]: `Washing Machine ${next}` }
-                    );
-                    return next;
-                  });
-                }}>
-                <Plus
-                  size={22}
-                  color={
-                    wmCount >= 20 ? '#CBD5E1' : OwnerTheme.colors.primary
-                  }
-                />
+                onPress={() => setWmModalTab('configure')}>
+                <Text
+                  style={[
+                    styles.wmTabText,
+                    wmModalTab === 'configure' && styles.wmTabTextActive,
+                  ]}>
+                  Configure ({wmCount})
+                </Text>
               </Pressable>
             </View>
 
-            <Text style={styles.machineNamesLabel}>Machine Names</Text>
-            <ScrollView
-              style={styles.machineNamesScroll}
-              contentContainerStyle={styles.machineNamesList}
-              nestedScrollEnabled
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator>
-              {unitNumbers.map((num) => (
-                <View key={num} style={styles.machineNameRow}>
-                  <View style={styles.machineNumberPill}>
-                    <Text style={styles.machineNumberText}>#{num}</Text>
-                  </View>
-                  <TextInput
-                    style={styles.machineNameInput}
-                    value={wmNames[num] ?? `Washing Machine ${num}`}
-                    onChangeText={(val) =>
-                      setWmNames((prev) => ({ ...prev, [num]: val }))
-                    }
-                    placeholder={`Washing Machine ${num}`}
-                    placeholderTextColor={OwnerTheme.colors.textMuted}
-                    editable={!savingWm}
-                    maxLength={40}
-                  />
+            {wmModalTab === 'live' ? (
+              <View style={{ gap: 10 }}>
+                <View style={styles.wmSummaryStrip}>
+                  <Text style={styles.wmSummaryChipFree}>
+                    {wmSummary.freeCount} Free
+                  </Text>
+                  <Text style={styles.wmSummaryChipBusy}>
+                    {wmSummary.inUseCount} In Use
+                  </Text>
+                  {outOfOrderCount > 0 ? (
+                    <Text style={styles.wmSummaryChipOff}>
+                      {outOfOrderCount} Out of Order
+                    </Text>
+                  ) : null}
                 </View>
-              ))}
-            </ScrollView>
 
-            <View style={styles.modalActionsRow}>
-              <Pressable
-                accessibilityRole="button"
-                style={styles.modalCancelBtn}
-                disabled={savingWm}
-                onPress={() => setWmModalVisible(false)}>
-                <Text style={styles.modalCancelBtnText}>Cancel</Text>
-              </Pressable>
+                <ScrollView
+                  style={{ maxHeight: 300 }}
+                  contentContainerStyle={{ gap: 8 }}
+                  showsVerticalScrollIndicator={false}>
+                  {dashboardQuery.isPending && wmUnits.length === 0 ? (
+                    <View style={{ padding: 20, alignItems: 'center' }}>
+                      <ActivityIndicator size="small" color={OwnerTheme.colors.primary} />
+                    </View>
+                  ) : wmUnits.length === 0 ? (
+                    <Text style={styles.stepperHelpText}>
+                      No washing machine units found. Switch to Configure to set up units.
+                    </Text>
+                  ) : (
+                    wmUnits.map((unit) => {
+                      const isInUse = unit.status === 'in_use';
+                      const isOff = unit.status === 'out_of_order';
+                      const isBusy = busyMachineId === unit.id;
+                      const label = unit.machine_name || `Washing Machine ${unit.machine_number}`;
+                      return (
+                        <View key={unit.id} style={styles.liveUnitCard}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.liveUnitTitle}>{label}</Text>
+                            <Text style={styles.liveUnitSub}>
+                              {isOff
+                                ? 'Out of order'
+                                : isInUse
+                                  ? `In use by ${unit.current_resident_name || 'Resident'}${
+                                      unit.current_resident_room
+                                        ? ` (Room ${unit.current_resident_room})`
+                                        : ''
+                                    }`
+                                  : 'Free and ready'}
+                            </Text>
+                          </View>
+                          <View style={styles.liveUnitActions}>
+                            {isInUse ? (
+                              <Pressable
+                                disabled={isBusy}
+                                style={styles.liveUnitBtnWarn}
+                                onPress={() => handleOwnerReleaseWm(unit.id, label)}>
+                                <Text style={styles.liveUnitBtnWarnText}>Free Up</Text>
+                              </Pressable>
+                            ) : null}
+                            <Pressable
+                              disabled={isBusy}
+                              style={isOff ? styles.liveUnitBtnOk : styles.liveUnitBtnOff}
+                              onPress={() =>
+                                handleOwnerSetOutOfOrder(unit.id, label, !isOff, isInUse)
+                              }>
+                              <Text
+                                style={
+                                  isOff ? styles.liveUnitBtnOkText : styles.liveUnitBtnOffText
+                                }>
+                                {isOff ? 'Mark Working' : 'Out of Order'}
+                              </Text>
+                            </Pressable>
+                          </View>
+                        </View>
+                      );
+                    })
+                  )}
+                </ScrollView>
+              </View>
+            ) : (
+              <>
+                <Text style={styles.stepperHelpText}>
+                  Set the total number of washing machines available in this PG and
+                  label each unit.
+                </Text>
 
-              <Pressable
-                accessibilityRole="button"
-                style={[
-                  styles.modalSaveBtn,
-                  savingWm && styles.modalSaveBtnDisabled,
-                ]}
-                disabled={savingWm}
-                onPress={handleSaveWmCount}>
-                {savingWm ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.modalSaveBtnText}>Save Capacity</Text>
-                )}
-              </Pressable>
-            </View>
+                <View style={styles.stepperContainer}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Decrease units"
+                    disabled={wmCount <= 1 || savingWm}
+                    style={[
+                      styles.stepperBtn,
+                      (wmCount <= 1 || savingWm) && styles.stepperBtnDisabled,
+                    ]}
+                    onPress={() => setWmCount((prev) => Math.max(1, prev - 1))}>
+                    <Minus
+                      size={22}
+                      color={
+                        wmCount <= 1 ? '#CBD5E1' : OwnerTheme.colors.primary
+                      }
+                    />
+                  </Pressable>
+
+                  <View style={styles.stepperCountBox}>
+                    <Text style={styles.stepperCountText}>{wmCount}</Text>
+                    <Text style={styles.stepperCountLabel}>
+                      {wmCount === 1 ? 'Machine Unit' : 'Machine Units'}
+                    </Text>
+                  </View>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Increase units"
+                    disabled={wmCount >= 20 || savingWm}
+                    style={[
+                      styles.stepperBtn,
+                      (wmCount >= 20 || savingWm) && styles.stepperBtnDisabled,
+                    ]}
+                    onPress={() => {
+                      setWmCount((prev) => {
+                        const next = Math.min(20, prev + 1);
+                        setWmNames((prevNames) =>
+                          prevNames[next]
+                            ? prevNames
+                            : { ...prevNames, [next]: `Washing Machine ${next}` }
+                        );
+                        return next;
+                      });
+                    }}>
+                    <Plus
+                      size={22}
+                      color={
+                        wmCount >= 20 ? '#CBD5E1' : OwnerTheme.colors.primary
+                      }
+                    />
+                  </Pressable>
+                </View>
+
+                <Text style={styles.machineNamesLabel}>Machine Names</Text>
+                <ScrollView
+                  style={styles.machineNamesScroll}
+                  contentContainerStyle={styles.machineNamesList}
+                  nestedScrollEnabled
+                  keyboardShouldPersistTaps="handled"
+                  showsVerticalScrollIndicator>
+                  {unitNumbers.map((num) => (
+                    <View key={num} style={styles.machineNameRow}>
+                      <View style={styles.machineNumberPill}>
+                        <Text style={styles.machineNumberText}>#{num}</Text>
+                      </View>
+                      <TextInput
+                        style={styles.machineNameInput}
+                        value={wmNames[num] ?? `Washing Machine ${num}`}
+                        onChangeText={(val) =>
+                          setWmNames((prev) => ({ ...prev, [num]: val }))
+                        }
+                        placeholder={`Washing Machine ${num}`}
+                        placeholderTextColor={OwnerTheme.colors.textMuted}
+                        editable={!savingWm}
+                        maxLength={40}
+                      />
+                    </View>
+                  ))}
+                </ScrollView>
+
+                <View style={styles.modalActionsRow}>
+                  <Pressable
+                    accessibilityRole="button"
+                    style={styles.modalCancelBtn}
+                    disabled={savingWm}
+                    onPress={() => setWmModalVisible(false)}>
+                    <Text style={styles.modalCancelBtnText}>Cancel</Text>
+                  </Pressable>
+
+                  <Pressable
+                    accessibilityRole="button"
+                    style={[
+                      styles.modalSaveBtn,
+                      savingWm && styles.modalSaveBtnDisabled,
+                    ]}
+                    disabled={savingWm}
+                    onPress={handleSaveWmCount}>
+                    {savingWm ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text style={styles.modalSaveBtnText}>Save Capacity</Text>
+                    )}
+                  </Pressable>
+                </View>
+              </>
+            )}
           </View>
         </KeyboardAvoidingView>
       </Modal>
-
-      <WmUnitsModal
-        visible={wmLiveModalVisible}
-        propertyName={selectedProperty?.name || 'Live Usage'}
-        wmSummary={wmSummary}
-        wmUnits={wmUnits}
-        outOfOrderCount={outOfOrderCount}
-        busyMachineId={busyMachineId}
-        onRelease={handleOwnerReleaseWm}
-        onSetOutOfOrder={handleOwnerSetOutOfOrder}
-        onClose={() => setWmLiveModalVisible(false)}
-      />
     </SafeAreaView>
   );
 }
@@ -1189,5 +1244,124 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#FFFFFF',
+  },
+  wmTabRow: {
+    flexDirection: 'row',
+    backgroundColor: '#F1F5F9',
+    borderRadius: 10,
+    padding: 3,
+    marginBottom: 12,
+    gap: 4,
+  },
+  wmTabBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 8,
+    alignItems: 'center',
+  },
+  wmTabBtnActive: {
+    backgroundColor: '#FFFFFF',
+  },
+  wmTabText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  wmTabTextActive: {
+    color: OwnerTheme.colors.primary,
+    fontWeight: '700',
+  },
+  wmSummaryStrip: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  wmSummaryChipFree: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#15803D',
+    backgroundColor: '#DCFCE7',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  wmSummaryChipBusy: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#B45309',
+    backgroundColor: '#FEF3C7',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  wmSummaryChipOff: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#B91C1C',
+    backgroundColor: '#FEE2E2',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  liveUnitCard: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+  },
+  liveUnitTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  liveUnitSub: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
+  },
+  liveUnitActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  liveUnitBtnWarn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#FEF3C7',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  liveUnitBtnWarnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B45309',
+  },
+  liveUnitBtnOff: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#FEE2E2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+  },
+  liveUnitBtnOffText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#B91C1C',
+  },
+  liveUnitBtnOk: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  liveUnitBtnOkText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#15803D',
   },
 });

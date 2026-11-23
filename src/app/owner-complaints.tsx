@@ -6,7 +6,7 @@ import {
   SlidersHorizontal,
   X,
 } from 'lucide-react-native';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -45,7 +45,7 @@ import {
 } from '@/hooks/use-complaints';
 import { sortComplaintsByUrgencyThenDate } from '@/lib/complaint-utils';
 import { extractErrorMessage } from '@/lib/error-utils';
-import { getSignedComplaintPhotoUrl } from '@/lib/supabase';
+import { getSignedComplaintPhotoUrl, supabase } from '@/lib/supabase';
 
 export type {
   ActiveResidentOption,
@@ -269,6 +269,39 @@ export default function OwnerComplaintsScreen() {
     setNotes(item.owner_notes || '');
   };
 
+  const handleDeleteComplaint = useCallback(
+    (item: OwnerComplaintItem) => {
+      Alert.alert(
+        'Delete Complaint?',
+        `Permanently remove "${item.title}"?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Delete',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                const { error } = await supabase
+                  .from('complaints')
+                  .delete()
+                  .eq('id', item.id);
+                if (error) throw error;
+                showToast('Complaint deleted');
+                await complaintsQuery.refetch();
+              } catch (err: unknown) {
+                Alert.alert(
+                  'Delete Failed',
+                  extractErrorMessage(err, 'Could not delete complaint.')
+                );
+              }
+            },
+          },
+        ]
+      );
+    },
+    [complaintsQuery, showToast]
+  );
+
   const handleSaveUpdate = async () => {
     if (!selectedComplaint || updating) return;
 
@@ -372,6 +405,7 @@ export default function OwnerComplaintsScreen() {
             item={item}
             onViewPhoto={(url) => void handleViewPhoto(url)}
             onOpenActionModal={handleOpenActionModal}
+            onDelete={handleDeleteComplaint}
           />
         )}
         contentContainerStyle={styles.scrollContent}

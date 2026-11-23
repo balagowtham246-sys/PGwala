@@ -84,7 +84,10 @@ export default function OwnerJoinRequestsScreen() {
   );
 
   useEffect(() => {
-    void loadRequests(false);
+    const timer = setTimeout(() => {
+      void loadRequests(false);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [loadRequests]);
 
   const counts = useMemo(() => {

@@ -62,9 +62,11 @@ export const STUDENT_COMPLAINT_CATEGORY_CONFIG: Record<
 export const StudentComplaintCard = memo(function StudentComplaintCard({
   item,
   onViewPhoto,
+  onDelete,
 }: {
   item: StudentComplaintItem;
   onViewPhoto: (photoUrl: string) => void;
+  onDelete?: (complaint: StudentComplaintItem) => void;
 }) {
   const catInfo =
     STUDENT_COMPLAINT_CATEGORY_CONFIG[item.category] ||
@@ -145,6 +147,27 @@ export const StudentComplaintCard = memo(function StudentComplaintCard({
           )}
         </View>
       )}
+
+      {item.status === 'open' && onDelete ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Delete complaint ${item.title}`}
+          style={{
+            marginTop: 10,
+            alignSelf: 'flex-end',
+            paddingHorizontal: 10,
+            paddingVertical: 6,
+            borderRadius: 8,
+            backgroundColor: '#FEF2F2',
+            borderWidth: 1,
+            borderColor: '#FECACA',
+          }}
+          onPress={() => onDelete(item)}>
+          <Text style={{ fontSize: 12, fontWeight: '700', color: '#DC2626' }}>
+            Delete Issue
+          </Text>
+        </Pressable>
+      ) : null}
     </View>
   );
 });

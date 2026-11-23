@@ -30,13 +30,12 @@ import {
 } from '@/hooks/use-student-billing';
 import { compressPickedImage } from '@/lib/image-upload';
 import { buildUpiPaymentUrl } from '@/lib/upi';
-import { UpiProofScanResult } from '@/lib/upi-verification';
+import { normalizeUpiUtr } from '@/lib/upi-verification';
 import { formatRoomLabel } from '@/lib/ux-utils';
 import {
   PaymentMethod,
   PreResolvedStudentContext,
   StudentBillCardItem,
-  verifyUpiScreenshot,
 } from '@/services/billing.service';
 
 export default function SimplifiedStudentBillingScreen() {
@@ -59,9 +58,6 @@ export default function SimplifiedStudentBillingScreen() {
   const [studentNotes, setStudentNotes] = useState('');
   const [selectedScreenshot, setSelectedScreenshot] =
     useState<SelectedScreenshotAsset | null>(null);
-  const [scanningProof, setScanningProof] = useState(false);
-  const [scanResult, setScanResult] = useState<UpiProofScanResult | null>(null);
-  const scanSequenceRef = useRef(0);
 
   const residentContext = useMemo<PreResolvedStudentContext | null>(
     () =>
@@ -150,34 +146,10 @@ export default function SimplifiedStudentBillingScreen() {
           Alert.alert('Image Too Large', compressed.error);
           return;
         }
-        const nextAsset: SelectedScreenshotAsset = {
+        setSelectedScreenshot({
           uri: compressed.data.uri,
           base64: compressed.data.base64,
-        };
-        setSelectedScreenshot(nextAsset);
-        setScanResult(null);
-
-        if (selectedBillForPayment?.charge_id && nextAsset.base64) {
-          const seq = ++scanSequenceRef.current;
-          const fileExt = nextAsset.uri.split('.').pop()?.toLowerCase();
-          setScanningProof(true);
-          try {
-            const scan = await verifyUpiScreenshot({
-              chargeId: selectedBillForPayment.charge_id,
-              imageBase64: nextAsset.base64,
-              mimeType: fileExt === 'png' ? 'image/png' : 'image/jpeg',
-            });
-            if (scanSequenceRef.current !== seq) return;
-            setScanResult(scan);
-            if (scan.extracted?.utr_number && !scan.hard_blocked) {
-              setReferenceNumber(scan.extracted.utr_number);
-            }
-          } finally {
-            if (scanSequenceRef.current === seq) {
-              setScanningProof(false);
-            }
-          }
-        }
+        });
       }
     } catch {
       Alert.alert(
@@ -198,9 +170,6 @@ export default function SimplifiedStudentBillingScreen() {
     setReferenceNumber('');
     setStudentNotes('');
     setSelectedScreenshot(null);
-    setScanResult(null);
-    setScanningProof(false);
-    scanSequenceRef.current += 1;
     setPaymentModalVisible(true);
   };
 
@@ -239,6 +208,16 @@ export default function SimplifiedStudentBillingScreen() {
       return;
     }
 
+    const normalizedUtr =
+      paymentMethod === 'upi' ? normalizeUpiUtr(referenceNumber) : null;
+    if (paymentMethod === 'upi' && !normalizedUtr) {
+      Alert.alert(
+        'UTR Required',
+        'Please enter the 12-digit UPI UTR / Transaction ID from your payment receipt.'
+      );
+      return;
+    }
+
     submittingProofRef.current = true;
     const billTitle = selectedBillForPayment.title;
     try {
@@ -246,16 +225,14 @@ export default function SimplifiedStudentBillingScreen() {
         residentId,
         chargeId: selectedBillForPayment.charge_id,
         paymentMethod,
-        referenceNumber,
+        referenceNumber:
+          paymentMethod === 'upi' ? normalizedUtr ?? referenceNumber : referenceNumber,
         notes: studentNotes,
         screenshot: selectedScreenshot,
-        verification: paymentMethod === 'upi' ? scanResult : null,
       });
 
       setPaymentModalVisible(false);
       setSelectedScreenshot(null);
-      setScanResult(null);
-      setScanningProof(false);
       setReferenceNumber('');
       setStudentNotes('');
       showToast(`${billTitle} payment proof sent for review`);
@@ -345,25 +322,10 @@ export default function SimplifiedStudentBillingScreen() {
         referenceNumber={referenceNumber}
         studentNotes={studentNotes}
         selectedScreenshot={selectedScreenshot}
-        scanningProof={scanningProof}
-        scanResult={scanResult}
         submitting={submittingProof}
-        onClose={() => {
-          scanSequenceRef.current += 1;
-          setScanningProof(false);
-          setPaymentModalVisible(false);
-        }}
-        onSelectBill={(bill) => {
-          setSelectedBillForPayment(bill);
-          setScanResult(null);
-        }}
-        onChangePaymentMethod={(method) => {
-          setPaymentMethod(method);
-          if (method === 'cash') {
-            setScanResult(null);
-            setScanningProof(false);
-          }
-        }}
+        onClose={() => setPaymentModalVisible(false)}
+        onSelectBill={setSelectedBillForPayment}
+        onChangePaymentMethod={setPaymentMethod}
         onChangeReferenceNumber={setReferenceNumber}
         onChangeStudentNotes={setStudentNotes}
         onPickScreenshot={() => void handlePickScreenshot()}

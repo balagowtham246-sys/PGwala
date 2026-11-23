@@ -19,7 +19,10 @@ import {
   EyeOff,
   MessageCircle,
   Phone,
+  Trash2,
 } from 'lucide-react-native';
+
+import { supabase } from '@/lib/supabase';
 
 import {
   ResidentCheckoutModal,
@@ -576,6 +579,64 @@ export default function ResidentProfileScreen() {
             onRecordPaymentPress={handleRecordPaymentPress}
             onOpenCheckoutModal={handleOpenCheckoutModal}
           />
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Delete ${profile.fullName} permanently`}
+            style={({ pressed }) => [
+              {
+                marginTop: 4,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                paddingVertical: 12,
+                borderRadius: 12,
+                backgroundColor: '#FEF2F2',
+                borderWidth: 1,
+                borderColor: '#FECACA',
+              },
+              pressed && { opacity: 0.78 },
+            ]}
+            onPress={() => {
+              Alert.alert(
+                'Delete Resident Permanently?',
+                `This will permanently delete ${profile.fullName} (Room ${profile.roomNumber}) and cannot be undone. Use Check Out if you want to preserve stay history.`,
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Delete Permanently',
+                    style: 'destructive',
+                    onPress: async () => {
+                      try {
+                        const { error } = await supabase
+                          .from('residents')
+                          .delete()
+                          .eq('id', profile.id);
+                        if (error) throw error;
+                        void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
+                        void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
+                        showToast(`Deleted ${profile.fullName}`);
+                        if (router.canGoBack()) router.back();
+                        else router.replace('/residents-directory');
+                      } catch (err: unknown) {
+                        Alert.alert(
+                          'Delete Failed',
+                          err instanceof Error
+                            ? err.message
+                            : 'Could not delete resident.'
+                        );
+                      }
+                    },
+                  },
+                ]
+              );
+            }}>
+            <Trash2 size={15} color="#DC2626" />
+            <Text style={{ fontSize: 13, fontWeight: '700', color: '#DC2626' }}>
+              Delete Resident Permanently
+            </Text>
+          </Pressable>
         </ScrollView>
       </KeyboardAvoidingView>
 

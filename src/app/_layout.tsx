@@ -160,6 +160,7 @@ function RootNavigationLayout() {
       <Stack.Screen name="join-pg" />
       <Stack.Screen name="pending-approval" />
       <Stack.Screen name="owner-join-requests" />
+      <Stack.Screen name="admin-owners" />
     </Stack>
   );
 }

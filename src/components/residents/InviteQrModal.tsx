@@ -69,9 +69,11 @@ export function InviteQrModal({
   }, [propertyId]);
 
   useEffect(() => {
-    if (visible && propertyId) {
+    if (!visible || !propertyId) return;
+    const timer = setTimeout(() => {
       void loadSettings();
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [visible, propertyId, loadSettings]);
 
   const qrMatrix = useMemo(() => {

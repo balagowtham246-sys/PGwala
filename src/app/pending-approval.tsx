@@ -64,7 +64,10 @@ export default function PendingApprovalScreen() {
   );
 
   useEffect(() => {
-    void checkStatus(false);
+    const timer = setTimeout(() => {
+      void checkStatus(false);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [checkStatus]);
 
   const handleSignOut = () => {

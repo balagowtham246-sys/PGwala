@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import {
+  ActivityIndicator,
+  Alert,
   Linking,
   Modal,
   Pressable,
@@ -8,6 +10,7 @@ import {
   Text,
   View,
 } from 'react-native';
+import { router } from 'expo-router';
 import {
   ChevronRight,
   FileText,
@@ -18,9 +21,12 @@ import {
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
+import { useAuth } from '@/context/auth-context';
 import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
+import { invokeEdgeFunction } from '@/lib/edge-functions';
+import { extractErrorMessage } from '@/lib/error-utils';
 
-const SUPPORT_EMAIL = 'support@pgwala.app';
+const SUPPORT_EMAIL = 'balagowtham246@gmail.com';
 
 type ComplianceDialogKind = 'privacy' | 'support' | 'delete' | null;
 
@@ -31,10 +37,49 @@ export function SettingsComplianceSection({
   role: 'owner' | 'student' | 'warden';
   userEmail?: string | null;
 }) {
+  const { signOut } = useAuth();
   const [dialog, setDialog] = useState<ComplianceDialogKind>(null);
+  const [deleting, setDeleting] = useState(false);
   const colors = OwnerTheme.colors;
 
-  useModalBackHandler(dialog !== null, () => setDialog(null));
+  useModalBackHandler(dialog !== null && !deleting, () => setDialog(null));
+
+  const handleConfirmDeleteAccount = () => {
+    if (deleting) return;
+    Alert.alert(
+      'Delete Account Permanently?',
+      'This will immediately delete your login credentials and cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete Permanently',
+          style: 'destructive',
+          onPress: async () => {
+            setDeleting(true);
+            try {
+              const res = await invokeEdgeFunction<{
+                success?: boolean;
+                error?: string;
+              }>('delete-account', {});
+              if (!res?.success) {
+                throw new Error(res?.error || 'Could not delete account.');
+              }
+              setDialog(null);
+              await signOut();
+              router.replace('/login');
+            } catch (err: unknown) {
+              Alert.alert(
+                'Deletion Blocked',
+                extractErrorMessage(err, 'Could not delete your account right now.')
+              );
+            } finally {
+              setDeleting(false);
+            }
+          },
+        },
+      ]
+    );
+  };
 
   const openMail = (subject: string, body: string) => {
     const url = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(
@@ -195,26 +240,29 @@ export function SettingsComplianceSection({
                 <View style={styles.bodyStack}>
                   <Text style={[styles.bodyText, { color: colors.textSecondary }]}>
                     {role === 'student'
-                      ? 'Your PG accommodation access is managed by your PG owner, and billing receipts may be retained for property accounting. You can request complete removal of your personal login credentials at any time.'
-                      : 'You can request permanent deletion of your PGwala login credentials and associated personal data. Historical financial ledger obligations may require owner confirmation prior to purge.'}
-                  </Text>
-                  <Text style={[styles.bodyText, { color: colors.textSecondary }]}>
-                    Deletion requests are processed within 7 days after ownership
-                    verification via {SUPPORT_EMAIL}.
+                      ? 'Deleting your account immediately removes your login credentials and push tokens. Your PG owner retains past payment records for property accounting.'
+                      : role === 'warden'
+                        ? 'Deleting your account immediately removes your warden login and unassigns you from all PGs.'
+                        : 'Deleting your owner account permanently removes your login. If you still have active residents, check them out first so no resident is stranded.'}
                   </Text>
                   <Pressable
                     accessibilityRole="button"
-                    style={[styles.primaryBtn, { backgroundColor: colors.danger }]}
-                    onPress={() =>
-                      openMail(
-                        'PGwala Account Deletion Request',
-                        `Please delete my PGwala account.\n\nRole: ${role}\nRegistered Email: ${userEmail || 'N/A'}\n`
-                      )
-                    }>
-                    <Trash2 size={16} color="#FFFFFF" />
-                    <Text style={styles.primaryBtnText}>
-                      Request Account Deletion
-                    </Text>
+                    disabled={deleting}
+                    style={[
+                      styles.primaryBtn,
+                      { backgroundColor: colors.danger, opacity: deleting ? 0.6 : 1 },
+                    ]}
+                    onPress={handleConfirmDeleteAccount}>
+                    {deleting ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <>
+                        <Trash2 size={16} color="#FFFFFF" />
+                        <Text style={styles.primaryBtnText}>
+                          Delete My Account Permanently
+                        </Text>
+                      </>
+                    )}
                   </Pressable>
                 </View>
               )}

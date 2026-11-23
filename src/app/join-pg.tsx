@@ -85,10 +85,12 @@ export default function JoinPgScreen() {
 
   useEffect(() => {
     const norm = normalizeInviteCode(rawDeepLinkCode);
-    if (isValidInviteCodeFormat(norm)) {
+    if (!isValidInviteCodeFormat(norm)) return;
+    const timer = setTimeout(() => {
       setInviteCode(norm);
       void handleLookup(norm);
-    }
+    }, 0);
+    return () => clearTimeout(timer);
   }, [rawDeepLinkCode, handleLookup]);
 
   const handleSubmit = async () => {

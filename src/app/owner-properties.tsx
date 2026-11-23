@@ -21,6 +21,7 @@ import {
   CreditCard,
   MapPin,
   Pencil,
+  Trash2,
   Users,
   Wifi,
   X,
@@ -28,6 +29,7 @@ import {
 
 import { OwnerTheme } from '@/constants/theme';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { supabase } from '@/lib/supabase';
 import {
   PropertyItem,
   PropertyMetaInput,
@@ -470,8 +472,13 @@ function PropertyEditForm({
 }
 
 export default function OwnerPropertiesScreen() {
-  const { properties, selectedProperty, addProperty, updateProperty } =
-    useProperty();
+  const {
+    properties,
+    selectedProperty,
+    addProperty,
+    updateProperty,
+    refreshProperties,
+  } = useProperty();
   const { showToast } = useToast();
 
   const [editingPropertyId, setEditingPropertyId] = useState<string | null>(
@@ -716,22 +723,73 @@ export default function OwnerPropertiesScreen() {
                       ) : null}
                     </View>
 
-                    <View
-                      style={[
-                        styles.editPill,
-                        isEditing && styles.editPillActive,
-                      ]}>
-                      <Pencil
-                        size={12}
-                        color={isEditing ? '#FFFFFF' : OwnerTheme.colors.primary}
-                      />
-                      <Text
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      {occupiedCount === 0 && (
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Delete ${prop.name}`}
+                          hitSlop={8}
+                          style={{
+                            width: 30,
+                            height: 30,
+                            borderRadius: 15,
+                            backgroundColor: '#FEF2F2',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                          onPress={(e) => {
+                            e.stopPropagation();
+                            Alert.alert(
+                              'Delete PG Property?',
+                              `Permanently delete "${prop.name}"? This can only be done for empty PGs with 0 active residents.`,
+                              [
+                                { text: 'Cancel', style: 'cancel' },
+                                {
+                                  text: 'Delete PG',
+                                  style: 'destructive',
+                                  onPress: async () => {
+                                    try {
+                                      const { error } = await supabase
+                                        .from('properties')
+                                        .delete()
+                                        .eq('id', prop.id);
+                                      if (error) throw error;
+                                      await refreshProperties();
+                                      showToast(`Deleted "${prop.name}"`);
+                                    } catch (err: unknown) {
+                                      Alert.alert(
+                                        'Delete Failed',
+                                        extractErrorMessage(
+                                          err,
+                                          'Could not delete this property.'
+                                        )
+                                      );
+                                    }
+                                  },
+                                },
+                              ]
+                            );
+                          }}>
+                          <Trash2 size={14} color="#DC2626" />
+                        </Pressable>
+                      )}
+                      <View
                         style={[
-                          styles.editPillText,
-                          isEditing && styles.editPillTextActive,
+                          styles.editPill,
+                          isEditing && styles.editPillActive,
                         ]}>
-                        {isEditing ? 'Editing' : 'Edit'}
-                      </Text>
+                        <Pencil
+                          size={12}
+                          color={isEditing ? '#FFFFFF' : OwnerTheme.colors.primary}
+                        />
+                        <Text
+                          style={[
+                            styles.editPillText,
+                            isEditing && styles.editPillTextActive,
+                          ]}>
+                          {isEditing ? 'Editing' : 'Edit'}
+                        </Text>
+                      </View>
                     </View>
                   </Pressable>
                 );

@@ -1,5 +1,18 @@
-import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
+import { useFocusEffect } from 'expo-router';
+import {
+  Bell,
+  Building2,
+  CheckCircle2,
+  ExternalLink,
+  Megaphone,
+  MessageCircle,
+  Send,
+  Share2,
+  Trash2,
+  Users,
+} from 'lucide-react-native';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   FlatList,
@@ -15,18 +28,6 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
-import {
-  Bell,
-  Building2,
-  CheckCircle2,
-  ExternalLink,
-  Megaphone,
-  MessageCircle,
-  Send,
-  Share2,
-  Users,
-} from 'lucide-react-native';
 
 import {
   EmptyState,
@@ -39,10 +40,11 @@ import {
   StatusBadge,
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
-import { extractErrorMessage } from '@/lib/error-utils';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
+import { supabase } from '@/lib/supabase';
 import { formatGateEventTimestamp, formatRoomLabel } from '@/lib/ux-utils';
 import {
   AnnouncementAudience,
@@ -309,6 +311,35 @@ export default function OwnerAnnouncementsScreen() {
       ? `Send Push Notice (${recipientCount} ${recipientCount === 1 ? 'resident' : 'residents'})`
       : `Send via WhatsApp (${recipientCount} ${recipientCount === 1 ? 'resident' : 'residents'})`;
 
+  const handleDeleteAnnouncement = useCallback((item: AnnouncementItem) => {
+    Alert.alert(
+      'Delete Announcement?',
+      `Remove "${item.title}" from announcement history?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const { error } = await supabase
+                .from('announcements')
+                .delete()
+                .eq('id', item.id);
+              if (error) throw error;
+              setAnnouncements((prev) => prev.filter((a) => a.id !== item.id));
+            } catch (err: unknown) {
+              Alert.alert(
+                'Delete Failed',
+                extractErrorMessage(err, 'Could not delete announcement.')
+              );
+            }
+          },
+        },
+      ]
+    );
+  }, []);
+
   const renderAnnouncementItem = useCallback(
     ({ item }: { item: (typeof announcements)[number] }) => {
       const audienceLabel =
@@ -322,9 +353,18 @@ export default function OwnerAnnouncementsScreen() {
         <View style={styles.historyCard}>
           <View style={styles.historyTopRow}>
             <Text style={styles.historyTitle}>{item.title}</Text>
-            {timeLabel ? (
-              <Text style={styles.historyTimestamp}>{timeLabel}</Text>
-            ) : null}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              {timeLabel ? (
+                <Text style={styles.historyTimestamp}>{timeLabel}</Text>
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Delete announcement ${item.title}`}
+                hitSlop={8}
+                onPress={() => handleDeleteAnnouncement(item)}>
+                <Trash2 size={14} color={OwnerTheme.colors.danger} />
+              </Pressable>
+            </View>
           </View>
 
           <Text style={styles.historyMessage}>{item.message}</Text>
@@ -343,15 +383,14 @@ export default function OwnerAnnouncementsScreen() {
               />
             </View>
             <Text style={styles.historyRecipientCount}>
-              {`${item.recipientCount} ${
-                item.recipientCount === 1 ? 'recipient' : 'recipients'
-              }`}
+              {`${item.recipientCount} ${item.recipientCount === 1 ? 'recipient' : 'recipients'
+                }`}
             </Text>
           </View>
         </View>
       );
     },
-    []
+    [handleDeleteAnnouncement]
   );
 
   const announcementKeyExtractor = useCallback(
@@ -650,9 +689,8 @@ export default function OwnerAnnouncementsScreen() {
                     />
                     <View style={styles.confirmationTextCol}>
                       <Text style={styles.confirmationTitle}>
-                        {`Sent "${pushBanner.title}" to ${pushBanner.recipientCount} ${
-                          pushBanner.recipientCount === 1 ? 'resident' : 'residents'
-                        }`}
+                        {`Sent "${pushBanner.title}" to ${pushBanner.recipientCount} ${pushBanner.recipientCount === 1 ? 'resident' : 'residents'
+                          }`}
                       </Text>
                       {pushBanner.pushDeliveredVia === 'local_fallback' && (
                         <Text style={styles.fallbackNote}>
@@ -692,7 +730,7 @@ export default function OwnerAnnouncementsScreen() {
                             style={[
                               styles.recipientRow,
                               idx === whatsappRecipientsWithPhone.length - 1 &&
-                                styles.recipientRowLast,
+                              styles.recipientRowLast,
                             ]}>
                             <View style={styles.recipientInfo}>
                               <Text style={styles.recipientName} numberOfLines={1}>

@@ -108,50 +108,71 @@ function CardHeader({
     } as Href);
   };
 
+  const initials = fullName
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((p) => p[0]?.toUpperCase() ?? '')
+    .join('') || 'R';
+
   return (
     <View style={styles.cardHeader}>
-      <View style={{ flex: 1, paddingRight: 8 }}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={`View profile for ${fullName}`}
-          hitSlop={6}
-          style={({ pressed }) => [
-            styles.resNameBtn,
-            pressed && { opacity: 0.7 },
-          ]}
-          onPress={handleOpenProfile}>
-          <Text style={styles.resName}>{fullName}</Text>
-        </Pressable>
-        <Text style={styles.resRoom}>
-          Room {roomNumber}
-          {phoneNumber ? ` • ${phoneNumber}` : ''}
-        </Text>
-        {(dueStatus || isDuplicatePhone) && (
-          <View style={styles.metaPillsRow}>
-            {dueStatus && (
-              <View
-                style={[
-                  styles.duePill,
-                  dueStatus.isOverdue && styles.duePillOverdue,
-                ]}>
-                <Text
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`View profile for ${fullName}`}
+        style={({ pressed }) => [
+          { flexDirection: 'row', alignItems: 'center', gap: 9, flex: 1, paddingRight: 8 },
+          pressed && { opacity: 0.72 },
+        ]}
+        onPress={handleOpenProfile}>
+        <View
+          style={{
+            width: 32,
+            height: 32,
+            borderRadius: 16,
+            backgroundColor: '#E0F2FE',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}>
+          <Text style={{ fontSize: 11, fontWeight: '800', color: '#0284C7' }}>
+            {initials}
+          </Text>
+        </View>
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.resName} numberOfLines={1}>
+            {fullName}
+          </Text>
+          <Text style={styles.resRoom} numberOfLines={1}>
+            Room {roomNumber}
+            {phoneNumber ? ` · ${phoneNumber}` : ''}
+          </Text>
+          {(dueStatus || isDuplicatePhone) && (
+            <View style={styles.metaPillsRow}>
+              {dueStatus && (
+                <View
                   style={[
-                    styles.duePillText,
-                    dueStatus.isOverdue && styles.duePillTextOverdue,
+                    styles.duePill,
+                    dueStatus.isOverdue && styles.duePillOverdue,
                   ]}>
-                  {dueStatus.label}
-                </Text>
-              </View>
-            )}
-            {isDuplicatePhone && (
-              <View style={styles.duplicatePhoneBadge}>
-                <AlertTriangle size={11} color="#B45309" />
-                <Text style={styles.duplicatePhoneText}>Duplicate phone</Text>
-              </View>
-            )}
-          </View>
-        )}
-      </View>
+                  <Text
+                    style={[
+                      styles.duePillText,
+                      dueStatus.isOverdue && styles.duePillTextOverdue,
+                    ]}>
+                    {dueStatus.label}
+                  </Text>
+                </View>
+              )}
+              {isDuplicatePhone && (
+                <View style={styles.duplicatePhoneBadge}>
+                  <AlertTriangle size={11} color="#B45309" />
+                  <Text style={styles.duplicatePhoneText}>Duplicate phone</Text>
+                </View>
+              )}
+            </View>
+          )}
+        </View>
+      </Pressable>
       <StatusBadge label={badgeLabel} variant={badgeVariant} size="sm" />
     </View>
   );
@@ -218,7 +239,13 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
           onOpenProfile={onOpenProfile}
           badgeLabel={
             isPaid
-              ? toSentenceCaseStatus('paid')
+              ? [
+                  'Paid',
+                  res.paid_method ? res.paid_method.toUpperCase() : null,
+                  formatReadableReceiptDate(res.paid_date),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
               : hasReport
               ? toSentenceCaseStatus('pending')
               : isNotGen
@@ -314,18 +341,7 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
           </View>
         </View>
 
-        {isPaid ? (
-          <View style={styles.paidInfoBox}>
-            <Receipt size={14} color={OwnerTheme.colors.success} />
-            <Text style={styles.paidInfoText}>
-              Receipt #{res.receipt_number || 'Confirmed'}
-              {res.paid_method ? ` • ${res.paid_method.toUpperCase()}` : ''}
-              {formatReadableReceiptDate(res.paid_date)
-                ? ` • ${formatReadableReceiptDate(res.paid_date)}`
-                : ''}
-            </Text>
-          </View>
-        ) : hasReport && res.pending_report && res.charge_id ? (
+        {isPaid ? null : hasReport && res.pending_report && res.charge_id ? (
           <View style={styles.actionRow}>
             <Pressable
               style={styles.reviewActionBtn}
@@ -434,7 +450,13 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
           onOpenProfile={onOpenProfile}
           badgeLabel={
             isPaid
-              ? toSentenceCaseStatus('paid')
+              ? [
+                  'Paid',
+                  res.paid_method ? res.paid_method.toUpperCase() : null,
+                  formatReadableReceiptDate(res.paid_date),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
               : hasReport
               ? toSentenceCaseStatus('pending')
               : toSentenceCaseStatus('unpaid')
@@ -455,18 +477,7 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
           </View>
         </View>
 
-        {isPaid ? (
-          <View style={styles.paidInfoBox}>
-            <Receipt size={14} color={OwnerTheme.colors.success} />
-            <Text style={styles.paidInfoText}>
-              Receipt #{res.receipt_number || 'Confirmed'}
-              {res.paid_method ? ` • ${res.paid_method.toUpperCase()}` : ''}
-              {formatReadableReceiptDate(res.paid_date)
-                ? ` • ${formatReadableReceiptDate(res.paid_date)}`
-                : ''}
-            </Text>
-          </View>
-        ) : hasReport && res.pending_report && res.charge_id ? (
+        {isPaid ? null : hasReport && res.pending_report && res.charge_id ? (
           <View style={styles.actionRow}>
             <Pressable
               style={styles.reviewActionBtn}

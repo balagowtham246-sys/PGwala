@@ -74,6 +74,16 @@ const QUICK_JUMP_GROUPS: {
   routes: { label: string; path: Href; subtitle: string }[];
 }[] = [
   {
+    title: 'Admin & Onboarding',
+    routes: [
+      {
+        label: 'Create PG Owner',
+        path: '/admin-owners',
+        subtitle: 'Provision new PG owner login & first PG',
+      },
+    ],
+  },
+  {
     title: 'Owner Screens',
     routes: [
       { label: 'Owner Home', path: '/owner-tabs', subtitle: 'Hero dashboard & ops' },

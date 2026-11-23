@@ -22,6 +22,7 @@ import {
   Droplets,
   Phone,
   Sparkles,
+  Trash2,
   Utensils,
   Wifi,
   Wrench,
@@ -108,19 +109,28 @@ export const OwnerComplaintRow = memo(function OwnerComplaintRow({
   item,
   onViewPhoto,
   onOpenActionModal,
+  onDelete,
 }: {
   item: OwnerComplaintItem;
   onViewPhoto: (photoUrl: string) => void;
   onOpenActionModal: (complaint: OwnerComplaintItem) => void;
+  onDelete?: (complaint: OwnerComplaintItem) => void;
 }) {
   const catInfo = COMPLAINT_CATEGORY_CONFIG[item.category] || COMPLAINT_CATEGORY_CONFIG.other;
   const prioInfo = COMPLAINT_PRIORITY_CONFIG[item.priority] || COMPLAINT_PRIORITY_CONFIG.medium;
   const statusInfo = COMPLAINT_STATUS_CONFIG[item.status] || COMPLAINT_STATUS_CONFIG.open;
+  const residentName = item.resident?.full_name || 'Resident';
+  const initials =
+    residentName
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((p) => p[0]?.toUpperCase() ?? '')
+      .join('') || 'R';
 
   const formattedDate = new Date(item.created_at).toLocaleDateString('en-IN', {
     day: 'numeric',
     month: 'short',
-    year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
   });
@@ -130,70 +140,74 @@ export const OwnerComplaintRow = memo(function OwnerComplaintRow({
       style={[
         styles.complaintCard,
         {
-          borderRadius: 16,
-          borderLeftWidth: 4,
+          borderRadius: 14,
+          borderLeftWidth: 3.5,
           borderLeftColor: prioInfo.color,
         },
       ]}>
+      {/* Compact Modern Resident Row */}
       <View style={styles.cardTopRow}>
-        <View style={{ flex: 1, paddingRight: 8 }}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`View profile for ${item.resident?.full_name || 'Resident'}`}
-            hitSlop={6}
-            style={({ pressed }) => [
-              styles.residentNameBtn,
-              pressed && { opacity: 0.7 },
-            ]}
-            onPress={() => {
-              if (!item.resident_id) return;
-              router.push({
-                pathname: '/resident-profile',
-                params: { id: item.resident_id },
-              } as Href);
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`View profile for ${residentName}`}
+          style={({ pressed }) => [
+            { flexDirection: 'row', alignItems: 'center', gap: 9, flex: 1, paddingRight: 8 },
+            pressed && { opacity: 0.72 },
+          ]}
+          onPress={() => {
+            if (!item.resident_id) return;
+            router.push({
+              pathname: '/resident-profile',
+              params: { id: item.resident_id },
+            } as Href);
+          }}>
+          <View
+            style={{
+              width: 30,
+              height: 30,
+              borderRadius: 15,
+              backgroundColor: '#E0F2FE',
+              alignItems: 'center',
+              justifyContent: 'center',
             }}>
-            <Text style={styles.residentName}>
-              {item.resident?.full_name || 'Resident'}
+            <Text style={{ fontSize: 11, fontWeight: '800', color: '#0284C7' }}>
+              {initials}
             </Text>
-          </Pressable>
-          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 2 }}>
-            <Text style={styles.roomMeta}>
-              Room {item.resident?.room_number || 'N/A'}
-            </Text>
-            {item.resident?.phone_number ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel={`Call ${item.resident?.full_name || 'resident'}`}
-                hitSlop={8}
-                style={({ pressed }) => [
-                  {
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 4,
-                    paddingHorizontal: 7,
-                    paddingVertical: 2,
-                    borderRadius: 999,
-                    backgroundColor: '#E0F2FE',
-                  },
-                  pressed && { opacity: 0.7 },
-                ]}
-                onPress={() => {
-                  const digits = (item.resident?.phone_number || '').replace(/\D/g, '');
-                  if (!digits) return;
-                  Linking.openURL(`tel:${digits}`).catch(() => {
-                    Alert.alert('Unable to Call', 'Could not open the phone dialer.');
-                  });
-                }}>
-                <Phone size={11} color="#0284C7" />
-                <Text style={{ fontSize: 11, fontWeight: '600', color: '#0284C7' }}>
-                  {item.resident.phone_number}
-                </Text>
-              </Pressable>
-            ) : null}
           </View>
-        </View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.residentName} numberOfLines={1}>
+              {residentName}
+            </Text>
+            <Text style={styles.roomMeta} numberOfLines={1}>
+              Room {item.resident?.room_number || 'N/A'} · {formattedDate}
+            </Text>
+          </View>
+        </Pressable>
 
-        <View style={{ flexDirection: 'row', gap: 6, alignItems: 'center' }}>
+        <View style={{ flexDirection: 'row', gap: 5, alignItems: 'center' }}>
+          {item.resident?.phone_number ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Call ${residentName}`}
+              hitSlop={6}
+              style={{
+                width: 26,
+                height: 26,
+                borderRadius: 13,
+                backgroundColor: '#E0F2FE',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+              onPress={() => {
+                const digits = (item.resident?.phone_number || '').replace(/\D/g, '');
+                if (!digits) return;
+                Linking.openURL(`tel:${digits}`).catch(() => {
+                  Alert.alert('Unable to Call', 'Could not open the phone dialer.');
+                });
+              }}>
+              <Phone size={12} color="#0284C7" />
+            </Pressable>
+          ) : null}
           <View style={[styles.prioBadge, { backgroundColor: prioInfo.bgColor }]}>
             <Text style={[styles.prioText, { color: prioInfo.color }]}>
               {prioInfo.label}
@@ -208,15 +222,16 @@ export const OwnerComplaintRow = memo(function OwnerComplaintRow({
       </View>
 
       <View style={styles.catRow}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-          <catInfo.Icon size={14} color="#475569" />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+          <catInfo.Icon size={12} color="#0284C7" />
           <Text style={styles.catText}>{catInfo.label}</Text>
         </View>
-        <Text style={styles.dateMeta}>{formattedDate}</Text>
       </View>
 
       <Text style={styles.complaintTitle}>{item.title}</Text>
-      <Text style={styles.complaintDesc}>{item.description}</Text>
+      <Text style={styles.complaintDesc} numberOfLines={3}>
+        {item.description}
+      </Text>
 
       {item.photo_url && (
         <Pressable
@@ -225,8 +240,8 @@ export const OwnerComplaintRow = memo(function OwnerComplaintRow({
             { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
           ]}
           onPress={() => onViewPhoto(item.photo_url!)}>
-          <Camera size={14} color="#0284C7" />
-          <Text style={styles.photoViewBtnText}>View Resident Photo Attachment</Text>
+          <Camera size={13} color="#0284C7" />
+          <Text style={styles.photoViewBtnText}>View Photo</Text>
         </Pressable>
       )}
 
@@ -237,9 +252,31 @@ export const OwnerComplaintRow = memo(function OwnerComplaintRow({
         </View>
       )}
 
-      <Pressable style={styles.actionBtn} onPress={() => onOpenActionModal(item)}>
-        <Text style={styles.actionBtnText}>Update Status & Add Notes ›</Text>
-      </Pressable>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10 }}>
+        <Pressable
+          style={[styles.actionBtn, { flex: 1, marginTop: 0 }]}
+          onPress={() => onOpenActionModal(item)}>
+          <Text style={styles.actionBtnText}>Update Status &amp; Add Notes ›</Text>
+        </Pressable>
+        {onDelete ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel={`Delete issue ${item.title}`}
+            style={{
+              width: 38,
+              height: 38,
+              borderRadius: 10,
+              backgroundColor: '#FEF2F2',
+              borderWidth: 1,
+              borderColor: '#FECACA',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            onPress={() => onDelete(item)}>
+            <Trash2 size={15} color="#DC2626" />
+          </Pressable>
+        ) : null}
+      </View>
     </View>
   );
 });
