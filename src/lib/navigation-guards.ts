@@ -15,6 +15,7 @@ export const STUDENT_ROUTES = [
   'resident-accommodation',
   'resident-announcements',
   'resident-notifications',
+  'pending-approval',
 ] as const;
 
 export const OWNER_ROUTES = [
@@ -25,6 +26,7 @@ export const OWNER_ROUTES = [
   'edit-resident',
   'residents-directory',
   'resident-profile',
+  'owner-join-requests',
   'food-menu',
   'billing-management',
   'owner-complaints',
@@ -55,7 +57,7 @@ export interface NavigationGuardState {
  */
 export function evaluateNavigationRedirect(state: NavigationGuardState): string | null {
   const { hasSession, role, currentSegment } = state;
-  const inAuthGroup = currentSegment === 'login';
+  const inAuthGroup = currentSegment === 'login' || currentSegment === 'join-pg';
 
   // 1. Unauthenticated / missing profile
   if (!hasSession || !role) {

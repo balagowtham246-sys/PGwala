@@ -207,6 +207,20 @@ describe('navigation-guards', () => {
       expect(
         evaluateNavigationRedirect({ hasSession: true, role: 'warden', currentSegment: 'resident-notifications' })
       ).toBe('/warden-dashboard');
+
+      // QR self-onboarding routes
+      expect(
+        evaluateNavigationRedirect({ hasSession: false, role: null, currentSegment: 'join-pg' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'pending-approval' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'owner', currentSegment: 'owner-join-requests' })
+      ).toBeNull();
+      expect(
+        evaluateNavigationRedirect({ hasSession: true, role: 'student', currentSegment: 'owner-join-requests' })
+      ).toBe('/resident-tabs');
     });
   });
 });

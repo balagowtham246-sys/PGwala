@@ -14,6 +14,11 @@ import {
   getSignedPaymentProofUrl,
   supabase,
 } from '@/lib/supabase';
+import {
+  UpiExtractedData,
+  UpiProofScanResult,
+  UpiVerificationStatus,
+} from '@/lib/upi-verification';
 
 export type PaymentMethod = 'cash' | 'upi';
 export type BillingMode = 'RENT' | 'EB' | 'COMBINED';
@@ -27,6 +32,11 @@ export interface PendingPaymentReport {
   reference_number: string | null;
   screenshot_url: string | null;
   notes: string | null;
+  normalized_utr?: string | null;
+  screenshot_sha256?: string | null;
+  ai_extracted_data?: UpiExtractedData | null;
+  verification_status?: UpiVerificationStatus | null;
+  verification_warnings?: string[] | null;
 }
 
 export interface RejectedPaymentReport {
@@ -226,6 +236,7 @@ export interface SubmitStudentPaymentProofParams {
   referenceNumber?: string;
   notes?: string;
   screenshot?: { uri: string; base64?: string | null } | null;
+  verification?: UpiProofScanResult | null;
 }
 
 interface RawChargeRow {
@@ -252,6 +263,11 @@ interface RawOwnerReportRow {
   notes: string | null;
   status: string;
   rejection_reason: string | null;
+  normalized_utr?: string | null;
+  screenshot_sha256?: string | null;
+  ai_extracted_data?: UpiExtractedData | null;
+  verification_status?: UpiVerificationStatus | null;
+  verification_warnings?: string[] | null;
 }
 
 interface RawStudentReportRow {
@@ -1102,6 +1118,56 @@ export async function getStudentBilling(
 const inFlightPaymentProofs = new Map<string, Promise<ServiceResult<null>>>();
 
 /**
+ * Invokes the `verify-upi-proof` Edge Function to fingerprint the screenshot (SHA-256),
+ * extract UPI receipt fields via Gemini Flash, and detect duplicate proofs.
+ * Gracefully falls back to `unverified` if offline or the Edge Function is unavailable.
+ */
+export async function verifyUpiScreenshot(params: {
+  chargeId: string;
+  imageBase64: string;
+  mimeType?: string;
+}): Promise<UpiProofScanResult> {
+  const fallback: UpiProofScanResult = {
+    hard_blocked: false,
+    screenshot_sha256: null,
+    verification_status: 'unverified',
+    warnings: [],
+    extracted: null,
+  };
+
+  try {
+    const { data, error } = await supabase.functions.invoke('verify-upi-proof', {
+      body: {
+        charge_id: params.chargeId,
+        image_base64: params.imageBase64,
+        mime_type: params.mimeType || 'image/jpeg',
+      },
+    });
+
+    if (error || !data || data.success === false) {
+      return fallback;
+    }
+
+    return {
+      hard_blocked: Boolean(data.hard_blocked),
+      block_code: data.block_code ?? null,
+      block_message: data.block_message ?? null,
+      screenshot_sha256:
+        typeof data.screenshot_sha256 === 'string' ? data.screenshot_sha256 : null,
+      verification_status:
+        data.verification_status === 'verified_match' ||
+        data.verification_status === 'warning'
+          ? data.verification_status
+          : 'unverified',
+      warnings: Array.isArray(data.warnings) ? data.warnings : [],
+      extracted: data.extracted ?? null,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+/**
  * Uploads optional payment screenshot to `payment-proofs` storage bucket and
  * submits the payment proof via RPC (strictly online). Coalesces concurrent
  * double-tap submissions for the same resident + chargeId.
@@ -1157,13 +1223,32 @@ export async function submitStudentPaymentProof(
         );
       }
 
-      const { data, error } = await supabase.rpc('submit_student_payment_proof', {
+      const rpcPayload: Record<string, unknown> = {
         p_charge_id: params.chargeId,
         p_claimed_method: params.paymentMethod,
         p_screenshot_url: uploadedScreenshotPath || undefined,
         p_reference_number: params.referenceNumber?.trim() || undefined,
         p_notes: params.notes?.trim() || undefined,
-      });
+      };
+      if (params.verification) {
+        if (params.verification.screenshot_sha256) {
+          rpcPayload.p_screenshot_sha256 = params.verification.screenshot_sha256;
+        }
+        if (params.verification.extracted) {
+          rpcPayload.p_ai_extracted_data = params.verification.extracted;
+        }
+        if (params.verification.verification_status) {
+          rpcPayload.p_verification_status = params.verification.verification_status;
+        }
+        if (params.verification.warnings.length > 0) {
+          rpcPayload.p_verification_warnings = params.verification.warnings;
+        }
+      }
+
+      const { data, error } = await supabase.rpc(
+        'submit_student_payment_proof',
+        rpcPayload
+      );
       recordRoundTrip(traceLabel, 1);
 
       if (error) throw error;

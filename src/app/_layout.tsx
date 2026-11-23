@@ -157,6 +157,9 @@ function RootNavigationLayout() {
       <Stack.Screen name="resident-announcements" />
       <Stack.Screen name="resident-notifications" />
       <Stack.Screen name="dev-monitor" />
+      <Stack.Screen name="join-pg" />
+      <Stack.Screen name="pending-approval" />
+      <Stack.Screen name="owner-join-requests" />
     </Stack>
   );
 }

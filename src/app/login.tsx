@@ -329,6 +329,37 @@ export default function LoginScreen() {
             )}
           </View>
 
+          {/* Self-Onboarding CTA for New Residents */}
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Join a PG with Invite Code"
+            style={({ pressed }) => [
+              {
+                marginTop: 14,
+                backgroundColor: '#0F172A',
+                borderRadius: 14,
+                paddingVertical: 13,
+                paddingHorizontal: 16,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              },
+              pressed && { opacity: 0.85 },
+            ]}
+            onPress={() => router.push('/join-pg')}>
+            <View style={{ flex: 1 }}>
+              <Text style={{ fontSize: 14, fontWeight: '700', color: '#FFFFFF' }}>
+                New to a PG? Join with Invite Code
+              </Text>
+              <Text style={{ fontSize: 12, color: '#94A3B8', marginTop: 1 }}>
+                Enter your 6-character PG code to self-register
+              </Text>
+            </View>
+            <Text style={{ fontSize: 16, fontWeight: '800', color: '#38BDF8' }}>
+              ›
+            </Text>
+          </Pressable>
+
           {/* Footer Note */}
           <View style={styles.footer}>
             <Text style={styles.footerText}>

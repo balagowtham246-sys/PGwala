@@ -21,11 +21,15 @@ import {
   ChevronRight,
   MessageCircle,
   Phone,
+  QrCode,
   Search,
   SlidersHorizontal,
+  UserCheck,
   Users,
   X,
 } from 'lucide-react-native';
+
+import { InviteQrModal } from '@/components/residents/InviteQrModal';
 
 import {
   EmptyState,
@@ -189,6 +193,7 @@ export default function ResidentsDirectoryScreen() {
   const [genderFilter, setGenderFilter] = useState<GenderFilter>('all');
   const [roomFilter, setRoomFilter] = useState<string>('all');
   const [filterSheetVisible, setFilterSheetVisible] = useState(false);
+  const [inviteQrVisible, setInviteQrVisible] = useState(false);
 
   const directoryQuery = useResidentsDirectoryQuery(selectedPropertyId);
   const residents = useMemo(
@@ -443,16 +448,40 @@ export default function ResidentsDirectoryScreen() {
         subtitle={selectedProperty?.name}
         showBack
         rightAction={
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="Add resident"
-            style={({ pressed }) => [
-              styles.headerAddBtn,
-              pressed && styles.pressedFade,
-            ]}
-            onPress={() => router.push('/add-resident')}>
-            <Text style={styles.headerAddBtnText}>+ Add</Text>
-          </Pressable>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Join Requests"
+              style={({ pressed }) => [
+                styles.headerAddBtn,
+                { backgroundColor: '#F1F5F9', paddingHorizontal: 9 },
+                pressed && styles.pressedFade,
+              ]}
+              onPress={() => router.push('/owner-join-requests')}>
+              <UserCheck size={14} color={OwnerTheme.colors.textPrimary} />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="PG Invite QR Code"
+              style={({ pressed }) => [
+                styles.headerAddBtn,
+                { backgroundColor: '#0F172A', paddingHorizontal: 10 },
+                pressed && styles.pressedFade,
+              ]}
+              onPress={() => setInviteQrVisible(true)}>
+              <QrCode size={14} color="#38BDF8" />
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Add resident"
+              style={({ pressed }) => [
+                styles.headerAddBtn,
+                pressed && styles.pressedFade,
+              ]}
+              onPress={() => router.push('/add-resident')}>
+              <Text style={styles.headerAddBtnText}>+ Add</Text>
+            </Pressable>
+          </View>
         }
       />
 
@@ -921,6 +950,13 @@ export default function ResidentsDirectoryScreen() {
           </View>
         </View>
       </Modal>
+
+      <InviteQrModal
+        visible={inviteQrVisible}
+        propertyId={selectedPropertyId}
+        propertyName={selectedProperty?.name || 'My PG'}
+        onClose={() => setInviteQrVisible(false)}
+      />
     </SafeAreaView>
   );
 }

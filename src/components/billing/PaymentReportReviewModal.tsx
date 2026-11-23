@@ -12,12 +12,13 @@ import {
   View,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { X } from 'lucide-react-native';
+import { AlertTriangle, CheckCircle2, ShieldCheck, X } from 'lucide-react-native';
 import { OwnerTheme } from '@/constants/theme';
 import {
   formatPaiseToRupees,
   PRESET_REJECTION_REASONS,
 } from '@/lib/billing-utils';
+import { formatExtractedUpiSummary } from '@/lib/upi-verification';
 import {
   PaymentMethod,
   ReviewPaymentItem,
@@ -123,6 +124,55 @@ export function PaymentReportReviewModal({
                   <View style={styles.detailRow}>
                     <Text style={styles.detailLabel}>Resident Note</Text>
                     <Text style={styles.detailValue}>{item.report.notes}</Text>
+                  </View>
+                ) : null}
+
+                {/* AI Verification Shield Card */}
+                {item.report.claimed_method === 'upi' &&
+                item.report.verification_status === 'verified_match' ? (
+                  <View style={styles.aiShieldVerified}>
+                    <CheckCircle2 size={18} color="#15803D" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.aiShieldVerifiedTitle}>
+                        AI Verified Match
+                      </Text>
+                      {formatExtractedUpiSummary(item.report.ai_extracted_data) ? (
+                        <Text style={styles.aiShieldVerifiedSub}>
+                          {formatExtractedUpiSummary(item.report.ai_extracted_data)}
+                        </Text>
+                      ) : (
+                        <Text style={styles.aiShieldVerifiedSub}>
+                          Amount, status, and unique 12-digit UTR verified
+                        </Text>
+                      )}
+                    </View>
+                  </View>
+                ) : item.report.claimed_method === 'upi' &&
+                  item.report.verification_status === 'warning' ? (
+                  <View style={styles.aiShieldWarning}>
+                    <AlertTriangle size={18} color="#B45309" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.aiShieldWarningTitle}>
+                        Review Needed — Discrepancy Flagged
+                      </Text>
+                      {formatExtractedUpiSummary(item.report.ai_extracted_data) ? (
+                        <Text style={styles.aiShieldWarningMeta}>
+                          Extracted: {formatExtractedUpiSummary(item.report.ai_extracted_data)}
+                        </Text>
+                      ) : null}
+                      {(item.report.verification_warnings ?? []).map((warning, idx) => (
+                        <Text key={idx} style={styles.aiShieldWarningSub}>
+                          • {warning}
+                        </Text>
+                      ))}
+                    </View>
+                  </View>
+                ) : item.report.claimed_method === 'upi' ? (
+                  <View style={styles.aiShieldManual}>
+                    <ShieldCheck size={16} color="#64748B" />
+                    <Text style={styles.aiShieldManualText}>
+                      Manual verification — confirm amount &amp; UTR in screenshot below
+                    </Text>
                   </View>
                 ) : null}
 
@@ -537,5 +587,72 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 13,
     fontWeight: '700',
+  },
+  aiShieldVerified: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#F0FDF4',
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 10,
+    marginTop: 10,
+  },
+  aiShieldVerifiedTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#15803D',
+  },
+  aiShieldVerifiedSub: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#166534',
+    marginTop: 2,
+  },
+  aiShieldWarning: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: '#FFFBEB',
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 10,
+    marginTop: 10,
+  },
+  aiShieldWarningTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#B45309',
+  },
+  aiShieldWarningMeta: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#92400E',
+    marginTop: 2,
+  },
+  aiShieldWarningSub: {
+    fontSize: 11,
+    color: '#92400E',
+    marginTop: 2,
+    lineHeight: 15,
+  },
+  aiShieldManual: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: OwnerTheme.radius.md,
+    padding: 9,
+    marginTop: 10,
+  },
+  aiShieldManualText: {
+    flex: 1,
+    fontSize: 11,
+    color: '#64748B',
+    fontWeight: '600',
   },
 });

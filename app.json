@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "pgwala",
+    "name": "PGwala",
     "slug": "pgwala",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -24,7 +24,10 @@
         "backgroundColor": "#2546F0",
         "foregroundImage": "./assets/images/android-icon-foreground.png"
       },
-      "softwareKeyboardLayoutMode": "resize"
+      "softwareKeyboardLayoutMode": "resize",
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "output": "static",
@@ -65,6 +68,22 @@
         "expo-notifications",
         {
           "color": "#0284C7"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "buildArchs": [
+              "arm64-v8a"
+            ],
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "enablePngCrunchInReleaseBuilds": true,
+            "useLegacyPackaging": true,
+            "enableBundleCompression": true,
+            "gifEnabled": false
+          }
         }
       ]
     ],

@@ -1,10 +1,11 @@
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Href, router, useFocusEffect } from 'expo-router';
 import {
   Bell,
   Building2,
   ChevronDown,
   User,
+  UserCheck,
   Utensils,
 } from 'lucide-react-native';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -49,6 +50,7 @@ import {
   OwnerFoodMenuRecord,
   toLocalIsoDate,
 } from '@/services/dashboard.service';
+import { fetchPendingJoinRequestsCount } from '@/services/join-requests.service';
 
 export type { DashboardWmUnit, MealType, OwnerFoodMenuRecord };
 
@@ -272,11 +274,20 @@ export default function OwnerDashboard() {
     qc,
   ]);
 
+  const pendingJoinQuery = useQuery({
+    queryKey: ['join-requests-pending-count', selectedPropertyId ?? ''],
+    enabled: Boolean(selectedPropertyId && profileRole === 'owner'),
+    staleTime: 30_000,
+    queryFn: () => fetchPendingJoinRequestsCount(selectedPropertyId!),
+  });
+  const pendingJoinCount = pendingJoinQuery.data ?? 0;
+
   const handleRefresh = () => {
     setManualRefreshing(true);
     void Promise.all([
       loadDashboardData(),
       refreshUnreadInboxCount(true),
+      pendingJoinQuery.refetch(),
     ]).finally(() => {
       setManualRefreshing(false);
     });
@@ -442,6 +453,48 @@ export default function OwnerDashboard() {
               )}
               <Text style={styles.menuManageText}>Manage ›</Text>
             </Pressable>
+
+            {pendingJoinCount > 0 && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`${pendingJoinCount} pending resident join requests`}
+                style={({ pressed }) => [
+                  {
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 10,
+                    backgroundColor: '#FFFBEB',
+                    borderWidth: 1,
+                    borderColor: '#FDE68A',
+                    borderRadius: 14,
+                    paddingHorizontal: 14,
+                    paddingVertical: 11,
+                    marginBottom: 10,
+                  },
+                  pressed && { opacity: 0.8 },
+                ]}
+                onPress={() => router.push('/owner-join-requests')}>
+                <UserCheck size={16} color="#B45309" />
+                <Text
+                  style={{
+                    flex: 1,
+                    fontSize: 13,
+                    fontWeight: '700',
+                    color: '#92400E',
+                  }}>
+                  {pendingJoinCount} new resident join request
+                  {pendingJoinCount === 1 ? '' : 's'} waiting
+                </Text>
+                <Text
+                  style={{
+                    fontSize: 12,
+                    fontWeight: '800',
+                    color: '#B45309',
+                  }}>
+                  Review ›
+                </Text>
+              </Pressable>
+            )}
 
             {/* Recent Gate Movements */}
             <RecentActivitySection loading={loading} activities={recentActivities} />

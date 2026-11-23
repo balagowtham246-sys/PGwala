@@ -1,3 +1,16 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+import {
+  createDevTask,
+  cycleDevTaskStatus,
+  DEV_TASKS_STORAGE_KEY,
+  exportDevTasksToMarkdown,
+  isDeveloperAccessAllowed,
+  loadDevTasks,
+  maskSupabaseUrl,
+  saveDevTasks,
+} from '@/lib/dev-tasks';
+
 const mockStore = new Map<string, string>();
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -15,19 +28,6 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
     }),
   },
 }));
-
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
-import {
-  createDevTask,
-  cycleDevTaskStatus,
-  DEV_TASKS_STORAGE_KEY,
-  exportDevTasksToMarkdown,
-  isDeveloperAccessAllowed,
-  loadDevTasks,
-  maskSupabaseUrl,
-  saveDevTasks,
-} from '@/lib/dev-tasks';
 
 describe('dev-tasks store and helpers', () => {
   beforeEach(async () => {
