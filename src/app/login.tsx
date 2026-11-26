@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
+  Linking,
   Platform,
   Pressable,
   ScrollView,
@@ -187,8 +188,22 @@ export default function LoginScreen() {
   const handleForgotPassword = () => {
     Alert.alert(
       'Reset Password',
-      'Please contact your PG owner or management to reset your password.',
-      [{ text: 'OK' }]
+      '• Residents & Wardens: Ask your PG Owner to open your profile and tap "Reset Password" — they can send your new password on WhatsApp in 5 seconds.\n\n• PG Owners: Email admin.pgwala@gmail.com to get an instant reset.',
+      [
+        {
+          text: 'Email Admin',
+          onPress: () => {
+            const subject = encodeURIComponent('PGwala Owner Password Reset');
+            const body = encodeURIComponent(
+              `Please reset my PGwala Owner password.\nRegistered Email: ${email.trim() || 'N/A'}\n`
+            );
+            void Linking.openURL(
+              `mailto:admin.pgwala@gmail.com?subject=${subject}&body=${body}`
+            ).catch(() => {});
+          },
+        },
+        { text: 'OK', style: 'cancel' },
+      ]
     );
   };
 

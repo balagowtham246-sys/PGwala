@@ -4,17 +4,18 @@ import { Href, router } from 'expo-router';
 import {
   Building2,
   ChevronRight,
-  Disc3,
   LogIn,
   LogOut,
   Megaphone,
   QrCode,
+  Receipt,
   Users,
   Wrench,
 } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { useResidentTabs } from '@/context/resident-tabs-context';
+import { requestBillingMode } from '@/lib/billing-nav';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
 import type { OwnerDashboardStats } from '@/services/dashboard.service';
 
@@ -42,6 +43,18 @@ export function OwnerMetricsGrid({ stats, totalBeds = 0 }: OwnerMetricsGridProps
       navigateToTab('bill');
     } else {
       router.push('/billing-management');
+    }
+  };
+
+  const goExpenses = () => {
+    requestBillingMode('EXPENSES');
+    if (isInsidePager) {
+      navigateToTab('bill');
+    } else {
+      router.push({
+        pathname: '/billing-management',
+        params: { mode: 'EXPENSES' },
+      } as Href);
     }
   };
 
@@ -188,14 +201,14 @@ export function OwnerMetricsGrid({ stats, totalBeds = 0 }: OwnerMetricsGridProps
 
         <Pressable
           accessibilityRole="button"
-          accessibilityLabel="Manage washing machines and live status"
+          accessibilityLabel="Open monthly expenses and net profit"
           style={({ pressed }) => [styles.dockItem, pressed && styles.cardPressed]}
-          onPress={() => router.push('/owner-settings' as Href)}>
+          onPress={goExpenses}>
           <View style={[styles.dockIconWrap, { backgroundColor: '#FEF3C7' }]}>
-            <Disc3 size={19} color="#D97706" />
+            <Receipt size={19} color="#D97706" />
           </View>
           <Text style={styles.dockLabel} numberOfLines={1}>
-            Machines
+            Expenses
           </Text>
         </Pressable>
       </View>

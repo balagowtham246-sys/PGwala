@@ -12,6 +12,7 @@ import {
 import { router } from 'expo-router';
 import { Building2, Check, Clock, Disc3, Plus, User, X } from 'lucide-react-native';
 
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerSharedStyles } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { PropertyItem } from '@/context/property-context';
@@ -63,26 +64,13 @@ export function PropertySwitcherModal({
   onClose: () => void;
 }) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalOverlayCentered}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Close switch property modal"
-          style={StyleSheet.absoluteFill}
-          onPress={onClose}
-        />
-        <View style={styles.switcherModalCard}>
-          <View style={styles.switcherModalHeader}>
-            <Text style={styles.switcherModalTitle}>Switch PG Property</Text>
-            <Pressable hitSlop={8} onPress={onClose}>
-              <X size={20} color={OwnerTheme.colors.textSecondary} />
-            </Pressable>
-          </View>
-          <Text style={styles.switcherModalSub}>
-            Select which accommodation to view and manage:
-          </Text>
-
-          <ScrollView style={{ maxHeight: 260 }}>
+    <BottomSheetModal
+      visible={visible}
+      onClose={onClose}
+      title="Switch PG Property"
+      subtitle="Select which accommodation to view and manage"
+      maxHeight="80%">
+          <ScrollView style={{ maxHeight: 280 }}>
             {properties.map((prop) => {
               const isSelected = prop.id === selectedPropertyId;
               const occupied =
@@ -162,9 +150,7 @@ export function PropertySwitcherModal({
             <Plus size={16} color={OwnerTheme.colors.primary} />
             <Text style={styles.addPropertyBtnText}>Add Another PG Property</Text>
           </Pressable>
-        </View>
-      </View>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 
@@ -188,16 +174,11 @@ export function AddPropertyModal({
   onClose: () => void;
 }) {
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={styles.modalOverlayCentered}>
-        <View style={styles.switcherModalCard}>
-          <View style={styles.switcherModalHeader}>
-            <Text style={styles.switcherModalTitle}>Add New PG Property</Text>
-            <Pressable hitSlop={8} onPress={onClose}>
-              <X size={20} color={OwnerTheme.colors.textSecondary} />
-            </Pressable>
-          </View>
-
+    <BottomSheetModal
+      visible={visible}
+      onClose={onClose}
+      title="Add New PG Property"
+      disabled={creating}>
           <Text style={[OwnerSharedStyles.inputLabel, styles.fieldSpacing]}>PG Name *</Text>
           <TextInput
             style={[OwnerSharedStyles.textInput, styles.inputSpacing]}
@@ -233,9 +214,7 @@ export function AddPropertyModal({
               )}
             </Pressable>
           </View>
-        </View>
-      </View>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 

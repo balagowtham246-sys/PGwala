@@ -19,6 +19,7 @@
     },
     "android": {
       "package": "com.pgwala.app",
+      "googleServicesFile": "./google-services.json",
       "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#2546F0",

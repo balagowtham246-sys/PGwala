@@ -1,10 +1,8 @@
 import React from 'react';
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import {
   ActivityIndicator,
   Image,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,7 +10,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { Camera, X } from 'lucide-react-native';
+import { Camera } from 'lucide-react-native';
 import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
 import { normalizeUpiUtr } from '@/lib/upi-verification';
@@ -72,24 +70,12 @@ export function PaymentProofModal({
   const submitDisabled = submitting || (isUpiMethod && !normalizedUtr);
 
   return (
-    <Modal
+    <BottomSheetModal
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={() => {
-        if (!submitting) onClose();
-      }}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.modalOverlay}>
-        <View style={styles.modalCard}>
-          <View style={styles.modalHeader}>
-            <Text style={styles.modalTitle}>Send Payment Proof</Text>
-            <Pressable hitSlop={8} onPress={onClose}>
-              <X size={20} color="#64748B" />
-            </Pressable>
-          </View>
-
+      onClose={onClose}
+      title="Send Payment Proof"
+      disabled={submitting}
+      maxHeight="90%">
           <ScrollView
             style={{ maxHeight: 440 }}
             showsVerticalScrollIndicator={false}>
@@ -298,9 +284,7 @@ export function PaymentProofModal({
               <Text style={styles.cancelModalBtnText}>Cancel</Text>
             </Pressable>
           </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 

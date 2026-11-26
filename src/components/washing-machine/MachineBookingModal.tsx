@@ -1,15 +1,14 @@
 import React from 'react';
 import {
   ActivityIndicator,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
-import { Disc3, X } from 'lucide-react-native';
 
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
 import {
   WashingMachineRequestStatus,
@@ -88,38 +87,17 @@ export function MachineBookingModal({
   useModalBackHandler(visible, onClose, isBusy);
 
   return (
-    <Modal
+    <BottomSheetModal
       visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={() => {
-        if (!isBusy) onClose();
-      }}>
-      <View style={styles.modalOverlay}>
-        <View style={styles.modalContent}>
-          {/* Header */}
-          <View style={styles.modalHeader}>
-            <View style={{ flex: 1 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Disc3 size={18} color="#0284C7" />
-                <Text style={styles.modalTitle}>Washing Machine Units</Text>
-              </View>
-              <Text style={styles.modalSubtitle} numberOfLines={2}>
-                {loading
-                  ? 'Loading units...'
-                  : `${activeMachines.length} units • ${freeCount} free, ${inUseCount} in use · Sessions auto-free after 60m`}
-              </Text>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close washing machine modal"
-              hitSlop={8}
-              onPress={onClose}
-              style={styles.modalCloseBtn}>
-              <X size={20} color="#64748B" />
-            </Pressable>
-          </View>
-
+      onClose={onClose}
+      title="Washing Machine Units"
+      subtitle={
+        loading
+          ? 'Loading units...'
+          : `${activeMachines.length} units • ${freeCount} free, ${inUseCount} in use · Auto-free after 60m`
+      }
+      disabled={isBusy}
+      maxHeight="88%">
           {/* Un-enabled Resident Notice */}
           {userRole === 'student' && !residentEnabled && (
             <View style={styles.modalGatingBanner}>
@@ -259,9 +237,7 @@ export function MachineBookingModal({
               <Text style={styles.modalDismissBtnText}>Close</Text>
             </Pressable>
           </View>
-        </View>
-      </View>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 

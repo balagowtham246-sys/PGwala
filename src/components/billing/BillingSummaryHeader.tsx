@@ -54,12 +54,13 @@ export function BillingSummaryHeader({
 
   return (
     <>
-      {/* Compact Segmented Control: Rent vs Electricity vs Combined */}
+      {/* Compact Segmented Control: Rent vs EB vs Combined vs Expenses */}
       <SegmentedFilter
         options={[
           { key: 'RENT', label: 'Rent' },
-          { key: 'EB', label: 'Electricity' },
+          { key: 'EB', label: 'EB' },
           { key: 'COMBINED', label: 'Combined' },
+          { key: 'EXPENSES', label: 'Expenses' },
         ]}
         activeKey={billingMode}
         onSelect={(key) => onSelectBillingMode(key as BillingMode)}
@@ -95,8 +96,10 @@ export function BillingSummaryHeader({
         </Pressable>
       </View>
 
-      {/* Single Clean Billing Summary Strip */}
-      <View style={styles.summaryStripCard}>
+      {billingMode !== 'EXPENSES' && (
+        <>
+          {/* Single Clean Billing Summary Strip */}
+          <View style={styles.summaryStripCard}>
         <View style={styles.summaryTopRow}>
           <View>
             <Text style={styles.summaryLabel}>Total Billed</Text>
@@ -209,6 +212,8 @@ export function BillingSummaryHeader({
         onSelect={(key) => onSelectFilterTab(key as BillingFilterTab)}
         style={{ marginVertical: 12 }}
       />
+        </>
+      )}
     </>
   );
 }

@@ -1,7 +1,10 @@
 import {
+  buildGateCheckInDeepLink,
+  buildGatePosterShareMessage,
   buildInviteWhatsAppMessage,
   buildJoinDeepLink,
   buildQrSvgPath,
+  buildVacancyShareMessage,
   formatInviteCodeDisplay,
   isValidInviteCodeFormat,
   normalizeInviteCode,
@@ -42,5 +45,31 @@ describe('invite-utils', () => {
     expect(size).toBeGreaterThanOrEqual(21);
     expect(pathData.startsWith('M')).toBe(true);
     expect(pathData.length).toBeGreaterThan(200);
+  });
+
+  it('builds Gate Check-In QR deep link and share message', () => {
+    const link = buildGateCheckInDeepLink('prop-123');
+    expect(link).toBe('pgwala://resident-gate-history?propertyId=prop-123&source=gate_qr');
+    const msg = buildGatePosterShareMessage({
+      propertyName: 'Sri Lakshmi PG',
+      propertyId: 'prop-123',
+    });
+    expect(msg).toContain('Sri Lakshmi PG');
+    expect(msg).toContain(link);
+  });
+
+  it('builds WhatsApp-ready vacancy share message with room highlights', () => {
+    const msg = buildVacancyShareMessage({
+      propertyName: 'Sri Lakshmi PG',
+      address: 'Coimbatore',
+      genderLabel: 'Boys',
+      freeBedsCount: 3,
+      vacatingBedsCount: 1,
+      roomHighlights: ['Room 101 (2 free)', 'Room 102 (1 free)'],
+    });
+    expect(msg).toContain('Sri Lakshmi PG (Boys)');
+    expect(msg).toContain('3 free beds ready now');
+    expect(msg).toContain('1 vacating soon');
+    expect(msg).toContain('Room 101 (2 free)');
   });
 });

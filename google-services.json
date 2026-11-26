@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "143407331069",
+    "project_id": "pgwala-d7a59",
+    "storage_bucket": "pgwala-d7a59.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:143407331069:android:bd0b1cf613640762fe3094",
+        "android_client_info": {
+          "package_name": "com.pgwala.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyATU-jj7YYDJ65TVeYYm6WLRT85pLyRO84"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

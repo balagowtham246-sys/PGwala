@@ -1,17 +1,15 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
-import { BedDouble, Check, Pencil, Plus, X } from 'lucide-react-native';
+import { BedDouble, Check, Pencil, Plus } from 'lucide-react-native';
 
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerTheme } from '@/constants/theme';
 import {
   formatPropertyGenderLabel,
@@ -326,32 +324,15 @@ export function RoomBedPicker({
         </View>
       )}
 
-      <Modal
+      <BottomSheetModal
         visible={createVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setCreateVisible(false)}>
-        <KeyboardAvoidingView
-          style={styles.modalOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            onPress={() => setCreateVisible(false)}
-          />
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
-                {editingRoomTarget
-                  ? `Edit ${formatRoomLabel(editingRoomTarget.roomNumber)}`
-                  : 'Create Room'}
-              </Text>
-              <Pressable
-                hitSlop={10}
-                onPress={() => setCreateVisible(false)}
-                style={styles.modalCloseBtn}>
-                <X size={18} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            </View>
+        onClose={() => setCreateVisible(false)}
+        title={
+          editingRoomTarget
+            ? `Edit ${formatRoomLabel(editingRoomTarget.roomNumber)}`
+            : 'Create Room'
+        }
+        disabled={creatingRoom}>
 
             <Text style={styles.inputLabel}>Room Number / Name *</Text>
             <TextInput
@@ -430,9 +411,7 @@ export function RoomBedPicker({
                   : 'Create & Select Bed 1'}
               </Text>
             </Pressable>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      </BottomSheetModal>
     </View>
   );
 }

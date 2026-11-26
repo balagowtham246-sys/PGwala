@@ -1,14 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Linking,
+  Modal,
   Platform,
   Pressable,
   RefreshControl,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -17,11 +21,17 @@ import { Href, router, useLocalSearchParams } from 'expo-router';
 import {
   Eye,
   EyeOff,
+  KeyRound,
   MessageCircle,
   Phone,
+  RefreshCw,
+  Share2,
   Trash2,
+  X,
 } from 'lucide-react-native';
 
+import { invokeEdgeFunction } from '@/lib/edge-functions';
+import { extractErrorMessage } from '@/lib/error-utils';
 import { supabase } from '@/lib/supabase';
 
 import {
@@ -86,6 +96,28 @@ export default function ResidentProfileScreen() {
   // Record Payment modal state
   const [paymentModalVisible, setPaymentModalVisible] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash');
+  const [resetPwdModalVisible, setResetPwdModalVisible] = useState(false);
+  const [resetPwdDraft, setResetPwdDraft] = useState('');
+  const [resettingPwd, setResettingPwd] = useState(false);
+  const [resetPwdResult, setResetPwdResult] = useState<{
+    email: string;
+    password: string;
+  } | null>(null);
+
+  const generateResidentTempPassword = useCallback(() => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+    let out = 'PG@';
+    for (let i = 0; i < 6; i += 1) {
+      out += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return out;
+  }, []);
+
+  const handleOpenResetPassword = useCallback(() => {
+    setResetPwdDraft(generateResidentTempPassword());
+    setResetPwdResult(null);
+    setResetPwdModalVisible(true);
+  }, [generateResidentTempPassword]);
 
   // Checkout modal & single-modal state machine (prevents nested Modal issues on iOS)
   const [checkoutModalMode, setCheckoutModalMode] = useState<
@@ -103,6 +135,43 @@ export default function ResidentProfileScreen() {
   const checkoutMutation = useCheckoutResidentMutation();
 
   const profile = residentId ? profileQuery.data ?? null : null;
+
+  const handleConfirmResetPassword = useCallback(async () => {
+    if (!profile || resettingPwd) return;
+    const cleanPass = resetPwdDraft.trim();
+    if (cleanPass.length < 6) {
+      Alert.alert('Weak Password', 'Password must be at least 6 characters.');
+      return;
+    }
+    setResettingPwd(true);
+    try {
+      const res = await invokeEdgeFunction<{
+        success?: boolean;
+        error?: string;
+        target_email?: string;
+      }>('reset-user-password', {
+        target_type: 'resident',
+        resident_id: profile.id,
+        new_password: cleanPass,
+      });
+      if (!res?.success) {
+        throw new Error(res?.error || 'Could not reset password.');
+      }
+      setResetPwdResult({
+        email: res.target_email || '',
+        password: cleanPass,
+      });
+      triggerSuccessHaptic();
+      showToast(`Password reset for ${profile.fullName}`);
+    } catch (err: unknown) {
+      Alert.alert(
+        'Reset Failed',
+        extractErrorMessage(err, 'Could not reset resident password.')
+      );
+    } finally {
+      setResettingPwd(false);
+    }
+  }, [profile, resettingPwd, resetPwdDraft, showToast]);
   const loading = Boolean(residentId) && profileQuery.isPending && !profile;
   const refreshing = manualRefreshing;
   const errorMessage = !residentId
@@ -580,6 +649,33 @@ export default function ResidentProfileScreen() {
             onOpenCheckoutModal={handleOpenCheckoutModal}
           />
 
+          {profile.profileId ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Reset app password for ${profile.fullName}`}
+              style={({ pressed }) => [
+                {
+                  marginTop: 4,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 8,
+                  paddingVertical: 12,
+                  borderRadius: 12,
+                  backgroundColor: '#E0F2FE',
+                  borderWidth: 1,
+                  borderColor: '#BAE6FD',
+                },
+                pressed && { opacity: 0.78 },
+              ]}
+              onPress={handleOpenResetPassword}>
+              <KeyRound size={15} color={OwnerTheme.colors.primary} />
+              <Text style={{ fontSize: 13, fontWeight: '700', color: OwnerTheme.colors.primary }}>
+                Reset App Password
+              </Text>
+            </Pressable>
+          ) : null}
+
           <Pressable
             accessibilityRole="button"
             accessibilityLabel={`Delete ${profile.fullName} permanently`}
@@ -680,6 +776,178 @@ export default function ResidentProfileScreen() {
         onBackToConfirm={() => setCheckoutModalMode('confirm')}
         onClose={() => setCheckoutModalMode('closed')}
       />
+
+      {/* Reset Resident App Password Modal */}
+      <Modal
+        visible={resetPwdModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!resettingPwd) setResetPwdModalVisible(false);
+        }}>
+        <KeyboardAvoidingView
+          style={{
+            flex: 1,
+            backgroundColor: 'rgba(15, 23, 42, 0.55)',
+            justifyContent: 'center',
+            padding: 20,
+          }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <View
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: 18,
+              padding: 18,
+              gap: 12,
+            }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <Text style={{ fontSize: 17, fontWeight: '800', color: '#0F172A' }}>
+                Reset Password
+              </Text>
+              <Pressable
+                hitSlop={8}
+                disabled={resettingPwd}
+                onPress={() => setResetPwdModalVisible(false)}>
+                <X size={20} color="#64748B" />
+              </Pressable>
+            </View>
+
+            <Text style={{ fontSize: 12, color: '#64748B' }}>
+              {profile.fullName} · Room {profile.roomNumber}
+            </Text>
+
+            {resetPwdResult ? (
+              <>
+                <View
+                  style={{
+                    backgroundColor: '#F8FAFC',
+                    borderRadius: 12,
+                    borderWidth: 1,
+                    borderColor: '#E2E8F0',
+                    padding: 12,
+                    gap: 4,
+                  }}>
+                  {resetPwdResult.email ? (
+                    <Text style={{ fontSize: 12, color: '#475569' }} selectable>
+                      Email: {resetPwdResult.email}
+                    </Text>
+                  ) : null}
+                  <Text style={{ fontSize: 15, fontWeight: '800', color: '#0F172A' }} selectable>
+                    New Password: {resetPwdResult.password}
+                  </Text>
+                </View>
+
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  {hasPhone ? (
+                    <Pressable
+                      style={{
+                        flex: 1,
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: 6,
+                        paddingVertical: 11,
+                        borderRadius: 10,
+                        backgroundColor: '#16A34A',
+                      }}
+                      onPress={() => {
+                        const msg = `Hi ${profile.fullName}, your PGwala password has been reset.\n${
+                          resetPwdResult.email ? `Email: ${resetPwdResult.email}\n` : ''
+                        }New Password: ${resetPwdResult.password}`;
+                        const url = buildWhatsAppReminderUrl(profile.phoneNumber, msg);
+                        if (url) void Linking.openURL(url).catch(() => {});
+                      }}>
+                      <MessageCircle size={15} color="#FFFFFF" />
+                      <Text style={{ fontSize: 13, fontWeight: '700', color: '#FFFFFF' }}>
+                        WhatsApp
+                      </Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    style={{
+                      flex: 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 6,
+                      paddingVertical: 11,
+                      borderRadius: 10,
+                      backgroundColor: OwnerTheme.colors.primary,
+                    }}
+                    onPress={() =>
+                      void Share.share({
+                        title: 'PGwala Password Reset',
+                        message: `Hi ${profile.fullName}, your PGwala password has been reset.\n${
+                          resetPwdResult.email ? `Email: ${resetPwdResult.email}\n` : ''
+                        }New Password: ${resetPwdResult.password}`,
+                      })
+                    }>
+                    <Share2 size={15} color="#FFFFFF" />
+                    <Text style={{ fontSize: 13, fontWeight: '700', color: '#FFFFFF' }}>
+                      Share
+                    </Text>
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <>
+                <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
+                  <TextInput
+                    style={{
+                      flex: 1,
+                      borderWidth: 1,
+                      borderColor: '#CBD5E1',
+                      borderRadius: 10,
+                      paddingHorizontal: 12,
+                      paddingVertical: 10,
+                      fontSize: 15,
+                      fontWeight: '700',
+                      color: '#0F172A',
+                      backgroundColor: '#F8FAFC',
+                    }}
+                    value={resetPwdDraft}
+                    onChangeText={setResetPwdDraft}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!resettingPwd}
+                  />
+                  <Pressable
+                    style={{
+                      width: 42,
+                      height: 42,
+                      borderRadius: 10,
+                      backgroundColor: '#E0F2FE',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}
+                    onPress={() => setResetPwdDraft(generateResidentTempPassword())}>
+                    <RefreshCw size={16} color={OwnerTheme.colors.primary} />
+                  </Pressable>
+                </View>
+
+                <Pressable
+                  disabled={resettingPwd}
+                  style={{
+                    backgroundColor: OwnerTheme.colors.primary,
+                    borderRadius: 10,
+                    paddingVertical: 12,
+                    alignItems: 'center',
+                    opacity: resettingPwd ? 0.6 : 1,
+                  }}
+                  onPress={() => void handleConfirmResetPassword()}>
+                  {resettingPwd ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#FFFFFF' }}>
+                      Set New Password
+                    </Text>
+                  )}
+                </Pressable>
+              </>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }

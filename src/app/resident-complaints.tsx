@@ -12,10 +12,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
+import { FloatingActionPill } from '@/components/ui/floating-action-pill';
 import { OwnerHeader } from '@/components/ui/owner';
 import { router, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
-import { CheckCircle2 } from 'lucide-react-native';
+import { CheckCircle2, Plus } from 'lucide-react-native';
 
 import {
   ComplaintCategory,
@@ -505,21 +506,6 @@ export default function StudentComplaintsScreen() {
                 ]}
               />
 
-              {/* Action Bar */}
-              <View style={styles.actionBanner}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.actionBannerTitle}>Facing an issue in your room?</Text>
-                  <Text style={styles.actionBannerSub}>
-                    Report repairs or requests directly to your PG owner.
-                  </Text>
-                </View>
-                <Pressable
-                  style={styles.raiseBtn}
-                  onPress={() => setShowModal(true)}>
-                  <Text style={styles.raiseBtnText}>+ Raise Issue</Text>
-                </Pressable>
-              </View>
-
               {pendingOfflineCount > 0 && (
                 <View style={styles.offlineBanner}>
                   <Text style={styles.offlineBannerText}>
@@ -644,6 +630,15 @@ export default function StudentComplaintsScreen() {
         onClose={() => setFullImageUrl(null)}
       />
 
+      {Boolean(resident) && (
+        <FloatingActionPill
+          label="Raise Issue"
+          icon={Plus}
+          hasBottomNav
+          onPress={() => setShowModal(true)}
+        />
+      )}
+
       <RoleBottomNav activeTab="maintenance" roleOverride="student" />
     </SafeAreaView>
   );
@@ -657,7 +652,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: 40,
+    paddingBottom: 96,
   },
   loadingBox: {
     paddingVertical: 40,

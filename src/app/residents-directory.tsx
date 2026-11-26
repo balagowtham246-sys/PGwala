@@ -3,12 +3,12 @@ import {
   Alert,
   AppState,
   Linking,
-  Modal,
   Platform,
   Pressable,
   RefreshControl,
   ScrollView,
   SectionList,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -19,18 +19,29 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Href, router, useFocusEffect } from 'expo-router';
 import {
   ChevronRight,
+  LayoutGrid,
+  List,
   MessageCircle,
   Phone,
   QrCode,
   Search,
   SlidersHorizontal,
   UserCheck,
+  UserPlus,
   Users,
   X,
 } from 'lucide-react-native';
 
+import { BedMapView } from '@/components/residents/BedMapView';
+import {
+  FreeBedActionModal,
+  FreeBedTarget,
+  ReservedBedDetailModal,
+} from '@/components/residents/BedReservationModal';
 import { InviteQrModal } from '@/components/residents/InviteQrModal';
 
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
+import { FloatingActionPill } from '@/components/ui/floating-action-pill';
 import {
   EmptyState,
   ErrorState,
@@ -40,18 +51,28 @@ import {
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useProperty } from '@/context/property-context';
+import { useToast } from '@/context/toast-context';
+import {
+  useActiveBedReservationsQuery,
+  useCancelBedReservationMutation,
+  useCreateBedReservationMutation,
+  usePropertyRoomsQuery,
+} from '@/hooks/use-bed-reservations';
 import { useResidentsDirectoryQuery } from '@/hooks/use-residents';
 import {
   buildWhatsAppReminderUrl,
   formatPaiseToRupees,
 } from '@/lib/billing-utils';
 import { triggerSelectionHaptic } from '@/lib/haptics';
+import { buildVacancyShareMessage } from '@/lib/invite-utils';
 import { queryKeys } from '@/lib/query-keys';
 import {
+  formatPropertyGenderLabel,
   ResidentGender,
   sortRoomCodes,
   toSentenceCaseStatus,
 } from '@/lib/ux-utils';
+import { BedReservation } from '@/services/bed-reservations.service';
 import {
   ResidentDirectoryItem,
   subscribePropertyResidentsRealtime,
@@ -182,9 +203,14 @@ const ResidentDirectoryRow = memo(function ResidentDirectoryRow({
 
 export default function ResidentsDirectoryScreen() {
   const qc = useQueryClient();
+  const { showToast } = useToast();
   const { selectedProperty, selectedPropertyId, loadingProperties } = useProperty();
 
   const [manualRefreshing, setManualRefreshing] = useState(false);
+  const [viewMode, setViewMode] = useState<'map' | 'list'>('map');
+  const [freeBedTarget, setFreeBedTarget] = useState<FreeBedTarget | null>(null);
+  const [selectedReservation, setSelectedReservation] =
+    useState<BedReservation | null>(null);
 
   // Search & unified filter modal state
   const [searchQuery, setSearchQuery] = useState('');
@@ -196,14 +222,31 @@ export default function ResidentsDirectoryScreen() {
   const [inviteQrVisible, setInviteQrVisible] = useState(false);
 
   const directoryQuery = useResidentsDirectoryQuery(selectedPropertyId);
+  const roomsQuery = usePropertyRoomsQuery(
+    selectedPropertyId,
+    selectedProperty?.gender_type ?? undefined
+  );
+  const reservationsQuery = useActiveBedReservationsQuery(selectedPropertyId);
+  const createReservationMutation = useCreateBedReservationMutation();
+  const cancelReservationMutation = useCancelBedReservationMutation();
+
   const residents = useMemo(
     () => directoryQuery.data ?? [],
     [directoryQuery.data]
+  );
+  const rooms = useMemo(() => roomsQuery.data ?? [], [roomsQuery.data]);
+  const reservations = useMemo(
+    () => reservationsQuery.data ?? [],
+    [reservationsQuery.data]
   );
   const loading =
     Boolean(selectedPropertyId) &&
     directoryQuery.isPending &&
     !directoryQuery.data;
+  const mapLoading =
+    Boolean(selectedPropertyId) &&
+    (roomsQuery.isPending || directoryQuery.isPending) &&
+    !roomsQuery.data;
   const refreshing = manualRefreshing;
   const errorMessage = directoryQuery.isError
     ? directoryQuery.error.message
@@ -238,6 +281,12 @@ export default function ResidentsDirectoryScreen() {
         void qc.invalidateQueries({
           queryKey: queryKeys.residents.directory(selectedPropertyId),
         });
+        void qc.invalidateQueries({
+          queryKey: queryKeys.residents.rooms(selectedPropertyId),
+        });
+        void qc.invalidateQueries({
+          queryKey: queryKeys.residents.reservations(selectedPropertyId),
+        });
       }, 300);
     });
     return () => {
@@ -247,14 +296,20 @@ export default function ResidentsDirectoryScreen() {
   }, [selectedPropertyId, isScreenFocused, isAppActive, qc]);
 
   const refetchDirectory = directoryQuery.refetch;
+  const refetchRooms = roomsQuery.refetch;
+  const refetchReservations = reservationsQuery.refetch;
 
   const handleRefresh = useCallback(() => {
     if (!selectedPropertyId) return;
     setManualRefreshing(true);
-    void refetchDirectory().finally(() => {
+    void Promise.all([
+      refetchDirectory(),
+      refetchRooms(),
+      refetchReservations(),
+    ]).finally(() => {
       setManualRefreshing(false);
     });
-  }, [selectedPropertyId, refetchDirectory]);
+  }, [selectedPropertyId, refetchDirectory, refetchRooms, refetchReservations]);
 
   const availableRooms = useMemo(() => {
     const rooms = new Set<string>();
@@ -400,6 +455,113 @@ export default function ResidentsDirectoryScreen() {
     } as Href);
   }, []);
 
+  const handleOpenAddResidentForBed = useCallback(
+    (roomNumber: string, bedLabel: string) => {
+      router.push({
+        pathname: '/add-resident',
+        params: { roomNumber, bedLabel },
+      } as Href);
+    },
+    []
+  );
+
+  const handlePressFreeBed = useCallback((roomNumber: string, bedLabel: string) => {
+    setFreeBedTarget({ roomNumber, bedLabel });
+  }, []);
+
+  const handlePressReservedBed = useCallback((reservation: BedReservation) => {
+    setSelectedReservation(reservation);
+  }, []);
+
+  const handleReserveBed = useCallback(
+    async (input: {
+      roomNumber: string;
+      bedLabel: string;
+      prospectName: string;
+      phoneNumber: string;
+      expectedJoinDate: string;
+      tokenAdvancePaise: number;
+    }) => {
+      if (!selectedPropertyId) return;
+      await createReservationMutation.mutateAsync({
+        propertyId: selectedPropertyId,
+        ...input,
+      });
+      setFreeBedTarget(null);
+      showToast(
+        `Reserved Room ${input.roomNumber} · ${input.bedLabel} for ${input.prospectName}.`
+      );
+    },
+    [selectedPropertyId, createReservationMutation, showToast]
+  );
+
+  const handleConvertReservation = useCallback((reservation: BedReservation) => {
+    const depositRupees =
+      reservation.token_advance_paise > 0
+        ? String(Math.round(reservation.token_advance_paise / 100))
+        : '';
+    router.push({
+      pathname: '/add-resident',
+      params: {
+        roomNumber: reservation.room_number,
+        bedLabel: reservation.bed_label,
+        fullName: reservation.prospect_name,
+        phoneNumber: reservation.phone_number,
+        joiningDate: reservation.expected_join_date,
+        ...(depositRupees ? { depositAmount: depositRupees } : {}),
+        reservationId: reservation.id,
+      },
+    } as Href);
+  }, []);
+
+  const handleShareVacancy = useCallback(
+    (summary: {
+      freeBedsCount: number;
+      vacatingBedsCount: number;
+      roomHighlights: string[];
+    }) => {
+      const genderLabel = selectedProperty?.gender_type
+        ? formatPropertyGenderLabel(selectedProperty.gender_type)
+        : null;
+      const message = buildVacancyShareMessage({
+        propertyName: selectedProperty?.name || 'My PG',
+        address: selectedProperty?.address ?? null,
+        genderLabel,
+        freeBedsCount: summary.freeBedsCount,
+        vacatingBedsCount: summary.vacatingBedsCount,
+        roomHighlights: summary.roomHighlights,
+      });
+      void Share.share({
+        title: `Beds Available at ${selectedProperty?.name || 'My PG'}`,
+        message,
+      }).catch(() => {
+        Alert.alert('Share Unavailable', 'Could not open share sheet on this device.');
+      });
+    },
+    [selectedProperty]
+  );
+
+  const handleCancelReservation = useCallback(
+    async (reservation: BedReservation) => {
+      if (!selectedPropertyId) return;
+      try {
+        await cancelReservationMutation.mutateAsync({
+          reservationId: reservation.id,
+          propertyId: selectedPropertyId,
+        });
+        setSelectedReservation(null);
+        showToast(
+          `Cancelled reservation for Room ${reservation.room_number} · ${reservation.bed_label}.`
+        );
+      } catch (err: unknown) {
+        const msg =
+          err instanceof Error ? err.message : 'Could not cancel reservation.';
+        Alert.alert('Cancel Failed', msg);
+      }
+    },
+    [selectedPropertyId, cancelReservationMutation, showToast]
+  );
+
   const hasSearchOrFilter = searchQuery.trim().length > 0 || activeFilterCount > 0;
   const activeSections =
     loading && activeResidents.length === 0 ? [] : groupedRooms;
@@ -471,16 +633,6 @@ export default function ResidentsDirectoryScreen() {
               onPress={() => setInviteQrVisible(true)}>
               <QrCode size={14} color="#38BDF8" />
             </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Add resident"
-              style={({ pressed }) => [
-                styles.headerAddBtn,
-                pressed && styles.pressedFade,
-              ]}
-              onPress={() => router.push('/add-resident')}>
-              <Text style={styles.headerAddBtnText}>+ Add</Text>
-            </Pressable>
           </View>
         }
       />
@@ -546,13 +698,79 @@ export default function ResidentsDirectoryScreen() {
               </View>
             </View>
 
+            {/* Bed Map | List View Toggle */}
+            <View style={styles.viewToggleRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: viewMode === 'map' }}
+                style={[
+                  styles.viewToggleBtn,
+                  viewMode === 'map' && styles.viewToggleBtnActive,
+                ]}
+                onPress={() => {
+                  if (viewMode !== 'map') {
+                    triggerSelectionHaptic();
+                    setViewMode('map');
+                  }
+                }}>
+                <LayoutGrid
+                  size={14}
+                  color={
+                    viewMode === 'map'
+                      ? '#FFFFFF'
+                      : OwnerTheme.colors.textSecondary
+                  }
+                />
+                <Text
+                  style={[
+                    styles.viewToggleText,
+                    viewMode === 'map' && styles.viewToggleTextActive,
+                  ]}>
+                  Bed Map
+                </Text>
+              </Pressable>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ selected: viewMode === 'list' }}
+                style={[
+                  styles.viewToggleBtn,
+                  viewMode === 'list' && styles.viewToggleBtnActive,
+                ]}
+                onPress={() => {
+                  if (viewMode !== 'list') {
+                    triggerSelectionHaptic();
+                    setViewMode('list');
+                  }
+                }}>
+                <List
+                  size={14}
+                  color={
+                    viewMode === 'list'
+                      ? '#FFFFFF'
+                      : OwnerTheme.colors.textSecondary
+                  }
+                />
+                <Text
+                  style={[
+                    styles.viewToggleText,
+                    viewMode === 'list' && styles.viewToggleTextActive,
+                  ]}>
+                  List
+                </Text>
+              </Pressable>
+            </View>
+
             <View style={styles.searchBarWrap}>
               <Search size={16} color={OwnerTheme.colors.textMuted} />
               <TextInput
                 style={styles.searchInput}
                 value={searchQuery}
                 onChangeText={setSearchQuery}
-                placeholder="Search name, room, or phone..."
+                placeholder={
+                  viewMode === 'map'
+                    ? 'Search room, bed, resident, or phone...'
+                    : 'Search name, room, or phone...'
+                }
                 placeholderTextColor={OwnerTheme.colors.textMuted}
                 returnKeyType="search"
                 autoCorrect={false}
@@ -568,121 +786,125 @@ export default function ResidentsDirectoryScreen() {
               )}
             </View>
 
-            {/* 1-Tap Quick-Filter Chips */}
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.quickChipsRow}
-              keyboardShouldPersistTaps="handled">
-              {(
-                [
-                  {
-                    key: 'all',
-                    label: `All (${quickCounts.all})`,
-                    active: statusFilter === 'all' && duesFilter === 'all',
-                    onPress: () => {
-                      triggerSelectionHaptic();
-                      setStatusFilter('all');
-                      setDuesFilter('all');
-                    },
-                  },
-                  {
-                    key: 'unpaid',
-                    label: `Unpaid Dues (${quickCounts.unpaid})`,
-                    active: duesFilter === 'pending',
-                    onPress: () => {
-                      triggerSelectionHaptic();
-                      setDuesFilter((prev) => (prev === 'pending' ? 'all' : 'pending'));
-                    },
-                  },
-                  {
-                    key: 'outside',
-                    label: `Outside (${quickCounts.outside})`,
-                    active: statusFilter === 'OUT',
-                    onPress: () => {
-                      triggerSelectionHaptic();
-                      setStatusFilter((prev) => (prev === 'OUT' ? 'all' : 'OUT'));
-                    },
-                  },
-                  {
-                    key: 'inside',
-                    label: `Inside (${quickCounts.inside})`,
-                    active: statusFilter === 'IN',
-                    onPress: () => {
-                      triggerSelectionHaptic();
-                      setStatusFilter((prev) => (prev === 'IN' ? 'all' : 'IN'));
-                    },
-                  },
-                ] as const
-              ).map((chip) => (
-                <Pressable
-                  key={chip.key}
-                  accessibilityRole="button"
-                  accessibilityState={{ selected: chip.active }}
-                  style={[
-                    styles.quickChip,
-                    chip.active && styles.quickChipActive,
-                  ]}
-                  onPress={chip.onPress}>
-                  <Text
-                    style={[
-                      styles.quickChipText,
-                      chip.active && styles.quickChipTextActive,
-                    ]}>
-                    {chip.label}
+            {viewMode === 'list' && (
+              <>
+                {/* 1-Tap Quick-Filter Chips */}
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.quickChipsRow}
+                  keyboardShouldPersistTaps="handled">
+                  {(
+                    [
+                      {
+                        key: 'all',
+                        label: `All (${quickCounts.all})`,
+                        active: statusFilter === 'all' && duesFilter === 'all',
+                        onPress: () => {
+                          triggerSelectionHaptic();
+                          setStatusFilter('all');
+                          setDuesFilter('all');
+                        },
+                      },
+                      {
+                        key: 'unpaid',
+                        label: `Unpaid Dues (${quickCounts.unpaid})`,
+                        active: duesFilter === 'pending',
+                        onPress: () => {
+                          triggerSelectionHaptic();
+                          setDuesFilter((prev) => (prev === 'pending' ? 'all' : 'pending'));
+                        },
+                      },
+                      {
+                        key: 'outside',
+                        label: `Outside (${quickCounts.outside})`,
+                        active: statusFilter === 'OUT',
+                        onPress: () => {
+                          triggerSelectionHaptic();
+                          setStatusFilter((prev) => (prev === 'OUT' ? 'all' : 'OUT'));
+                        },
+                      },
+                      {
+                        key: 'inside',
+                        label: `Inside (${quickCounts.inside})`,
+                        active: statusFilter === 'IN',
+                        onPress: () => {
+                          triggerSelectionHaptic();
+                          setStatusFilter((prev) => (prev === 'IN' ? 'all' : 'IN'));
+                        },
+                      },
+                    ] as const
+                  ).map((chip) => (
+                    <Pressable
+                      key={chip.key}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: chip.active }}
+                      style={[
+                        styles.quickChip,
+                        chip.active && styles.quickChipActive,
+                      ]}
+                      onPress={chip.onPress}>
+                      <Text
+                        style={[
+                          styles.quickChipText,
+                          chip.active && styles.quickChipTextActive,
+                        ]}>
+                        {chip.label}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+
+                <View style={styles.filterToolbarRow}>
+                  <View style={styles.filterToolbarLeft}>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Open resident filters"
+                      style={[
+                        styles.filtersBtn,
+                        activeFilterCount > 0 && styles.filtersBtnActive,
+                      ]}
+                      onPress={() => setFilterSheetVisible(true)}>
+                      <SlidersHorizontal
+                        size={14}
+                        color={
+                          activeFilterCount > 0
+                            ? OwnerTheme.colors.primary
+                            : OwnerTheme.colors.textSecondary
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.filtersBtnText,
+                          activeFilterCount > 0 && styles.filtersBtnTextActive,
+                        ]}>
+                        Filters
+                      </Text>
+                      {activeFilterCount > 0 && (
+                        <View style={styles.filterCountBadge}>
+                          <Text style={styles.filterCountBadgeText}>{activeFilterCount}</Text>
+                        </View>
+                      )}
+                    </Pressable>
+
+                    {activeFilterCount > 0 && (
+                      <Pressable
+                        accessibilityRole="button"
+                        hitSlop={8}
+                        style={styles.clearAllBtn}
+                        onPress={clearFiltersOnly}>
+                        <Text style={styles.clearAllText}>Clear all</Text>
+                      </Pressable>
+                    )}
+                  </View>
+
+                  <Text style={styles.countMeta}>
+                    {filteredResidents.length}{' '}
+                    {filteredResidents.length === 1 ? 'resident' : 'residents'}
                   </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-
-            <View style={styles.filterToolbarRow}>
-              <View style={styles.filterToolbarLeft}>
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Open resident filters"
-                  style={[
-                    styles.filtersBtn,
-                    activeFilterCount > 0 && styles.filtersBtnActive,
-                  ]}
-                  onPress={() => setFilterSheetVisible(true)}>
-                  <SlidersHorizontal
-                    size={14}
-                    color={
-                      activeFilterCount > 0
-                        ? OwnerTheme.colors.primary
-                        : OwnerTheme.colors.textSecondary
-                    }
-                  />
-                  <Text
-                    style={[
-                      styles.filtersBtnText,
-                      activeFilterCount > 0 && styles.filtersBtnTextActive,
-                    ]}>
-                    Filters
-                  </Text>
-                  {activeFilterCount > 0 && (
-                    <View style={styles.filterCountBadge}>
-                      <Text style={styles.filterCountBadgeText}>{activeFilterCount}</Text>
-                    </View>
-                  )}
-                </Pressable>
-
-                {activeFilterCount > 0 && (
-                  <Pressable
-                    accessibilityRole="button"
-                    hitSlop={8}
-                    style={styles.clearAllBtn}
-                    onPress={clearFiltersOnly}>
-                    <Text style={styles.clearAllText}>Clear all</Text>
-                  </Pressable>
-                )}
-              </View>
-
-              <Text style={styles.countMeta}>
-                {filteredResidents.length}{' '}
-                {filteredResidents.length === 1 ? 'resident' : 'residents'}
-              </Text>
-            </View>
+                </View>
+              </>
+            )}
 
             {errorMessage ? (
               <ErrorState
@@ -697,71 +919,76 @@ export default function ResidentsDirectoryScreen() {
             ) : null}
           </View>
 
-          <SectionList
-            sections={activeSections}
-            keyExtractor={(item) => item.id}
-            renderSectionHeader={({ section }) => (
-              <View style={styles.roomGroupHeader}>
-                <Text style={styles.roomGroupTitle}>Room {section.roomNumber}</Text>
-                <Text style={styles.roomGroupCount}>
-                  {section.data.length}{' '}
-                  {section.data.length === 1 ? 'resident' : 'residents'}
-                </Text>
-              </View>
-            )}
-            renderItem={({ item, index, section }) => (
-              <ResidentDirectoryRow
-                resident={item}
-                isFirst={index === 0}
-                isLast={index === section.data.length - 1}
-                onPress={openResidentProfile}
-              />
-            )}
-            ListEmptyComponent={listEmptyComponent}
-            contentContainerStyle={styles.scrollContent}
-            showsVerticalScrollIndicator={false}
-            keyboardShouldPersistTaps="handled"
-            stickySectionHeadersEnabled={false}
-            initialNumToRender={15}
-            maxToRenderPerBatch={15}
-            windowSize={9}
-            removeClippedSubviews={Platform.OS === 'android'}
-            refreshControl={
-              <RefreshControl
-                refreshing={refreshing}
-                onRefresh={handleRefresh}
-                colors={[OwnerTheme.colors.primary]}
-              />
-            }
+          {viewMode === 'map' ? (
+            <BedMapView
+              rooms={rooms}
+              residents={activeResidents}
+              reservations={reservations}
+              searchQuery={searchQuery}
+              loading={mapLoading}
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              onPressFreeBed={handlePressFreeBed}
+              onPressOccupiedBed={openResidentProfile}
+              onPressReservedBed={handlePressReservedBed}
+              onPressAddResident={() => router.push('/add-resident')}
+              onPressShareVacancy={handleShareVacancy}
+            />
+          ) : (
+            <SectionList
+              sections={activeSections}
+              keyExtractor={(item) => item.id}
+              renderSectionHeader={({ section }) => (
+                <View style={styles.roomGroupHeader}>
+                  <Text style={styles.roomGroupTitle}>Room {section.roomNumber}</Text>
+                  <Text style={styles.roomGroupCount}>
+                    {section.data.length}{' '}
+                    {section.data.length === 1 ? 'resident' : 'residents'}
+                  </Text>
+                </View>
+              )}
+              renderItem={({ item, index, section }) => (
+                <ResidentDirectoryRow
+                  resident={item}
+                  isFirst={index === 0}
+                  isLast={index === section.data.length - 1}
+                  onPress={openResidentProfile}
+                />
+              )}
+              ListEmptyComponent={listEmptyComponent}
+              contentContainerStyle={styles.scrollContent}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+              stickySectionHeadersEnabled={false}
+              initialNumToRender={15}
+              maxToRenderPerBatch={15}
+              windowSize={9}
+              removeClippedSubviews={Platform.OS === 'android'}
+              refreshControl={
+                <RefreshControl
+                  refreshing={refreshing}
+                  onRefresh={handleRefresh}
+                  colors={[OwnerTheme.colors.primary]}
+                />
+              }
+            />
+          )}
+
+          {/* Thumb-Friendly Floating Action Pill */}
+          <FloatingActionPill
+            label="Add Resident"
+            icon={UserPlus}
+            onPress={() => router.push('/add-resident')}
           />
         </View>
       )}
 
       {/* Unified Filter Bottom Sheet Modal */}
-      <Modal
+      <BottomSheetModal
         visible={filterSheetVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setFilterSheetVisible(false)}>
-        <View style={styles.sheetOverlay}>
-          <Pressable
-            accessibilityLabel="Close filters"
-            style={styles.sheetBackdrop}
-            onPress={() => setFilterSheetVisible(false)}
-          />
-          <View style={styles.sheetCard}>
-            <View style={styles.sheetHandle} />
-            <View style={styles.sheetHeaderRow}>
-              <Text style={styles.sheetTitle}>Filter Residents</Text>
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Close filters"
-                hitSlop={8}
-                onPress={() => setFilterSheetVisible(false)}>
-                <X size={20} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            </View>
-
+        onClose={() => setFilterSheetVisible(false)}
+        title="Filter Residents"
+        maxHeight="82%">
             <ScrollView
               style={styles.sheetScroll}
               showsVerticalScrollIndicator={false}>
@@ -947,15 +1174,31 @@ export default function ResidentsDirectoryScreen() {
                 </Text>
               </Pressable>
             </View>
-          </View>
-        </View>
-      </Modal>
+      </BottomSheetModal>
 
       <InviteQrModal
         visible={inviteQrVisible}
         propertyId={selectedPropertyId}
         propertyName={selectedProperty?.name || 'My PG'}
         onClose={() => setInviteQrVisible(false)}
+      />
+
+      <FreeBedActionModal
+        visible={Boolean(freeBedTarget)}
+        target={freeBedTarget}
+        saving={createReservationMutation.isPending}
+        onClose={() => setFreeBedTarget(null)}
+        onAddResident={handleOpenAddResidentForBed}
+        onReserveBed={handleReserveBed}
+      />
+
+      <ReservedBedDetailModal
+        visible={Boolean(selectedReservation)}
+        reservation={selectedReservation}
+        cancelling={cancelReservationMutation.isPending}
+        onClose={() => setSelectedReservation(null)}
+        onConvertToResident={handleConvertReservation}
+        onCancelReservation={handleCancelReservation}
       />
     </SafeAreaView>
   );
@@ -991,6 +1234,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: OwnerTheme.spacing.lg,
     paddingTop: 2,
     paddingBottom: OwnerTheme.spacing.xxxl,
+  },
+  viewToggleRow: {
+    flexDirection: 'row',
+    backgroundColor: OwnerTheme.colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.borderLight,
+    padding: 3,
+    marginBottom: 10,
+  },
+  viewToggleBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: 9,
+  },
+  viewToggleBtnActive: {
+    backgroundColor: OwnerTheme.colors.primary,
+  },
+  viewToggleText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: OwnerTheme.colors.textSecondary,
+  },
+  viewToggleTextActive: {
+    color: '#FFFFFF',
   },
   searchBarWrap: {
     flexDirection: 'row',

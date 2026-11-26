@@ -8,6 +8,7 @@ import { extractErrorMessage } from '@/lib/error-utils';
 import { supabase } from '@/lib/supabase';
 
 export const FOOD_ALERT_CHANNEL_ID = 'food-alerts';
+export const PG_NOTICES_CHANNEL_ID = 'pg-notices';
 
 export type PushRegistrationResult =
   | { status: 'registered'; token: string }
@@ -20,10 +21,20 @@ let lastRegisteredToken: string | null = null;
 async function ensureAndroidChannel() {
   if (Platform.OS !== 'android') return;
   try {
-    await Notifications.setNotificationChannelAsync(FOOD_ALERT_CHANNEL_ID, {
-      name: 'Food alerts',
-      importance: 6, // AndroidImportance.HIGH === 6
-    });
+    await Promise.all([
+      Notifications.setNotificationChannelAsync('default', {
+        name: 'General PG Alerts',
+        importance: 4, // AndroidImportance.HIGH === 4
+      }),
+      Notifications.setNotificationChannelAsync(FOOD_ALERT_CHANNEL_ID, {
+        name: 'Food alerts',
+        importance: 4,
+      }),
+      Notifications.setNotificationChannelAsync(PG_NOTICES_CHANNEL_ID, {
+        name: 'PG notices & reminders',
+        importance: 4,
+      }),
+    ]);
   } catch (err) {
     console.warn('[PushNotifications] Android channel setup skipped:', err);
   }

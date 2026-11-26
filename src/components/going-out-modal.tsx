@@ -1,9 +1,6 @@
 import React, { useState } from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,8 +9,9 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { AlertTriangle, Clock, Utensils, X } from 'lucide-react-native';
+import { AlertTriangle, Clock, Utensils } from 'lucide-react-native';
 
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerTheme } from '@/constants/theme';
 import { useModalBackHandler } from '@/hooks/use-modal-back-handler';
 import { triggerSelectionHaptic } from '@/lib/haptics';
@@ -96,35 +94,13 @@ export function GoingOutModal({
   };
 
   return (
-    <Modal
+    <BottomSheetModal
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={() => {
-        if (!saving) handleClose();
-      }}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.overlay}>
-        <Pressable style={styles.backdrop} onPress={handleClose} />
-        <View style={styles.sheet}>
-          <View style={styles.handleBar} />
-          <View style={styles.header}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.title}>Going Out of PG</Text>
-              <Text style={styles.subtitle}>
-                Share your return estimate and dinner plan
-              </Text>
-            </View>
-            <Pressable
-              accessibilityLabel="Close"
-              hitSlop={10}
-              style={styles.closeBtn}
-              onPress={handleClose}>
-              <X size={18} color={OwnerTheme.colors.textSecondary} />
-            </Pressable>
-          </View>
-
+      onClose={handleClose}
+      title="Going Out of PG"
+      subtitle="Share your return estimate and dinner plan"
+      disabled={saving}
+      maxHeight="85%">
           <ScrollView
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
@@ -240,9 +216,7 @@ export function GoingOutModal({
               )}
             </Pressable>
           </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 

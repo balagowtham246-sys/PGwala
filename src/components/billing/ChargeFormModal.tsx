@@ -1,9 +1,6 @@
 import React from 'react';
 import {
   ActivityIndicator,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -11,7 +8,8 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { AlertTriangle, X } from 'lucide-react-native';
+import { AlertTriangle } from 'lucide-react-native';
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerTheme } from '@/constants/theme';
 import {
   ResidentRentBillItem,
@@ -108,23 +106,12 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
   }
 
   return (
-    <Modal
+    <BottomSheetModal
       visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.modalOverlay}>
-        <View style={styles.modalCard}>
-          <View style={styles.modalHeaderRow}>
-            <Text style={styles.modalHeading}>{heading}</Text>
-            <Pressable hitSlop={8} onPress={onClose}>
-              <X size={20} color={OwnerTheme.colors.textSecondary} />
-            </Pressable>
-          </View>
-
-          {mode === 'generate-rent' && (() => {
+      onClose={onClose}
+      title={heading}
+      disabled={submitting}>
+      {mode === 'generate-rent' && (() => {
             const onlyMissing = props.onlyFillMissingRent ?? true;
             const missingCount = props.missingRentCount ?? 0;
             const unpaidCount = props.unpaidExistingCount ?? 0;
@@ -335,9 +322,7 @@ export function ChargeFormModal(props: ChargeFormModalProps) {
               </Pressable>
             </View>
           )}
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 

@@ -1,3 +1,5 @@
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
+import { FloatingActionPill } from '@/components/ui/floating-action-pill';
 import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
 import { useFocusEffect } from 'expo-router';
 import {
@@ -21,6 +23,7 @@ import {
   Platform,
   Pressable,
   RefreshControl,
+  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -83,6 +86,7 @@ export default function OwnerAnnouncementsScreen() {
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [composeVisible, setComposeVisible] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
   // Post-send feedback state
@@ -258,6 +262,7 @@ export default function OwnerAnnouncementsScreen() {
       }
 
       await loadHistory(selectedPropertyId, true);
+      setComposeVisible(false);
     } finally {
       setSending(false);
     }
@@ -450,235 +455,6 @@ export default function OwnerAnnouncementsScreen() {
                   style={{ marginBottom: 4 }}
                 />
 
-                {/* Compose Card */}
-                <View style={styles.card}>
-                  <View style={styles.cardHeaderRow}>
-                    <View style={styles.cardHeaderIcon}>
-                      <Megaphone size={17} color={OwnerTheme.colors.primary} />
-                    </View>
-                    <View style={styles.cardHeaderTextWrap}>
-                      <Text style={styles.cardTitle}>Broadcast Notice</Text>
-                      <Text style={styles.cardSubtitle}>
-                        Notify all residents or target a specific room
-                      </Text>
-                    </View>
-                  </View>
-
-                  {/* Audience Selector */}
-                  <Text style={styles.fieldLabel}>Audience</Text>
-                  <View style={styles.toggleRow}>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: audience === 'all' }}
-                      onPress={() => {
-                        triggerSelectionHaptic();
-                        setAudience('all');
-                        setFormError(null);
-                      }}
-                      style={[
-                        styles.togglePill,
-                        audience === 'all' && styles.togglePillActive,
-                      ]}>
-                      <Users
-                        size={15}
-                        color={
-                          audience === 'all'
-                            ? OwnerTheme.colors.primary
-                            : OwnerTheme.colors.textSecondary
-                        }
-                      />
-                      <Text
-                        style={[
-                          styles.togglePillText,
-                          audience === 'all' && styles.togglePillTextActive,
-                        ]}>
-                        All residents ({residents.length})
-                      </Text>
-                    </Pressable>
-
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: audience === 'room' }}
-                      onPress={() => {
-                        triggerSelectionHaptic();
-                        setAudience('room');
-                        if (!selectedRoom && rooms[0]) {
-                          setSelectedRoom(rooms[0].roomNumber);
-                        }
-                        setFormError(null);
-                      }}
-                      style={[
-                        styles.togglePill,
-                        audience === 'room' && styles.togglePillActive,
-                      ]}>
-                      <Building2
-                        size={15}
-                        color={
-                          audience === 'room'
-                            ? OwnerTheme.colors.primary
-                            : OwnerTheme.colors.textSecondary
-                        }
-                      />
-                      <Text
-                        style={[
-                          styles.togglePillText,
-                          audience === 'room' && styles.togglePillTextActive,
-                        ]}>
-                        Single room
-                      </Text>
-                    </Pressable>
-                  </View>
-
-                  {/* Room Chips when Single room is active */}
-                  {audience === 'room' && (
-                    <View style={styles.roomPickerBox}>
-                      <Text style={styles.roomPickerLabel}>Select Room</Text>
-                      {loadingTargets && rooms.length === 0 ? (
-                        <Text style={styles.inlineHint}>Loading rooms...</Text>
-                      ) : rooms.length === 0 ? (
-                        <Text style={styles.inlineHint}>
-                          No active rooms found for this property yet. Add residents with room
-                          numbers to target a specific room.
-                        </Text>
-                      ) : (
-                        <View style={styles.roomChipsWrap}>
-                          {rooms.map((room) => {
-                            const isSelected = effectiveRoomNumber === room.roomNumber;
-                            return (
-                              <Pressable
-                                key={room.roomNumber}
-                                accessibilityRole="button"
-                                accessibilityState={{ selected: isSelected }}
-                                onPress={() => {
-                                  triggerSelectionHaptic();
-                                  setSelectedRoom(room.roomNumber);
-                                  setFormError(null);
-                                }}
-                                style={[
-                                  styles.roomChip,
-                                  isSelected && styles.roomChipActive,
-                                ]}>
-                                <Text
-                                  style={[
-                                    styles.roomChipText,
-                                    isSelected && styles.roomChipTextActive,
-                                  ]}>
-                                  {`${room.label} (${room.residentCount})`}
-                                </Text>
-                              </Pressable>
-                            );
-                          })}
-                        </View>
-                      )}
-                    </View>
-                  )}
-
-                  {/* Channel Selector */}
-                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Delivery Channel</Text>
-                  <View style={styles.toggleRow}>
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: channel === 'push' }}
-                      onPress={() => {
-                        triggerSelectionHaptic();
-                        setChannel('push');
-                      }}
-                      style={[
-                        styles.togglePill,
-                        channel === 'push' && styles.togglePillActive,
-                      ]}>
-                      <Bell
-                        size={15}
-                        color={
-                          channel === 'push'
-                            ? OwnerTheme.colors.primary
-                            : OwnerTheme.colors.textSecondary
-                        }
-                      />
-                      <Text
-                        style={[
-                          styles.togglePillText,
-                          channel === 'push' && styles.togglePillTextActive,
-                        ]}>
-                        Push notification
-                      </Text>
-                    </Pressable>
-
-                    <Pressable
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: channel === 'whatsapp' }}
-                      onPress={() => {
-                        triggerSelectionHaptic();
-                        setChannel('whatsapp');
-                      }}
-                      style={[
-                        styles.togglePill,
-                        channel === 'whatsapp' && styles.togglePillActive,
-                      ]}>
-                      <MessageCircle
-                        size={15}
-                        color={
-                          channel === 'whatsapp'
-                            ? OwnerTheme.colors.primary
-                            : OwnerTheme.colors.textSecondary
-                        }
-                      />
-                      <Text
-                        style={[
-                          styles.togglePillText,
-                          channel === 'whatsapp' && styles.togglePillTextActive,
-                        ]}>
-                        WhatsApp
-                      </Text>
-                    </Pressable>
-                  </View>
-
-                  {/* Title Input */}
-                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Title *</Text>
-                  <TextInput
-                    style={styles.input}
-                    value={title}
-                    onChangeText={(val) => {
-                      setTitle(val);
-                      if (formError) setFormError(null);
-                    }}
-                    placeholder="e.g., Water Tank Cleaning Tomorrow"
-                    placeholderTextColor={OwnerTheme.colors.textMuted}
-                    maxLength={120}
-                    returnKeyType="next"
-                    editable={!sending}
-                  />
-
-                  {/* Message Input */}
-                  <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Message *</Text>
-                  <TextInput
-                    style={[styles.input, styles.textArea]}
-                    value={message}
-                    onChangeText={(val) => {
-                      setMessage(val);
-                      if (formError) setFormError(null);
-                    }}
-                    placeholder="Write your notice for residents..."
-                    placeholderTextColor={OwnerTheme.colors.textMuted}
-                    multiline
-                    numberOfLines={4}
-                    textAlignVertical="top"
-                    maxLength={1000}
-                    editable={!sending}
-                  />
-
-                  {formError && <ErrorState message={formError} style={styles.formError} />}
-
-                  <PrimaryButton
-                    label={sendButtonLabel}
-                    icon={channel === 'push' ? Send : MessageCircle}
-                    loading={sending}
-                    disabled={sending}
-                    onPress={handleSend}
-                    style={styles.sendBtn}
-                  />
-                </View>
-
                 {/* Inline Push Confirmation Banner */}
                 {pushBanner && (
                   <View style={styles.confirmationBanner}>
@@ -803,13 +579,249 @@ export default function OwnerAnnouncementsScreen() {
                 <EmptyState
                   icon={Megaphone}
                   title="No announcements yet"
-                  description="Broadcast your first notice above to keep residents informed."
+                  description="Tap New Notice below to broadcast your first update to residents."
+                  actionLabel="+ New Notice"
+                  onAction={() => setComposeVisible(true)}
                 />
               )
             }
           />
         )}
       </KeyboardAvoidingView>
+
+      {Boolean(selectedPropertyId) && (
+        <FloatingActionPill
+          label="New Notice"
+          icon={Megaphone}
+          onPress={() => setComposeVisible(true)}
+        />
+      )}
+
+      <BottomSheetModal
+        visible={composeVisible}
+        onClose={() => setComposeVisible(false)}
+        title="Broadcast Notice"
+        subtitle={selectedProperty?.name || 'Notify residents'}
+        disabled={sending}
+        maxHeight="90%">
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ paddingBottom: 12 }}>
+          {/* Audience Selector */}
+          <Text style={styles.fieldLabel}>Audience</Text>
+          <View style={styles.toggleRow}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: audience === 'all' }}
+              onPress={() => {
+                triggerSelectionHaptic();
+                setAudience('all');
+                setFormError(null);
+              }}
+              style={[
+                styles.togglePill,
+                audience === 'all' && styles.togglePillActive,
+              ]}>
+              <Users
+                size={15}
+                color={
+                  audience === 'all'
+                    ? OwnerTheme.colors.primary
+                    : OwnerTheme.colors.textSecondary
+                }
+              />
+              <Text
+                style={[
+                  styles.togglePillText,
+                  audience === 'all' && styles.togglePillTextActive,
+                ]}>
+                All residents ({residents.length})
+              </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: audience === 'room' }}
+              onPress={() => {
+                triggerSelectionHaptic();
+                setAudience('room');
+                if (!selectedRoom && rooms[0]) {
+                  setSelectedRoom(rooms[0].roomNumber);
+                }
+                setFormError(null);
+              }}
+              style={[
+                styles.togglePill,
+                audience === 'room' && styles.togglePillActive,
+              ]}>
+              <Building2
+                size={15}
+                color={
+                  audience === 'room'
+                    ? OwnerTheme.colors.primary
+                    : OwnerTheme.colors.textSecondary
+                }
+              />
+              <Text
+                style={[
+                  styles.togglePillText,
+                  audience === 'room' && styles.togglePillTextActive,
+                ]}>
+                Single room
+              </Text>
+            </Pressable>
+          </View>
+
+          {/* Room Chips when Single room is active */}
+          {audience === 'room' && (
+            <View style={styles.roomPickerBox}>
+              <Text style={styles.roomPickerLabel}>Select Room</Text>
+              {loadingTargets && rooms.length === 0 ? (
+                <Text style={styles.inlineHint}>Loading rooms...</Text>
+              ) : rooms.length === 0 ? (
+                <Text style={styles.inlineHint}>
+                  No active rooms found for this property yet.
+                </Text>
+              ) : (
+                <View style={styles.roomChipsWrap}>
+                  {rooms.map((room) => {
+                    const isSelected = effectiveRoomNumber === room.roomNumber;
+                    return (
+                      <Pressable
+                        key={room.roomNumber}
+                        accessibilityRole="button"
+                        accessibilityState={{ selected: isSelected }}
+                        onPress={() => {
+                          triggerSelectionHaptic();
+                          setSelectedRoom(room.roomNumber);
+                          setFormError(null);
+                        }}
+                        style={[
+                          styles.roomChip,
+                          isSelected && styles.roomChipActive,
+                        ]}>
+                        <Text
+                          style={[
+                            styles.roomChipText,
+                            isSelected && styles.roomChipTextActive,
+                          ]}>
+                          {`${room.label} (${room.residentCount})`}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          )}
+
+          {/* Channel Selector */}
+          <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Delivery Channel</Text>
+          <View style={styles.toggleRow}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: channel === 'push' }}
+              onPress={() => {
+                triggerSelectionHaptic();
+                setChannel('push');
+              }}
+              style={[
+                styles.togglePill,
+                channel === 'push' && styles.togglePillActive,
+              ]}>
+              <Bell
+                size={15}
+                color={
+                  channel === 'push'
+                    ? OwnerTheme.colors.primary
+                    : OwnerTheme.colors.textSecondary
+                }
+              />
+              <Text
+                style={[
+                  styles.togglePillText,
+                  channel === 'push' && styles.togglePillTextActive,
+                ]}>
+                Push notification
+              </Text>
+            </Pressable>
+
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: channel === 'whatsapp' }}
+              onPress={() => {
+                triggerSelectionHaptic();
+                setChannel('whatsapp');
+              }}
+              style={[
+                styles.togglePill,
+                channel === 'whatsapp' && styles.togglePillActive,
+              ]}>
+              <MessageCircle
+                size={15}
+                color={
+                  channel === 'whatsapp'
+                    ? OwnerTheme.colors.primary
+                    : OwnerTheme.colors.textSecondary
+                }
+              />
+              <Text
+                style={[
+                  styles.togglePillText,
+                  channel === 'whatsapp' && styles.togglePillTextActive,
+                ]}>
+                WhatsApp
+              </Text>
+            </Pressable>
+          </View>
+
+          {/* Title Input */}
+          <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Title *</Text>
+          <TextInput
+            style={styles.input}
+            value={title}
+            onChangeText={(val) => {
+              setTitle(val);
+              if (formError) setFormError(null);
+            }}
+            placeholder="e.g., Water Tank Cleaning Tomorrow"
+            placeholderTextColor={OwnerTheme.colors.textMuted}
+            maxLength={120}
+            returnKeyType="next"
+            editable={!sending}
+          />
+
+          {/* Message Input */}
+          <Text style={[styles.fieldLabel, { marginTop: 12 }]}>Message *</Text>
+          <TextInput
+            style={[styles.input, styles.textArea]}
+            value={message}
+            onChangeText={(val) => {
+              setMessage(val);
+              if (formError) setFormError(null);
+            }}
+            placeholder="Write your notice for residents..."
+            placeholderTextColor={OwnerTheme.colors.textMuted}
+            multiline
+            numberOfLines={4}
+            textAlignVertical="top"
+            maxLength={1000}
+            editable={!sending}
+          />
+
+          {formError && <ErrorState message={formError} style={styles.formError} />}
+
+          <PrimaryButton
+            label={sendButtonLabel}
+            icon={channel === 'push' ? Send : MessageCircle}
+            loading={sending}
+            disabled={sending}
+            onPress={handleSend}
+            style={styles.sendBtn}
+          />
+        </ScrollView>
+      </BottomSheetModal>
     </SafeAreaView>
   );
 }

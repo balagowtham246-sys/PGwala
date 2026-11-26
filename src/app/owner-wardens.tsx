@@ -1,9 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
   Alert,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -14,8 +11,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Building2, Eye, EyeOff, UserCog, X } from 'lucide-react-native';
+import { Building2, Eye, EyeOff, UserCog } from 'lucide-react-native';
 
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
@@ -229,17 +227,11 @@ export default function OwnerWardensScreen() {
         })}
       </ScrollView>
 
-      <Modal visible={Boolean(modalPropertyId)} transparent animationType="slide" onRequestClose={() => setModalPropertyId(null)}>
-        <KeyboardAvoidingView
-          style={styles.modalOverlay}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Assign warden</Text>
-              <Pressable hitSlop={10} onPress={() => setModalPropertyId(null)}>
-                <X size={22} color={OwnerTheme.colors.textSecondary} />
-              </Pressable>
-            </View>
+      <BottomSheetModal
+        visible={Boolean(modalPropertyId)}
+        onClose={() => setModalPropertyId(null)}
+        title="Assign warden"
+        disabled={saving}>
             <Text style={styles.modalHint}>
               Any current warden for this property will be replaced. The warden signs in like a resident, with email and password.
             </Text>
@@ -281,9 +273,7 @@ export default function OwnerWardensScreen() {
             {formError && <Text style={styles.errorText}>{formError}</Text>}
 
             <PrimaryButton label="Assign warden" onPress={handleSave} loading={saving} style={{ marginTop: 16 }} />
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      </BottomSheetModal>
     </SafeAreaView>
   );
 }

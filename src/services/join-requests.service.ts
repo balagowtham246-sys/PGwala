@@ -144,7 +144,9 @@ export async function fetchPropertyJoinRequests(
 ): Promise<JoinRequestItem[]> {
   const { data, error } = await supabase
     .from('resident_join_requests')
-    .select('*')
+    .select(
+      'id, property_id, profile_id, full_name, email, phone_number, gender, emergency_contact, room_hint, status, rejection_reason, reviewed_at, created_at'
+    )
     .eq('property_id', propertyId)
     .order('created_at', { ascending: false })
     .limit(100);

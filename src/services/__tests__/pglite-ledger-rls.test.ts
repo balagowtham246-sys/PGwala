@@ -50,6 +50,17 @@ interface PgliteSuiteResult {
       startM2AfterReleaseSuccess: boolean;
       ownReleaseM2Success: boolean;
     };
+    phase12Rls: {
+      owner1InsertedExpense: boolean;
+      owner2VisibleExpenseCount: number;
+      residentVisibleExpenseCount: number;
+      owner2CannotInsertProp1Expense: boolean;
+      owner1InsertedReservation: boolean;
+      duplicateBedReservationBlocked: boolean;
+      owner2VisibleReservationCount: number;
+      residentVisibleReservationCount: number;
+      owner2CannotInsertProp1Reservation: boolean;
+    };
   };
 }
 
@@ -131,6 +142,20 @@ describe('Postgres ledger & RLS scoping invariants (PGlite)', () => {
       ownerReleaseM1Success: true,
       startM2AfterReleaseSuccess: true,
       ownReleaseM2Success: true,
+    });
+  });
+
+  it('enforces owner-only RLS isolation on property_expenses and bed_reservations plus unique active slot booking', () => {
+    expect(result.rls.phase12Rls).toEqual({
+      owner1InsertedExpense: true,
+      owner2VisibleExpenseCount: 0,
+      residentVisibleExpenseCount: 0,
+      owner2CannotInsertProp1Expense: true,
+      owner1InsertedReservation: true,
+      duplicateBedReservationBlocked: true,
+      owner2VisibleReservationCount: 0,
+      residentVisibleReservationCount: 0,
+      owner2CannotInsertProp1Reservation: true,
     });
   });
 });

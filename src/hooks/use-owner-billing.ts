@@ -13,6 +13,9 @@ import {
   getOwnerBilling,
   GetOwnerBillingParams,
   OwnerBillingSnapshot,
+  recordPartialPayment,
+  RecordPartialPaymentParams,
+  RecordPartialPaymentResult,
   rejectStudentPaymentReport,
   RejectPaymentReportParams,
   toggleResidentWmBilling,
@@ -220,6 +223,26 @@ export function useConfirmMonthlyPaymentMutation() {
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
+    },
+  });
+}
+
+export function useRecordPartialPaymentMutation() {
+  const qc = useQueryClient();
+
+  return useMutation<RecordPartialPaymentResult, Error, RecordPartialPaymentParams>({
+    mutationFn: async (params) => {
+      const result = await recordPartialPayment(params);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      return result.data;
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
     },
   });
 }

@@ -16,7 +16,7 @@ import {
 } from '@/lib/supabase';
 
 export type PaymentMethod = 'cash' | 'upi';
-export type BillingMode = 'RENT' | 'EB' | 'COMBINED';
+export type BillingMode = 'RENT' | 'EB' | 'COMBINED' | 'EXPENSES';
 export type BillingFilterTab = 'ALL' | 'REVIEW' | 'UNPAID' | 'PAID';
 
 export interface PendingPaymentReport {
@@ -47,6 +47,8 @@ export interface ResidentRentBillItem {
   rent_paise: number;
   wm_paise: number;
   total_paise: number;
+  paid_paise?: number;
+  remaining_paise?: number;
   status: 'paid' | 'unpaid' | 'not_generated';
   has_pending_report: boolean;
   pending_report?: PendingPaymentReport | null;
@@ -64,6 +66,8 @@ export interface ResidentEbBillItem {
   phone_number: string | null;
   charge_id: string | null;
   amount_paise: number;
+  paid_paise?: number;
+  remaining_paise?: number;
   status: 'paid' | 'unpaid' | 'not_generated';
   has_pending_report: boolean;
   pending_report?: PendingPaymentReport | null;
@@ -214,6 +218,23 @@ export interface ConfirmMonthlyPaymentResult {
   receipt_number: string;
 }
 
+export interface RecordPartialPaymentParams {
+  chargeId: string;
+  amountPaise: number;
+  method?: PaymentMethod;
+  notes?: string | null;
+  reportId?: string | null;
+}
+
+export interface RecordPartialPaymentResult {
+  receipt_number: string;
+  allocated_paise: number;
+  unallocated_paise: number;
+  total_paid_paise: number;
+  remaining_paise: number;
+  is_fully_settled: boolean;
+}
+
 export interface RejectPaymentReportParams {
   reportId: string;
   rejectionReason: string;
@@ -271,6 +292,7 @@ interface RawStudentReportRow {
 
 interface RawPaymentAllocRow {
   charge_id: string;
+  settled_amount_paise?: number;
   payment:
     | {
         id?: string;
@@ -339,6 +361,7 @@ interface SettledPaymentInfo {
   receipt: string;
   date: string;
   method: string;
+  paidPaise: number;
 }
 
 function buildPaymentAllocationMap(
@@ -348,12 +371,20 @@ function buildPaymentAllocationMap(
   if (allocData) {
     for (const a of allocData) {
       const p = Array.isArray(a.payment) ? a.payment[0] : a.payment;
+      const allocPaise = Number(a.settled_amount_paise ?? 0);
+      const existing = paymentMap.get(a.charge_id);
       if (p) {
         paymentMap.set(a.charge_id, {
-          id: p.id || '',
-          receipt: p.receipt_number,
-          date: p.payment_date,
-          method: p.method,
+          id: p.id || existing?.id || '',
+          receipt: p.receipt_number || existing?.receipt || '',
+          date: p.payment_date || existing?.date || '',
+          method: p.method || existing?.method || '',
+          paidPaise: (existing?.paidPaise ?? 0) + (allocPaise > 0 ? allocPaise : 0),
+        });
+      } else if (existing && allocPaise > 0) {
+        paymentMap.set(a.charge_id, {
+          ...existing,
+          paidPaise: existing.paidPaise + allocPaise,
         });
       }
     }
@@ -440,6 +471,10 @@ function buildOwnerBillingSnapshot(params: {
     if (chg) {
       const isSettled = chg.status === 'settled';
       const pInfo = paymentMap.get(chg.id);
+      const paidPaise = isSettled
+        ? chg.amount_paise
+        : Math.min(chg.amount_paise, pInfo?.paidPaise ?? 0);
+      const remainingPaise = Math.max(0, chg.amount_paise - paidPaise);
 
       return {
         resident_id: r.id,
@@ -453,6 +488,8 @@ function buildOwnerBillingSnapshot(params: {
         rent_paise: chg.rent_amount_paise || defaultRent,
         wm_paise: chg.wm_amount_paise || (optWm ? 50000 : 0),
         total_paise: chg.amount_paise,
+        paid_paise: paidPaise,
+        remaining_paise: remainingPaise,
         status: isSettled ? 'paid' : 'unpaid',
         has_pending_report: isPendingReport,
         pending_report: isPendingReport && rep ? rep : null,
@@ -498,6 +535,10 @@ function buildOwnerBillingSnapshot(params: {
     if (chg) {
       const isSettled = chg.status === 'settled';
       const pInfo = paymentMap.get(chg.id);
+      const paidPaise = isSettled
+        ? chg.amount_paise
+        : Math.min(chg.amount_paise, pInfo?.paidPaise ?? 0);
+      const remainingPaise = Math.max(0, chg.amount_paise - paidPaise);
 
       return {
         resident_id: r.id,
@@ -506,6 +547,8 @@ function buildOwnerBillingSnapshot(params: {
         phone_number: r.phone_number,
         charge_id: chg.id,
         amount_paise: chg.amount_paise,
+        paid_paise: paidPaise,
+        remaining_paise: remainingPaise,
         status: isSettled ? 'paid' : 'unpaid',
         has_pending_report: isPendingReport,
         pending_report: isPendingReport && rep ? rep : null,
@@ -775,6 +818,45 @@ export async function confirmMonthlyPayment(
     return ok({ receipt_number: data.receipt_number });
   } catch (err) {
     return fail(err, 'Could not confirm payment.');
+  } finally {
+    endTrace(traceLabel);
+  }
+}
+
+/**
+ * Records a full, partial, or advance payment against a monthly charge.
+ */
+export async function recordPartialPayment(
+  params: RecordPartialPaymentParams
+): Promise<ServiceResult<RecordPartialPaymentResult>> {
+  const traceLabel = `billing:rpc:record_partial_payment:${params.chargeId}`;
+  startTrace(traceLabel);
+  try {
+    const { data, error } = await supabase.rpc('record_partial_payment', {
+      p_charge_id: params.chargeId,
+      p_amount_paise: Math.round(params.amountPaise),
+      p_method: params.method || 'cash',
+      p_notes: params.notes || undefined,
+      p_report_id: params.reportId || undefined,
+    });
+    recordRoundTrip(traceLabel, 1);
+
+    if (error) throw error;
+    if (!data?.success) {
+      throw new Error(data?.error || 'Failed to record payment.');
+    }
+
+    await invalidatePrefix(BILLING_CACHE_PREFIX);
+    return ok({
+      receipt_number: data.receipt_number,
+      allocated_paise: Number(data.allocated_paise ?? params.amountPaise),
+      unallocated_paise: Number(data.unallocated_paise ?? 0),
+      total_paid_paise: Number(data.total_paid_paise ?? params.amountPaise),
+      remaining_paise: Number(data.remaining_paise ?? 0),
+      is_fully_settled: Boolean(data.is_fully_settled),
+    });
+  } catch (err) {
+    return fail(err, 'Could not record payment.');
   } finally {
     endTrace(traceLabel);
   }

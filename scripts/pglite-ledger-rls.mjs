@@ -466,6 +466,76 @@ async function runRealMigrationRlsTests() {
       )
     ).rows[0].res;
 
+    // --- Phase 1 & 2 RLS: property_expenses & bed_reservations ---
+    const owner1InsertedExpense = await asAuthenticatedUser(db, IDS.owner1, async () => {
+      const r = await db.query(
+        `INSERT INTO public.property_expenses (property_id, category, amount_paise, notes, created_by)
+         VALUES ($1, 'salary', 800000, 'Cook salary', $2) RETURNING id`,
+        [IDS.prop1, IDS.owner1]
+      );
+      return r.rows.length === 1;
+    });
+
+    const owner2VisibleExpenses = await asAuthenticatedUser(db, IDS.owner2, () =>
+      db.query(`SELECT id FROM public.property_expenses`)
+    );
+    const residentVisibleExpenses = await asAuthenticatedUser(db, IDS.user1, () =>
+      db.query(`SELECT id FROM public.property_expenses`)
+    );
+    let owner2CannotInsertProp1Expense = false;
+    try {
+      await asAuthenticatedUser(db, IDS.owner2, () =>
+        db.query(
+          `INSERT INTO public.property_expenses (property_id, category, amount_paise)
+           VALUES ($1, 'water', 50000)`,
+          [IDS.prop1]
+        )
+      );
+    } catch {
+      owner2CannotInsertProp1Expense = true;
+    }
+
+    const owner1InsertedReservation = await asAuthenticatedUser(db, IDS.owner1, async () => {
+      const r = await db.query(
+        `INSERT INTO public.bed_reservations (property_id, room_number, bed_label, prospect_name, phone_number, expected_join_date, token_advance_paise, created_by)
+         VALUES ($1, '101', 'Bed 2', 'Karthik', '9876543210', '2026-12-01', 100000, $2) RETURNING id`,
+        [IDS.prop1, IDS.owner1]
+      );
+      return r.rows.length === 1;
+    });
+
+    let duplicateBedReservationBlocked = false;
+    try {
+      await asAuthenticatedUser(db, IDS.owner1, () =>
+        db.query(
+          `INSERT INTO public.bed_reservations (property_id, room_number, bed_label, prospect_name, phone_number, expected_join_date)
+           VALUES ($1, '101', 'bed 2', 'Other', '9876543211', '2026-12-02')`,
+          [IDS.prop1]
+        )
+      );
+    } catch {
+      duplicateBedReservationBlocked = true;
+    }
+
+    const owner2VisibleReservations = await asAuthenticatedUser(db, IDS.owner2, () =>
+      db.query(`SELECT id FROM public.bed_reservations`)
+    );
+    const residentVisibleReservations = await asAuthenticatedUser(db, IDS.user1, () =>
+      db.query(`SELECT id FROM public.bed_reservations`)
+    );
+    let owner2CannotInsertProp1Reservation = false;
+    try {
+      await asAuthenticatedUser(db, IDS.owner2, () =>
+        db.query(
+          `INSERT INTO public.bed_reservations (property_id, room_number, bed_label, prospect_name, phone_number, expected_join_date)
+           VALUES ($1, '102', 'Bed 1', 'Intruder', '9876500000', '2026-12-01')`,
+          [IDS.prop1]
+        )
+      );
+    } catch {
+      owner2CannotInsertProp1Reservation = true;
+    }
+
     return {
       user1AnnouncementIds: user1Announcements.rows.map((r) => r.id),
       user2AnnouncementIds: user2Announcements.rows.map((r) => r.id),
@@ -503,6 +573,17 @@ async function runRealMigrationRlsTests() {
         ownerReleaseM1Success: ownerReleaseM1.success,
         startM2AfterReleaseSuccess: startM2AfterRelease.success,
         ownReleaseM2Success: ownReleaseM2.success,
+      },
+      phase12Rls: {
+        owner1InsertedExpense,
+        owner2VisibleExpenseCount: owner2VisibleExpenses.rows.length,
+        residentVisibleExpenseCount: residentVisibleExpenses.rows.length,
+        owner2CannotInsertProp1Expense,
+        owner1InsertedReservation,
+        duplicateBedReservationBlocked,
+        owner2VisibleReservationCount: owner2VisibleReservations.rows.length,
+        residentVisibleReservationCount: residentVisibleReservations.rows.length,
+        owner2CannotInsertProp1Reservation,
       },
     };
   } finally {

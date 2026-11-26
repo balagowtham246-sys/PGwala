@@ -2,10 +2,8 @@ import React, { memo } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
   Linking,
   Modal,
-  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -30,6 +28,7 @@ import {
   Zap,
 } from 'lucide-react-native';
 
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerSharedStyles } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
@@ -301,22 +300,11 @@ export function ComplaintFilterSheetModal({
   onClose: () => void;
 }) {
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
-      <View style={OwnerSharedStyles.sheetOverlay}>
-        <Pressable style={OwnerSharedStyles.sheetBackdrop} onPress={onClose} />
-        <View style={OwnerSharedStyles.sheetCard}>
-          <View style={OwnerSharedStyles.sheetHandle} />
-          <View style={styles.sheetHeaderRow}>
-            <Text style={styles.sheetTitle}>Filter Issues</Text>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close filters"
-              hitSlop={8}
-              onPress={onClose}>
-              <X size={20} color="#64748B" />
-            </Pressable>
-          </View>
-
+    <BottomSheetModal
+      visible={visible}
+      onClose={onClose}
+      title="Filter Issues"
+      maxHeight="80%">
           <ScrollView style={styles.sheetScroll} showsVerticalScrollIndicator={false}>
             <Text style={styles.sheetSectionLabel}>Category</Text>
             <View style={styles.wrappedChipsContainer}>
@@ -421,9 +409,7 @@ export function ComplaintFilterSheetModal({
               </Text>
             </Pressable>
           </View>
-        </View>
-      </View>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 
@@ -447,21 +433,13 @@ export function ComplaintActionModal({
   onClose: () => void;
 }) {
   return (
-    <Modal
+    <BottomSheetModal
       visible={!!selectedComplaint}
-      transparent
-      animationType="slide"
-      onRequestClose={() => {
-        if (!updating) onClose();
-      }}>
-      <View style={OwnerSharedStyles.modalOverlay}>
-        <View style={OwnerSharedStyles.modalCard}>
-          <Text style={OwnerSharedStyles.modalTitle}>Update Maintenance Ticket</Text>
-          <Text style={OwnerSharedStyles.modalSub}>
-            {selectedComplaint?.resident?.full_name} • Room{' '}
-            {selectedComplaint?.resident?.room_number}
-          </Text>
-
+      onClose={onClose}
+      title="Update Maintenance Ticket"
+      subtitle={`${selectedComplaint?.resident?.full_name ?? ''} • Room ${selectedComplaint?.resident?.room_number ?? ''}`}
+      disabled={updating}
+      maxHeight="88%">
           <View style={styles.ticketSummaryBox}>
             <Text style={styles.ticketSummaryTitle}>{selectedComplaint?.title}</Text>
             <Text style={styles.ticketSummaryDesc}>{selectedComplaint?.description}</Text>
@@ -531,9 +509,7 @@ export function ComplaintActionModal({
               )}
             </Pressable>
           </View>
-        </View>
-      </View>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 
@@ -579,32 +555,13 @@ export function LogComplaintModal({
   onClose: () => void;
 }) {
   return (
-    <Modal
+    <BottomSheetModal
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={() => {
-        if (!creatingComplaint) onClose();
-      }}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={styles.createSheetOverlay}>
-        <View style={styles.createModalContent}>
-          <View style={styles.createModalHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={OwnerSharedStyles.modalTitle}>Log Maintenance Issue</Text>
-              <Text style={OwnerSharedStyles.modalSub}>{propertyName}</Text>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close log complaint modal"
-              hitSlop={8}
-              disabled={creatingComplaint}
-              onPress={onClose}>
-              <X size={20} color="#64748B" />
-            </Pressable>
-          </View>
-
+      onClose={onClose}
+      title="Log Maintenance Issue"
+      subtitle={propertyName}
+      disabled={creatingComplaint}
+      maxHeight="90%">
           <ScrollView
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
@@ -774,9 +731,7 @@ export function LogComplaintModal({
               )}
             </Pressable>
           </View>
-        </View>
-      </KeyboardAvoidingView>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 

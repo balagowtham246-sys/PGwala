@@ -57,6 +57,7 @@ export default function AdminOwnersScreen() {
   const { showToast } = useToast();
   const allowed = isDeveloperAccessAllowed(user?.email);
 
+  const [activeTab, setActiveTab] = useState<'create' | 'reset'>('create');
   const [ownerName, setOwnerName] = useState('');
   const [ownerPhone, setOwnerPhone] = useState('');
   const [ownerEmail, setOwnerEmail] = useState('');
@@ -67,6 +68,62 @@ export default function AdminOwnersScreen() {
   const [totalBeds, setTotalBeds] = useState('25');
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<CreatedOwnerResult | null>(null);
+
+  // Reset Owner Password state
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetPassword, setResetPassword] = useState(() => generateTempPassword());
+  const [resetting, setResetting] = useState(false);
+  const [resetResult, setResetResult] = useState<{
+    target_name: string;
+    target_email: string;
+    target_phone: string | null;
+    password: string;
+  } | null>(null);
+
+  const handleResetOwnerPassword = async () => {
+    if (resetting) return;
+    const cleanEmail = resetEmail.trim().toLowerCase();
+    const cleanPass = resetPassword.trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      Alert.alert('Invalid Email', 'Enter the PG owner login email.');
+      return;
+    }
+    if (cleanPass.length < 6) {
+      Alert.alert('Weak Password', 'Password must be at least 6 characters.');
+      return;
+    }
+    setResetting(true);
+    try {
+      const data = await invokeEdgeFunction<{
+        success?: boolean;
+        error?: string;
+        target_name?: string;
+        target_email?: string;
+        target_phone?: string | null;
+      }>('reset-user-password', {
+        target_type: 'owner',
+        owner_email: cleanEmail,
+        new_password: cleanPass,
+      });
+      if (!data?.success) {
+        throw new Error(data?.error || 'Could not reset owner password.');
+      }
+      setResetResult({
+        target_name: data.target_name || 'PG Owner',
+        target_email: data.target_email || cleanEmail,
+        target_phone: data.target_phone ?? null,
+        password: cleanPass,
+      });
+      showToast('Owner password reset!');
+    } catch (err: unknown) {
+      Alert.alert(
+        'Reset Failed',
+        extractErrorMessage(err, 'Could not reset owner password.')
+      );
+    } finally {
+      setResetting(false);
+    }
+  };
 
   if (!allowed) {
     return (
@@ -209,7 +266,126 @@ export default function AdminOwnersScreen() {
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}>
-          {created ? (
+          <View style={styles.tabRow}>
+            <Pressable
+              style={[styles.tabBtn, activeTab === 'create' && styles.tabBtnActive]}
+              onPress={() => setActiveTab('create')}>
+              <Text style={[styles.tabText, activeTab === 'create' && styles.tabTextActive]}>
+                Create PG Owner
+              </Text>
+            </Pressable>
+            <Pressable
+              style={[styles.tabBtn, activeTab === 'reset' && styles.tabBtnActive]}
+              onPress={() => setActiveTab('reset')}>
+              <Text style={[styles.tabText, activeTab === 'reset' && styles.tabTextActive]}>
+                Reset Password
+              </Text>
+            </Pressable>
+          </View>
+
+          {activeTab === 'reset' ? (
+            resetResult ? (
+              <View style={styles.successCard}>
+                <View style={styles.successHeader}>
+                  <CheckCircle2 size={28} color="#16A34A" />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.successTitle}>Password Reset</Text>
+                    <Text style={styles.successSub}>{resetResult.target_name}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.credBox}>
+                  <Text style={styles.credLabel}>Login Email</Text>
+                  <Text style={styles.credValue} selectable>
+                    {resetResult.target_email}
+                  </Text>
+                  <Text style={[styles.credLabel, { marginTop: 10 }]}>
+                    New Password
+                  </Text>
+                  <Text style={styles.credValue} selectable>
+                    {resetResult.password}
+                  </Text>
+                </View>
+
+                <View style={styles.shareBtnRow}>
+                  {resetResult.target_phone ? (
+                    <Pressable
+                      style={[styles.actionBtn, styles.whatsappBtn]}
+                      onPress={() => {
+                        const msg = `Hi ${resetResult.target_name}, your PGwala Owner password has been reset.\n\nEmail: ${resetResult.target_email}\nNew Password: ${resetResult.password}`;
+                        const url = buildWhatsAppReminderUrl(resetResult.target_phone, msg);
+                        if (url) void Linking.openURL(url).catch(() => {});
+                      }}>
+                      <MessageCircle size={16} color="#FFFFFF" />
+                      <Text style={styles.actionBtnText}>WhatsApp</Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    style={[styles.actionBtn, styles.shareBtn]}
+                    onPress={() =>
+                      void Share.share({
+                        title: 'PGwala Owner Password Reset',
+                        message: `Hi ${resetResult.target_name}, your PGwala Owner password has been reset.\n\nEmail: ${resetResult.target_email}\nNew Password: ${resetResult.password}`,
+                      })
+                    }>
+                    <Share2 size={16} color="#FFFFFF" />
+                    <Text style={styles.actionBtnText}>Share / Copy</Text>
+                  </Pressable>
+                </View>
+
+                <Pressable
+                  style={styles.resetBtn}
+                  onPress={() => {
+                    setResetResult(null);
+                    setResetEmail('');
+                    setResetPassword(generateTempPassword());
+                  }}>
+                  <Text style={styles.resetBtnText}>Reset Another Owner</Text>
+                </Pressable>
+              </View>
+            ) : (
+              <View style={styles.formCard}>
+                <Text style={styles.label}>PG Owner Email *</Text>
+                <TextInput
+                  style={styles.input}
+                  value={resetEmail}
+                  onChangeText={setResetEmail}
+                  placeholder="owner@gmail.com"
+                  placeholderTextColor="#94A3B8"
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+
+                <Text style={styles.label}>New Temporary Password *</Text>
+                <View style={styles.passwordRow}>
+                  <TextInput
+                    style={[styles.input, { flex: 1, marginBottom: 0 }]}
+                    value={resetPassword}
+                    onChangeText={setResetPassword}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <Pressable
+                    style={styles.regenBtn}
+                    onPress={() => setResetPassword(generateTempPassword())}>
+                    <RefreshCw size={16} color={OwnerTheme.colors.primary} />
+                  </Pressable>
+                </View>
+
+                <Pressable
+                  disabled={resetting}
+                  style={[styles.submitBtn, resetting && { opacity: 0.6 }]}
+                  onPress={() => void handleResetOwnerPassword()}>
+                  {resetting ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.submitBtnText}>Reset Owner Password</Text>
+                  )}
+                </Pressable>
+              </View>
+            )
+          ) : created ? (
             <View style={styles.successCard}>
               <View style={styles.successHeader}>
                 <CheckCircle2 size={28} color="#16A34A" />
@@ -510,4 +686,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   resetBtnText: { fontSize: 13, fontWeight: '700', color: '#334155' },
+  tabRow: {
+    flexDirection: 'row',
+    backgroundColor: '#E2E8F0',
+    borderRadius: 12,
+    padding: 3,
+    gap: 4,
+    marginBottom: 14,
+  },
+  tabBtn: {
+    flex: 1,
+    paddingVertical: 9,
+    borderRadius: 9,
+    alignItems: 'center',
+  },
+  tabBtnActive: { backgroundColor: '#FFFFFF' },
+  tabText: { fontSize: 13, fontWeight: '600', color: '#64748B' },
+  tabTextActive: { color: OwnerTheme.colors.primary, fontWeight: '700' },
 });

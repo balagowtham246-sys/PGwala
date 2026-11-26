@@ -3,9 +3,6 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
   RefreshControl,
   StyleSheet,
@@ -19,6 +16,7 @@ import { Check, QrCode, UserCheck, X } from 'lucide-react-native';
 
 import { InviteQrModal } from '@/components/residents/InviteQrModal';
 import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import {
   EmptyState,
   OwnerHeader,
@@ -364,32 +362,12 @@ export default function OwnerJoinRequestsScreen() {
       />
 
       {/* Approve & Assign Room Bottom Sheet */}
-      <Modal
+      <BottomSheetModal
         visible={Boolean(selectedReq)}
-        transparent
-        animationType="slide"
-        onRequestClose={() => {
-          if (!submitting) setSelectedReq(null);
-        }}>
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.modalOverlay}>
-          <View style={styles.modalSheet}>
-            <View style={styles.modalHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.modalTitle}>Approve & Admit Resident</Text>
-                <Text style={styles.modalSub}>
-                  {selectedReq?.full_name} · {selectedReq?.phone_number}
-                </Text>
-              </View>
-              <Pressable
-                hitSlop={8}
-                disabled={submitting}
-                onPress={() => setSelectedReq(null)}>
-                <X size={20} color="#64748B" />
-              </Pressable>
-            </View>
-
+        onClose={() => setSelectedReq(null)}
+        title="Approve & Admit Resident"
+        subtitle={`${selectedReq?.full_name ?? ''} · ${selectedReq?.phone_number ?? ''}`}
+        disabled={submitting}>
             <Text style={styles.inputLabel}>Assign Room Number *</Text>
             <TextInput
               style={styles.input}
@@ -455,9 +433,7 @@ export default function OwnerJoinRequestsScreen() {
                 )}
               </Pressable>
             </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      </BottomSheetModal>
 
       <InviteQrModal
         visible={qrModalVisible}

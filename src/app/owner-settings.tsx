@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  KeyboardAvoidingView,
   Modal,
   Platform,
   Pressable,
@@ -36,6 +35,7 @@ import { useToast } from '@/context/toast-context';
 import { supabase } from '@/lib/supabase';
 import { isDeveloperAccessAllowed } from '@/lib/dev-tasks';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerHeader } from '@/components/ui/owner';
 import { BiometricSettingsRow } from '@/components/biometric-settings-row';
 import { SettingsComplianceSection } from '@/components/settings-compliance-section';
@@ -695,41 +695,14 @@ export default function OwnerSettingsScreen() {
         </View>
       </Modal>
 
-      {/* Unified Washing Machines Modal (Live Status + Configure) */}
-      <Modal
+      {/* Unified Washing Machines Bottom Sheet (Live Status + Configure) */}
+      <BottomSheetModal
         visible={wmModalVisible}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          if (!savingWm) setWmModalVisible(false);
-        }}>
-        <KeyboardAvoidingView
-          style={styles.modalBackdrop}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-          <Pressable
-            style={StyleSheet.absoluteFill}
-            accessibilityLabel="Close washing machines modal"
-            onPress={() => {
-              if (!savingWm) setWmModalVisible(false);
-            }}
-          />
-          <View style={styles.modalCard}>
-            <View style={styles.modalHeader}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.modalTitle}>Washing Machines</Text>
-                <Text style={styles.modalSubtitle} numberOfLines={1}>
-                  {selectedProperty?.name || 'Active Property'}
-                </Text>
-              </View>
-              <Pressable
-                accessibilityRole="button"
-                hitSlop={8}
-                disabled={savingWm}
-                onPress={() => setWmModalVisible(false)}>
-                <X size={20} color={OwnerTheme.colors.textMuted} />
-              </Pressable>
-            </View>
-
+        onClose={() => setWmModalVisible(false)}
+        title="Washing Machines"
+        subtitle={selectedProperty?.name || 'Active Property'}
+        disabled={savingWm}
+        maxHeight="88%">
             {/* Unified Tab Switcher */}
             <View style={styles.wmTabRow}>
               <Pressable
@@ -949,9 +922,7 @@ export default function OwnerSettingsScreen() {
                 </View>
               </>
             )}
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      </BottomSheetModal>
     </SafeAreaView>
   );
 }

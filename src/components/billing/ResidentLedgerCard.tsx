@@ -24,6 +24,7 @@ import {
   ResidentRentBillItem,
   ReviewPaymentItem,
 } from '@/services/billing.service';
+import type { PartialPaymentTarget } from '@/components/billing/PartialPaymentModal';
 
 export type ResidentLedgerCardProps =
   | {
@@ -36,6 +37,7 @@ export type ResidentLedgerCardProps =
       onToggleWashingMachine: (item: ResidentRentBillItem) => void;
       onReviewProof: (reviewItem: ReviewPaymentItem) => void;
       onConfirmCashPayment: (chargeId: string) => void;
+      onOpenPartialPayment?: (target: PartialPaymentTarget) => void;
       onSendReminder: (
         residentName: string,
         phoneNumber: string | null | undefined,
@@ -52,6 +54,7 @@ export type ResidentLedgerCardProps =
       onOpenProfile?: (residentId: string) => void;
       onReviewProof: (reviewItem: ReviewPaymentItem) => void;
       onConfirmCashPayment: (chargeId: string) => void;
+      onOpenPartialPayment?: (target: PartialPaymentTarget) => void;
       onSendReminder: (
         residentName: string,
         phoneNumber: string | null | undefined,
@@ -220,11 +223,15 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
       onToggleWashingMachine,
       onReviewProof,
       onConfirmCashPayment,
+      onOpenPartialPayment,
       onSendReminder,
     } = props;
     const isPaid = res.status === 'paid';
     const isNotGen = res.status === 'not_generated';
     const hasReport = res.has_pending_report && !isPaid;
+    const paidPaise = res.paid_paise ?? (isPaid ? res.total_paise : 0);
+    const remainingPaise = res.remaining_paise ?? Math.max(0, res.total_paise - paidPaise);
+    const isPartial = !isPaid && !isNotGen && paidPaise > 0 && remainingPaise > 0;
     const dueStatus = !isPaid && !isNotGen ? formatDueStatus(res.due_date) : null;
 
     return (
@@ -246,6 +253,8 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
                 ]
                   .filter(Boolean)
                   .join(' · ')
+              : isPartial
+              ? `Partial · ${formatPaiseToRupees(remainingPaise)} due`
               : hasReport
               ? toSentenceCaseStatus('pending')
               : isNotGen
@@ -255,7 +264,7 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
           badgeVariant={
             isPaid
               ? 'success'
-              : hasReport
+              : isPartial || hasReport
               ? 'warning'
               : isNotGen
               ? 'neutral'
@@ -334,9 +343,11 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
           </View>
 
           <View style={styles.totalRow}>
-            <Text style={styles.totalLabel}>Total</Text>
+            <Text style={styles.totalLabel}>
+              {isPartial ? `Paid ${formatPaiseToRupees(paidPaise)} · Due` : 'Total'}
+            </Text>
             <Text style={styles.totalValue}>
-              {formatPaiseToRupees(res.total_paise)}
+              {formatPaiseToRupees(isPartial ? remainingPaise : res.total_paise)}
             </Text>
           </View>
         </View>
@@ -397,6 +408,18 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
                     );
                     return;
                   }
+                  if (onOpenPartialPayment) {
+                    onOpenPartialPayment({
+                      chargeId: res.charge_id,
+                      residentName: res.full_name,
+                      roomNumber: res.room_number,
+                      billLabel: `${monthLabel} Rent`,
+                      totalPaise: res.total_paise,
+                      alreadyPaidPaise: paidPaise,
+                      remainingPaise: remainingPaise > 0 ? remainingPaise : res.total_paise,
+                    });
+                    return;
+                  }
                   Alert.alert(
                     'Confirm In-Person Cash Payment',
                     `Confirm cash payment of ${formatPaiseToRupees(
@@ -415,7 +438,9 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
                   );
                 }}>
                 <Check size={14} color={OwnerTheme.colors.textPrimary} />
-                <Text style={styles.cashActionBtnText}>Mark paid</Text>
+                <Text style={styles.cashActionBtnText}>
+                  {isPartial ? 'Record balance' : 'Mark paid'}
+                </Text>
               </Pressable>
             </View>
           </>
@@ -432,10 +457,14 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
       onOpenProfile,
       onReviewProof,
       onConfirmCashPayment,
+      onOpenPartialPayment,
       onSendReminder,
     } = props;
     const isPaid = res.status === 'paid';
     const hasReport = res.has_pending_report && !isPaid;
+    const paidPaise = res.paid_paise ?? (isPaid ? res.amount_paise : 0);
+    const remainingPaise = res.remaining_paise ?? Math.max(0, res.amount_paise - paidPaise);
+    const isPartial = !isPaid && paidPaise > 0 && remainingPaise > 0;
     const dueStatus = !isPaid ? formatDueStatus(res.due_date) : null;
 
     return (
@@ -519,6 +548,18 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
                 accessibilityRole="button"
                 style={styles.cashActionBtn}
                 onPress={() => {
+                  if (onOpenPartialPayment && res.charge_id) {
+                    onOpenPartialPayment({
+                      chargeId: res.charge_id,
+                      residentName: res.full_name,
+                      roomNumber: res.room_number,
+                      billLabel: `${monthLabel} EB`,
+                      totalPaise: res.amount_paise,
+                      alreadyPaidPaise: paidPaise,
+                      remainingPaise: remainingPaise > 0 ? remainingPaise : res.amount_paise,
+                    });
+                    return;
+                  }
                   Alert.alert(
                     'Confirm In-Person Cash Payment',
                     `Confirm cash payment of ${formatPaiseToRupees(
@@ -534,7 +575,9 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
                   );
                 }}>
                 <Check size={14} color={OwnerTheme.colors.textPrimary} />
-                <Text style={styles.cashActionBtnText}>Mark paid</Text>
+                <Text style={styles.cashActionBtnText}>
+                  {isPartial ? 'Record balance' : 'Mark paid'}
+                </Text>
               </Pressable>
             </View>
           </>

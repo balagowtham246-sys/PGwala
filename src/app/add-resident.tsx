@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { Href, router, useFocusEffect } from 'expo-router';
+import { Href, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   AlertCircle,
@@ -41,6 +41,7 @@ import {
   ResidentGender,
   validateIndianPhone,
 } from '@/lib/ux-utils';
+import { markBedReservationConverted } from '@/services/bed-reservations.service';
 import { writeLocalResidentMeta } from '@/services/residents.service';
 import {
   AddResidentAccountStep,
@@ -145,6 +146,15 @@ async function persistExtendedResidentFields(
 export default function AddResidentScreen() {
   const { user, profile } = useAuth();
   const { properties, selectedProperty } = useProperty();
+  const routeParams = useLocalSearchParams<{
+    roomNumber?: string;
+    bedLabel?: string;
+    fullName?: string;
+    phoneNumber?: string;
+    joiningDate?: string;
+    depositAmount?: string;
+    reservationId?: string;
+  }>();
   const ownerId = user?.id;
 
   const [fallbackProperties, setFallbackProperties] = useState<
@@ -169,15 +179,37 @@ export default function AddResidentScreen() {
     string | null
   >(() => selectedProperty?.id ?? null);
 
-  // Form Fields
-  const [fullName, setFullName] = useState('');
-  const [roomNumber, setRoomNumber] = useState('');
-  const [bedLabel, setBedLabel] = useState('');
-  const [phoneNumber, setPhoneNumber] = useState('');
-  const [joiningDate, setJoiningDate] = useState(() => getTodayIsoDate());
+  // Form Fields (pre-filled when launched from Bed Map or Reserved Bed conversion)
+  const [fullName, setFullName] = useState(() =>
+    typeof routeParams.fullName === 'string' ? routeParams.fullName : ''
+  );
+  const [roomNumber, setRoomNumber] = useState(() =>
+    typeof routeParams.roomNumber === 'string' ? routeParams.roomNumber : ''
+  );
+  const [bedLabel, setBedLabel] = useState(() =>
+    typeof routeParams.bedLabel === 'string' ? routeParams.bedLabel : ''
+  );
+  const [phoneNumber, setPhoneNumber] = useState(() =>
+    typeof routeParams.phoneNumber === 'string' ? routeParams.phoneNumber : ''
+  );
+  const [joiningDate, setJoiningDate] = useState(() =>
+    typeof routeParams.joiningDate === 'string' &&
+    isValidIsoDate(routeParams.joiningDate)
+      ? routeParams.joiningDate
+      : getTodayIsoDate()
+  );
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [monthlyRent, setMonthlyRent] = useState('');
-  const [depositAmount, setDepositAmount] = useState('');
+  const [depositAmount, setDepositAmount] = useState(() =>
+    typeof routeParams.depositAmount === 'string'
+      ? routeParams.depositAmount
+      : ''
+  );
+  const sourceReservationId =
+    typeof routeParams.reservationId === 'string' &&
+    routeParams.reservationId.trim().length > 0
+      ? routeParams.reservationId.trim()
+      : null;
   const [emergencyContact, setEmergencyContact] = useState('');
   const [email, setEmail] = useState('');
   const [temporaryPassword, setTemporaryPassword] = useState('');
@@ -535,6 +567,12 @@ export default function AddResidentScreen() {
             deposit_paise: input.depositPaise,
             emergency_contact: input.emergencyContact || null,
           });
+          if (sourceReservationId) {
+            await markBedReservationConverted(
+              sourceReservationId,
+              createdResidentId
+            );
+          }
         }
 
         return { edgeData, createdResidentId };

@@ -33,6 +33,78 @@ export function buildJoinDeepLink(code: string): string {
 }
 
 /**
+ * Builds the Expo Router deep link encoded inside the physical Gate Check-In QR poster.
+ */
+export function buildGateCheckInDeepLink(propertyId: string): string {
+  return `pgwala://resident-gate-history?propertyId=${encodeURIComponent(propertyId.trim())}&source=gate_qr`;
+}
+
+/**
+ * Builds a shareable WhatsApp/print text for the physical entrance Gate Check-In QR poster.
+ */
+export function buildGatePosterShareMessage(params: {
+  propertyName: string;
+  propertyId: string;
+}): string {
+  return [
+    `*${params.propertyName} — Gate Check-In / Out QR*`,
+    '',
+    'Scan the entrance QR code in PGwala whenever leaving or returning to the PG.',
+    '',
+    `Quick Gate Link: ${buildGateCheckInDeepLink(params.propertyId)}`,
+  ].join('\n');
+}
+
+/**
+ * Builds a crisp, WhatsApp-ready vacancy broadcast card for PG owners (zero-CAC growth).
+ */
+export function buildVacancyShareMessage(params: {
+  propertyName: string;
+  address?: string | null;
+  genderLabel?: string | null;
+  freeBedsCount: number;
+  vacatingBedsCount?: number;
+  roomHighlights?: string[];
+  inviteCode?: string | null;
+}): string {
+  const lines: string[] = [];
+  const headerTag = params.genderLabel ? ` (${params.genderLabel})` : '';
+  lines.push(`*Beds Available at ${params.propertyName}${headerTag}*`);
+  if (params.address?.trim()) {
+    lines.push(`Location: ${params.address.trim()}`);
+  }
+  lines.push('');
+
+  const summaryParts: string[] = [];
+  if (params.freeBedsCount > 0) {
+    summaryParts.push(
+      `${params.freeBedsCount} free bed${params.freeBedsCount === 1 ? '' : 's'} ready now`
+    );
+  }
+  if (params.vacatingBedsCount && params.vacatingBedsCount > 0) {
+    summaryParts.push(
+      `${params.vacatingBedsCount} vacating soon`
+    );
+  }
+  if (summaryParts.length > 0) {
+    lines.push(`Availability: ${summaryParts.join(' · ')}`);
+  }
+
+  if (params.roomHighlights && params.roomHighlights.length > 0) {
+    lines.push(`Rooms: ${params.roomHighlights.slice(0, 6).join(', ')}`);
+  }
+
+  lines.push('');
+  if (params.inviteCode) {
+    lines.push(`Join directly on PGwala with code: *${normalizeInviteCode(params.inviteCode)}*`);
+  } else {
+    lines.push('Reply or call to book a visit and reserve your bed today!');
+  }
+
+  return lines.join('\n');
+}
+
+/**
  * Builds a friendly, zero-cost WhatsApp message owners can forward to new or existing residents.
  */
 export function buildInviteWhatsAppMessage(params: {

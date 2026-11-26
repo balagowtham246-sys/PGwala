@@ -2,7 +2,6 @@ import React, { memo } from 'react';
 import {
   ActivityIndicator,
   Image,
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -29,6 +28,7 @@ import {
   ComplaintPriority,
   ComplaintStatus,
 } from '@/components/complaints/OwnerComplaintsModals';
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerSharedStyles } from '@/components/ui/owner';
 
 export interface StudentComplaintItem {
@@ -206,20 +206,13 @@ export function RaiseComplaintModal({
   onClose: () => void;
 }) {
   return (
-    <Modal
+    <BottomSheetModal
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={() => {
-        if (!submitting) onClose();
-      }}>
-      <View style={OwnerSharedStyles.modalOverlay}>
-        <View style={[OwnerSharedStyles.modalCard, { maxHeight: '88%' }]}>
-          <Text style={OwnerSharedStyles.modalTitle}>Raise Complaint / Request</Text>
-          <Text style={OwnerSharedStyles.modalSub}>
-            Let your PG owner know what needs maintenance or repair in your room.
-          </Text>
-
+      onClose={onClose}
+      title="Raise Complaint / Request"
+      subtitle="Report repairs or requests directly to your PG owner"
+      disabled={submitting}
+      maxHeight="88%">
           <ScrollView showsVerticalScrollIndicator={false}>
             <Text style={OwnerSharedStyles.inputLabel}>Select Category</Text>
             <View style={styles.categoryWrap}>
@@ -352,9 +345,7 @@ export function RaiseComplaintModal({
               )}
             </Pressable>
           </View>
-        </View>
-      </View>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 

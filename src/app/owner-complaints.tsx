@@ -3,6 +3,7 @@ import { DarkSlateHeroCard } from '@/components/ui/dark-slate-hero-card';
 import { router, useLocalSearchParams } from 'expo-router';
 import {
   CheckCircle2,
+  Plus,
   SlidersHorizontal,
   X,
 } from 'lucide-react-native';
@@ -33,6 +34,7 @@ import {
   OwnerComplaintItem,
   OwnerComplaintRow,
 } from '@/components/complaints/OwnerComplaintsModals';
+import { FloatingActionPill } from '@/components/ui/floating-action-pill';
 import { OwnerHeader } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -377,37 +379,30 @@ export default function OwnerComplaintsScreen() {
     return sortComplaintsByUrgencyThenDate(filtered);
   }, [residentScopedComplaints, statusFilter, categoryFilter, priorityFilter]);
 
+  const complaintKeyExtractor = useCallback((item: OwnerComplaintItem) => item.id, []);
+
+  const renderComplaintRow = useCallback(
+    ({ item }: { item: OwnerComplaintItem }) => (
+      <OwnerComplaintRow
+        item={item}
+        onViewPhoto={(url) => void handleViewPhoto(url)}
+        onOpenActionModal={handleOpenActionModal}
+        onDelete={handleDeleteComplaint}
+      />
+    ),
+    [handleDeleteComplaint]
+  );
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       <OwnerHeader
         title="Maintenance & Issues"
         subtitle={propertyName}
-        rightAction={
-          propertyId ? (
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Log complaint"
-              style={({ pressed }) => [
-                styles.headerLogBtn,
-                pressed && { opacity: 0.85 },
-              ]}
-              onPress={handleOpenCreateModal}>
-              <Text style={styles.headerLogBtnText}>+ Log</Text>
-            </Pressable>
-          ) : undefined
-        }
       />
       <FlatList
         data={loading || !propertyId ? [] : filteredComplaints}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <OwnerComplaintRow
-            item={item}
-            onViewPhoto={(url) => void handleViewPhoto(url)}
-            onOpenActionModal={handleOpenActionModal}
-            onDelete={handleDeleteComplaint}
-          />
-        )}
+        keyExtractor={complaintKeyExtractor}
+        renderItem={renderComplaintRow}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         initialNumToRender={12}
@@ -664,6 +659,17 @@ export default function OwnerComplaintsScreen() {
         onClose={() => setFullImageUrl(null)}
       />
 
+      {/* Thumb-Friendly Floating Action Pill */}
+      {Boolean(propertyId) && (
+        <FloatingActionPill
+          label="Log Issue"
+          icon={Plus}
+          hasBottomNav
+          accessibilityLabel="Log Maintenance Issue"
+          onPress={handleOpenCreateModal}
+        />
+      )}
+
       <RoleBottomNav activeTab="maintenance" roleOverride="owner" />
     </SafeAreaView>
   );
@@ -677,7 +683,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 16,
     paddingTop: 10,
-    paddingBottom: 40,
+    paddingBottom: 96,
   },
   headerLogBtn: {
     flexDirection: 'row',

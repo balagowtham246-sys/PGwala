@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
-  Modal,
   Pressable,
   ScrollView,
   Share,
@@ -13,11 +12,13 @@ import {
 } from 'react-native';
 import Svg, { Path, Rect } from 'react-native-svg';
 import {
-  QrCode,
+  DoorOpen,
   RefreshCw,
   Share2,
-  X,
+  UserPlus,
 } from 'lucide-react-native';
+
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 
 import {
   HIGH_CONTRAST_SWITCH_COLORS,
@@ -26,6 +27,8 @@ import {
 import { OwnerTheme } from '@/constants/theme';
 import { useToast } from '@/context/toast-context';
 import {
+  buildGateCheckInDeepLink,
+  buildGatePosterShareMessage,
   buildInviteWhatsAppMessage,
   buildJoinDeepLink,
   buildQrSvgPath,
@@ -51,6 +54,7 @@ export function InviteQrModal({
   onClose,
 }: InviteQrModalProps) {
   const { showToast } = useToast();
+  const [activeTab, setActiveTab] = useState<'join' | 'gate'>('join');
   const [loading, setLoading] = useState(false);
   const [inviteCode, setInviteCode] = useState<string | null>(null);
   const [inviteEnabled, setInviteEnabled] = useState(true);
@@ -85,12 +89,34 @@ export function InviteQrModal({
     }
   }, [inviteCode]);
 
+  const gateQrMatrix = useMemo(() => {
+    if (!propertyId) return null;
+    try {
+      return buildQrSvgPath(buildGateCheckInDeepLink(propertyId));
+    } catch {
+      return null;
+    }
+  }, [propertyId]);
+
   const handleShare = async () => {
     if (!inviteCode) return;
     const message = buildInviteWhatsAppMessage({ propertyName, inviteCode });
     try {
       await Share.share({
         title: `Join ${propertyName} on PGwala`,
+        message,
+      });
+    } catch {
+      Alert.alert('Share Unavailable', 'Could not open share sheet on this device.');
+    }
+  };
+
+  const handleShareGatePoster = async () => {
+    if (!propertyId) return;
+    const message = buildGatePosterShareMessage({ propertyName, propertyId });
+    try {
+      await Share.share({
+        title: `${propertyName} Gate Check-In QR`,
         message,
       });
     } catch {
@@ -148,27 +174,105 @@ export function InviteQrModal({
   };
 
   return (
-    <Modal
+    <BottomSheetModal
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}>
-      <View style={styles.overlay}>
-        <View style={styles.sheet}>
-          <View style={styles.headerRow}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <QrCode size={18} color={OwnerTheme.colors.primary} />
-              <Text style={styles.sheetTitle}>PG Invite QR & Code</Text>
-            </View>
-            <Pressable hitSlop={8} onPress={onClose}>
-              <X size={20} color="#64748B" />
+      onClose={onClose}
+      title="PG QR Posters"
+      subtitle={propertyName}
+      maxHeight="92%">
+      {/* 2-Tab Switcher: Join PG QR | Gate Check-In QR */}
+          <View style={styles.tabRow}>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: activeTab === 'join' }}
+              style={[
+                styles.tabBtn,
+                activeTab === 'join' && styles.tabBtnActive,
+              ]}
+              onPress={() => setActiveTab('join')}>
+              <UserPlus
+                size={14}
+                color={activeTab === 'join' ? '#FFFFFF' : '#475569'}
+              />
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === 'join' && styles.tabTextActive,
+                ]}>
+                Join PG QR
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityState={{ selected: activeTab === 'gate' }}
+              style={[
+                styles.tabBtn,
+                activeTab === 'gate' && styles.tabBtnActive,
+              ]}
+              onPress={() => setActiveTab('gate')}>
+              <DoorOpen
+                size={14}
+                color={activeTab === 'gate' ? '#FFFFFF' : '#475569'}
+              />
+              <Text
+                style={[
+                  styles.tabText,
+                  activeTab === 'gate' && styles.tabTextActive,
+                ]}>
+                Gate Check-In QR
+              </Text>
             </Pressable>
           </View>
 
           <ScrollView
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{ paddingBottom: 12 }}>
-            {loading ? (
+            {activeTab === 'gate' ? (
+              <>
+                <View style={styles.posterCard}>
+                  <Text style={styles.posterEyebrow}>ENTRANCE GATE CHECK-IN / OUT</Text>
+                  <Text style={styles.posterPgName} numberOfLines={2}>
+                    {propertyName}
+                  </Text>
+
+                  <View style={styles.qrFrame}>
+                    {gateQrMatrix && (
+                      <Svg
+                        width={184}
+                        height={184}
+                        viewBox={`-2 -2 ${gateQrMatrix.size + 4} ${gateQrMatrix.size + 4}`}>
+                        <Rect
+                          x={-2}
+                          y={-2}
+                          width={gateQrMatrix.size + 4}
+                          height={gateQrMatrix.size + 4}
+                          fill="#FFFFFF"
+                        />
+                        <Path d={gateQrMatrix.pathData} fill="#0F172A" />
+                      </Svg>
+                    )}
+                  </View>
+
+                  <Text style={styles.posterCodeLabel}>PRINT & STICK AT PG ENTRANCE</Text>
+                  <Text style={styles.posterHint}>
+                    Residents scan to open Gate Check-In / Out instantly in PGwala
+                  </Text>
+                </View>
+
+                <Pressable
+                  accessibilityRole="button"
+                  style={({ pressed }) => [
+                    styles.shareBtn,
+                    pressed && { opacity: 0.85 },
+                  ]}
+                  onPress={() => void handleShareGatePoster()}>
+                  <Share2 size={16} color="#FFFFFF" />
+                  <Text style={styles.shareBtnText}>
+                    Share Gate Check-In Link
+                  </Text>
+                </Pressable>
+              </>
+            ) : loading ? (
               <View style={styles.loadingWrap}>
                 <ActivityIndicator size="large" color={OwnerTheme.colors.primary} />
               </View>
@@ -290,9 +394,7 @@ export function InviteQrModal({
               </>
             )}
           </ScrollView>
-        </View>
-      </View>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 
@@ -315,7 +417,34 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  tabRow: {
+    flexDirection: 'row',
+    backgroundColor: '#E2E8F0',
+    borderRadius: 12,
+    padding: 3,
     marginBottom: 14,
+  },
+  tabBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    borderRadius: 9,
+  },
+  tabBtnActive: {
+    backgroundColor: OwnerTheme.colors.primary,
+  },
+  tabText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#475569',
+  },
+  tabTextActive: {
+    color: '#FFFFFF',
   },
   sheetTitle: {
     fontSize: 17,

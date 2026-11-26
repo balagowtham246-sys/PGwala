@@ -25,6 +25,10 @@ export const queryKeys = {
     all: ['residents'] as const,
     directory: (propertyId: string) =>
       ['residents', 'directory', propertyId] as const,
+    rooms: (propertyId: string) =>
+      ['residents', 'rooms', propertyId] as const,
+    reservations: (propertyId: string) =>
+      ['residents', 'reservations', propertyId] as const,
     detail: (residentId: string) =>
       ['residents', 'detail', residentId] as const,
     activePeers: (propertyId: string) =>

@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -12,10 +11,9 @@ import {
   Check,
   Copy,
   MessageCircle,
-  X,
 } from 'lucide-react-native';
 
-import { OwnerSharedStyles } from '@/components/ui/owner';
+import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerTheme } from '@/constants/theme';
 import {
   buildWhatsAppReminderUrl,
@@ -56,32 +54,12 @@ export function BulkReminderModal({
   onCopyAll,
 }: BulkReminderModalProps) {
   return (
-    <Modal
+    <BottomSheetModal
       visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}>
-      <View style={OwnerSharedStyles.sheetOverlay}>
-        <Pressable style={OwnerSharedStyles.sheetBackdrop} onPress={onClose} />
-        <View style={OwnerSharedStyles.sheetCard}>
-          <View style={OwnerSharedStyles.sheetHandle} />
-          <View style={styles.bulkModalHeader}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.bulkModalTitle}>Bulk Payment Reminders</Text>
-              <Text style={styles.bulkModalSub}>
-                {targets.length} unpaid resident
-                {targets.length === 1 ? '' : 's'} · {monthLabel}
-              </Text>
-            </View>
-            <Pressable
-              accessibilityRole="button"
-              accessibilityLabel="Close reminders modal"
-              hitSlop={8}
-              onPress={onClose}>
-              <X size={20} color={OwnerTheme.colors.textSecondary} />
-            </Pressable>
-          </View>
-
+      onClose={onClose}
+      title="Bulk Payment Reminders"
+      subtitle={`${targets.length} unpaid resident${targets.length === 1 ? '' : 's'} · ${monthLabel}`}
+      maxHeight="85%">
           {bulkContactIssueCount > 0 && (
             <View style={styles.bulkWarningBanner}>
               <AlertTriangle size={15} color="#B45309" />
@@ -188,9 +166,7 @@ export function BulkReminderModal({
               <Text style={styles.copyAllBtnText}>Copy all reminders</Text>
             </Pressable>
           </View>
-        </View>
-      </View>
-    </Modal>
+    </BottomSheetModal>
   );
 }
 

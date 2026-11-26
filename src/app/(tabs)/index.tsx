@@ -27,6 +27,7 @@ import {
   PropertySwitcherModal,
 } from '@/components/owner-dashboard/OwnerDashboardModals';
 import { OwnerMetricsGrid } from '@/components/owner-dashboard/OwnerMetricsGrid';
+import { OwnerSetupChecklist } from '@/components/owner-dashboard/OwnerSetupChecklist';
 import { RecentActivitySection } from '@/components/owner-dashboard/RecentActivitySection';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { DashboardSkeleton, ErrorState } from '@/components/ui/owner';
@@ -38,6 +39,7 @@ import {
   useOwnerDashboardQuery,
   useOwnerUnreadInboxQuery,
 } from '@/hooks/use-dashboards';
+import { usePropertyRoomsQuery } from '@/hooks/use-bed-reservations';
 import { invalidatePrefix } from '@/lib/query-cache';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { queryKeys } from '@/lib/query-keys';
@@ -282,6 +284,17 @@ export default function OwnerDashboard() {
   });
   const pendingJoinCount = pendingJoinQuery.data ?? 0;
 
+  // Only fetch rooms count when resident count is 0 (so established PGs pay zero extra query cost)
+  const setupRoomsQuery = usePropertyRoomsQuery(
+    canQueryOwner && stats.totalResidents === 0 ? selectedPropertyId : null,
+    selectedProperty?.gender_type ?? undefined
+  );
+  const hasRoomsConfigured =
+    stats.totalResidents > 0 || (setupRoomsQuery.data?.length ?? 0) > 0;
+  const hasUpiOrCurfew = Boolean(
+    selectedProperty?.upi_id?.trim() || selectedProperty?.curfew_time?.trim()
+  );
+
   const handleRefresh = () => {
     setManualRefreshing(true);
     void Promise.all([
@@ -418,6 +431,18 @@ export default function OwnerDashboard() {
               stats={stats}
               totalBeds={selectedProperty?.total_beds ?? 0}
             />
+
+            {/* Auto-Hiding Day-1 Owner Setup Checklist (disappears once all 3 steps are done) */}
+            {selectedProperty && (
+              <OwnerSetupChecklist
+                hasUpiOrCurfew={hasUpiOrCurfew}
+                hasRooms={hasRoomsConfigured}
+                hasResidents={stats.totalResidents > 0}
+                onPressUpiCurfew={() => router.push('/owner-properties')}
+                onPressCreateRooms={() => router.push('/residents-directory')}
+                onPressAddResident={() => router.push('/add-resident')}
+              />
+            )}
 
             {/* Today's Food Menu Strip */}
             <Pressable

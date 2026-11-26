@@ -3,11 +3,13 @@ import {
   Edit3,
   Info,
   MessageCircle,
+  Plus,
   Share2,
   X,
   Zap,
 } from 'lucide-react-native';
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -31,23 +33,39 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { BillingSummaryHeader } from '@/components/billing/BillingSummaryHeader';
 import { BulkReminderModal } from '@/components/billing/BulkReminderModal';
 import { ChargeFormModal } from '@/components/billing/ChargeFormModal';
+import { ExpensesSection } from '@/components/billing/ExpensesSection';
+import {
+  PartialPaymentModal,
+  PartialPaymentTarget,
+} from '@/components/billing/PartialPaymentModal';
 import { PaymentReportReviewModal } from '@/components/billing/PaymentReportReviewModal';
 import { ResidentLedgerCard } from '@/components/billing/ResidentLedgerCard';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { BillingSkeleton, EmptyState, OwnerHeader } from '@/components/ui/owner';
+import { FloatingActionPill } from '@/components/ui/floating-action-pill';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
 import {
+  useAddPropertyExpenseMutation,
+  useDeletePropertyExpenseMutation,
+  usePropertyExpensesQuery,
+} from '@/hooks/use-expenses';
+import {
   useAllocateEbBillMutation,
   useConfirmMonthlyPaymentMutation,
   useGenerateMonthlyBillsMutation,
   useOwnerBillingQuery,
+  useRecordPartialPaymentMutation,
   useRejectPaymentReportMutation,
   useToggleWmBillingMutation,
   useUpdateResidentRentMutation,
 } from '@/hooks/use-owner-billing';
+import {
+  consumePendingBillingMode,
+  subscribeBillingModeRequests,
+} from '@/lib/billing-nav';
 import {
   buildMonthlyRentCsv,
   buildMonthlyRentSummaryText,
@@ -72,7 +90,18 @@ export default function SimplifiedBillingManagementScreen() {
   const { user } = useAuth();
   const { selectedProperty, selectedPropertyId } = useProperty();
   const { showToast } = useToast();
-  const params = useLocalSearchParams<{ residentId?: string | string[] }>();
+  const params = useLocalSearchParams<{
+    residentId?: string | string[];
+    mode?: string | string[];
+  }>();
+  const rawParamMode = Array.isArray(params.mode) ? params.mode[0] : params.mode;
+  const paramMode: BillingMode | null =
+    rawParamMode === 'RENT' ||
+    rawParamMode === 'EB' ||
+    rawParamMode === 'COMBINED' ||
+    rawParamMode === 'EXPENSES'
+      ? rawParamMode
+      : null;
   const rawParamResidentId = Array.isArray(params.residentId)
     ? params.residentId[0]
     : params.residentId;
@@ -117,8 +146,18 @@ export default function SimplifiedBillingManagementScreen() {
 
   const [manualRefreshing, setManualRefreshing] = useState(false);
 
-  // Top Section Mode: 'RENT' | 'EB' | 'COMBINED'
-  const [billingMode, setBillingMode] = useState<BillingMode>('RENT');
+  // Top Section Mode: 'RENT' | 'EB' | 'COMBINED' | 'EXPENSES'
+  const [billingMode, setBillingMode] = useState<BillingMode>(
+    () => paramMode ?? consumePendingBillingMode() ?? 'RENT'
+  );
+
+  useEffect(() => {
+    const unsubscribe = subscribeBillingModeRequests((nextMode) => {
+      consumePendingBillingMode();
+      setBillingMode(nextMode);
+    });
+    return unsubscribe;
+  }, []);
 
   // Month navigation: default to current month
   const [selectedDate, setSelectedDate] = useState(() => {
@@ -140,6 +179,7 @@ export default function SimplifiedBillingManagementScreen() {
 
   // EB Bills Modals State
   const [splitEbModalVisible, setSplitEbModalVisible] = useState(false);
+  const [expenseModalVisible, setExpenseModalVisible] = useState(false);
   const [selectedRoomForEbState, setSelectedRoomForEb] = useState<string>('');
   const [ebTotalRupeesInput, setEbTotalRupeesInput] = useState('');
 
@@ -163,6 +203,9 @@ export default function SimplifiedBillingManagementScreen() {
   const [loadingReviewUrl, setLoadingReviewUrl] = useState(false);
   const [showRejectForm, setShowRejectForm] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
+
+  const [partialPaymentTarget, setPartialPaymentTarget] =
+    useState<PartialPaymentTarget | null>(null);
 
   const mountedRef = useRef(true);
   const lastErrorAtRef = useRef(0);
@@ -232,12 +275,22 @@ export default function SimplifiedBillingManagementScreen() {
   const allocateEbMutation = useAllocateEbBillMutation();
   const toggleWmMutation = useToggleWmBillingMutation();
   const confirmPaymentMutation = useConfirmMonthlyPaymentMutation();
+  const recordPartialMutation = useRecordPartialPaymentMutation();
   const rejectPaymentMutation = useRejectPaymentReportMutation();
 
   const snapshot = billingQuery.data;
   const loading = billingQuery.isPending && !snapshot;
   const refreshing = manualRefreshing;
   const propertyId = snapshot?.propertyId ?? activeSelectedPropertyId ?? null;
+
+  const expensesQuery = usePropertyExpensesQuery({
+    propertyId,
+    monthIsoStart,
+    monthIsoEnd,
+    enabled: billingMode === 'EXPENSES',
+  });
+  const addExpenseMutation = useAddPropertyExpenseMutation();
+  const deleteExpenseMutation = useDeletePropertyExpenseMutation();
   const propertyName =
     snapshot?.propertyName ?? activeSelectedPropertyName ?? 'My PG';
   const rentBills = useMemo(
@@ -623,76 +676,116 @@ export default function SimplifiedBillingManagementScreen() {
 
   // RENT Metrics & Filtering
   const rentTotalCount = rentBills.length;
-  const rentPaidCount = rentBills.filter((r) => r.status === 'paid').length;
-  const rentReviewCount = rentBills.filter(
-    (r) => r.has_pending_report && r.status !== 'paid'
-  ).length;
-  const rentUnpaidCount = rentBills.filter((r) => r.status === 'unpaid').length;
-  const rentUngeneratedCount = rentBills.filter(
-    (r) => r.status === 'not_generated'
-  ).length;
+  // Rent Metrics & Filtering (memoized so modal toggles / keystrokes don't re-scan)
+  const {
+    rentPaidCount,
+    rentReviewCount,
+    rentUnpaidCount,
+    rentUngeneratedCount,
+    rentTotalBilledPaise,
+    rentTotalCollectedPaise,
+    rentUnpaidPaise,
+  } = useMemo(() => {
+    let paid = 0;
+    let review = 0;
+    let unpaid = 0;
+    let ungenerated = 0;
+    let billedPaise = 0;
+    let collectedPaise = 0;
 
-  const rentTotalBilledPaise = rentBills.reduce(
-    (acc, r) => acc + (r.charge_id ? r.total_paise : 0),
-    0
-  );
-  const rentTotalCollectedPaise = rentBills.reduce(
-    (acc, r) => acc + (r.status === 'paid' ? r.total_paise : 0),
-    0
-  );
-  const rentUnpaidPaise = Math.max(
-    0,
-    rentTotalBilledPaise - rentTotalCollectedPaise
+    for (const r of rentBills) {
+      if (r.status === 'paid') paid += 1;
+      else if (r.status === 'unpaid') unpaid += 1;
+      else if (r.status === 'not_generated') ungenerated += 1;
+      if (r.has_pending_report && r.status !== 'paid') review += 1;
+      if (r.charge_id) billedPaise += r.total_paise;
+      collectedPaise += r.paid_paise ?? (r.status === 'paid' ? r.total_paise : 0);
+    }
+
+    return {
+      rentPaidCount: paid,
+      rentReviewCount: review,
+      rentUnpaidCount: unpaid,
+      rentUngeneratedCount: ungenerated,
+      rentTotalBilledPaise: billedPaise,
+      rentTotalCollectedPaise: collectedPaise,
+      rentUnpaidPaise: Math.max(0, billedPaise - collectedPaise),
+    };
+  }, [rentBills]);
+
+  const filteredRentList = useMemo(
+    () =>
+      rentBills.filter((r) => {
+        if (activeResidentFilterId && r.resident_id !== activeResidentFilterId) {
+          return false;
+        }
+        if (filterTab === 'REVIEW') {
+          return r.has_pending_report && r.status !== 'paid';
+        }
+        if (filterTab === 'UNPAID') {
+          return r.status === 'unpaid' || r.status === 'not_generated';
+        }
+        if (filterTab === 'PAID') return r.status === 'paid';
+        return true;
+      }),
+    [rentBills, activeResidentFilterId, filterTab]
   );
 
-  const filteredRentList = rentBills.filter((r) => {
-    if (activeResidentFilterId && r.resident_id !== activeResidentFilterId) {
-      return false;
-    }
-    if (filterTab === 'REVIEW') {
-      return r.has_pending_report && r.status !== 'paid';
-    }
-    if (filterTab === 'UNPAID') {
-      return r.status === 'unpaid' || r.status === 'not_generated';
-    }
-    if (filterTab === 'PAID') return r.status === 'paid';
-    return true;
-  });
+  // EB Metrics & Filtering (memoized)
+  const {
+    ebBilledResidents,
+    ebTotalCount,
+    ebPaidCount,
+    ebReviewCount,
+    ebUnpaidCount,
+    ebTotalBilledPaise,
+    ebTotalCollectedPaise,
+    ebUnpaidPaise,
+  } = useMemo(() => {
+    const billed: ResidentEbBillItem[] = [];
+    let paid = 0;
+    let review = 0;
+    let unpaid = 0;
+    let billedPaise = 0;
+    let collectedPaise = 0;
 
-  // EB Metrics & Filtering
-  const ebBilledResidents = ebBills.filter((r) => r.charge_id !== null);
-  const ebTotalCount = ebBilledResidents.length;
-  const ebPaidCount = ebBilledResidents.filter(
-    (r) => r.status === 'paid'
-  ).length;
-  const ebReviewCount = ebBilledResidents.filter(
-    (r) => r.has_pending_report && r.status !== 'paid'
-  ).length;
-  const ebUnpaidCount = ebBilledResidents.filter(
-    (r) => r.status === 'unpaid'
-  ).length;
+    for (const r of ebBills) {
+      if (r.charge_id === null) continue;
+      billed.push(r);
+      if (r.status === 'paid') paid += 1;
+      else if (r.status === 'unpaid') unpaid += 1;
+      if (r.has_pending_report && r.status !== 'paid') review += 1;
+      billedPaise += r.amount_paise;
+      collectedPaise += r.paid_paise ?? (r.status === 'paid' ? r.amount_paise : 0);
+    }
 
-  const ebTotalBilledPaise = ebBilledResidents.reduce(
-    (acc, r) => acc + r.amount_paise,
-    0
+    return {
+      ebBilledResidents: billed,
+      ebTotalCount: billed.length,
+      ebPaidCount: paid,
+      ebReviewCount: review,
+      ebUnpaidCount: unpaid,
+      ebTotalBilledPaise: billedPaise,
+      ebTotalCollectedPaise: collectedPaise,
+      ebUnpaidPaise: Math.max(0, billedPaise - collectedPaise),
+    };
+  }, [ebBills]);
+
+  const filteredEbList = useMemo(
+    () =>
+      ebBilledResidents.filter((r) => {
+        if (activeResidentFilterId && r.resident_id !== activeResidentFilterId) {
+          return false;
+        }
+        if (filterTab === 'REVIEW') {
+          return r.has_pending_report && r.status !== 'paid';
+        }
+        if (filterTab === 'UNPAID') return r.status === 'unpaid';
+        if (filterTab === 'PAID') return r.status === 'paid';
+        return true;
+      }),
+    [ebBilledResidents, activeResidentFilterId, filterTab]
   );
-  const ebTotalCollectedPaise = ebBilledResidents.reduce(
-    (acc, r) => acc + (r.status === 'paid' ? r.amount_paise : 0),
-    0
-  );
-  const ebUnpaidPaise = Math.max(0, ebTotalBilledPaise - ebTotalCollectedPaise);
-
-  const filteredEbList = ebBilledResidents.filter((r) => {
-    if (activeResidentFilterId && r.resident_id !== activeResidentFilterId) {
-      return false;
-    }
-    if (filterTab === 'REVIEW') {
-      return r.has_pending_report && r.status !== 'paid';
-    }
-    if (filterTab === 'UNPAID') return r.status === 'unpaid';
-    if (filterTab === 'PAID') return r.status === 'paid';
-    return true;
-  });
 
   const filteredResidentName = useMemo(() => {
     if (!activeResidentFilterId) return '';
@@ -1016,13 +1109,14 @@ export default function SimplifiedBillingManagementScreen() {
     return () => clearTimeout(timer);
   }, [billingMode, filterTab, selectedDate, activeResidentFilterId]);
 
-  const activeBillingRows: ActiveBillingRow[] = loading
-    ? []
-    : billingMode === 'RENT'
-      ? filteredRentList.map((item) => ({ mode: 'RENT', item }))
-      : billingMode === 'EB'
-        ? filteredEbList.map((item) => ({ mode: 'EB', item }))
-        : filteredCombinedList.map((item) => ({ mode: 'COMBINED', item }));
+  const activeBillingRows: ActiveBillingRow[] =
+    loading || billingMode === 'EXPENSES'
+      ? []
+      : billingMode === 'RENT'
+        ? filteredRentList.map((item) => ({ mode: 'RENT', item }))
+        : billingMode === 'EB'
+          ? filteredEbList.map((item) => ({ mode: 'EB', item }))
+          : filteredCombinedList.map((item) => ({ mode: 'COMBINED', item }));
 
   const pagedBillingRows = activeBillingRows.slice(0, visibleCount);
   const hasMoreBillingRows = pagedBillingRows.length < activeBillingRows.length;
@@ -1099,6 +1193,7 @@ export default function SimplifiedBillingManagementScreen() {
 
       {/* Bulk Remind All Unpaid Button */}
       {!loading &&
+        billingMode !== 'EXPENSES' &&
         unpaidReminderTargets.length > 0 &&
         (filterTab === 'ALL' || filterTab === 'UNPAID') && (
           <Pressable
@@ -1135,6 +1230,55 @@ export default function SimplifiedBillingManagementScreen() {
   );
 
   const renderBillingEmpty = () => {
+    if (billingMode === 'EXPENSES') {
+      return (
+        <ExpensesSection
+          monthLabel={monthLabel}
+          totalCollectedPaise={rentTotalCollectedPaise + ebTotalCollectedPaise}
+          expenses={expensesQuery.data ?? []}
+          loading={expensesQuery.isPending && !expensesQuery.data}
+          saving={addExpenseMutation.isPending}
+          addModalVisible={expenseModalVisible}
+          onOpenAddModal={() => setExpenseModalVisible(true)}
+          onCloseAddModal={() => setExpenseModalVisible(false)}
+          onAddExpense={async ({ category, amountPaise, notes }) => {
+            if (!propertyId) return;
+            const todayIso = new Date().toISOString().slice(0, 10);
+            const expenseDate =
+              todayIso >= monthIsoStart && todayIso <= monthIsoEnd
+                ? todayIso
+                : monthIsoStart;
+            try {
+              await addExpenseMutation.mutateAsync({
+                propertyId,
+                category,
+                amountPaise,
+                expenseDate,
+                notes,
+                createdBy: userId ?? null,
+              });
+              showToast(`Saved ${formatPaiseToRupees(amountPaise)} expense`);
+            } catch (err) {
+              Alert.alert(
+                'Save Failed',
+                err instanceof Error ? err.message : 'Could not save expense.'
+              );
+            }
+          }}
+          onDeleteExpense={(expenseId) => {
+            void deleteExpenseMutation
+              .mutateAsync(expenseId)
+              .then(() => showToast('Expense deleted'))
+              .catch((err) =>
+                Alert.alert(
+                  'Delete Failed',
+                  err instanceof Error ? err.message : 'Could not delete expense.'
+                )
+              );
+          }}
+        />
+      );
+    }
     if (loading) {
       return <BillingSkeleton />;
     }
@@ -1226,6 +1370,12 @@ export default function SimplifiedBillingManagementScreen() {
     );
   };
 
+  const billingKeyExtractor = useCallback(
+    (row: { mode: string; item: { resident_id: string } }) =>
+      `${row.mode}:${row.item.resident_id}`,
+    []
+  );
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right']}>
       {/* Standardized Header */}
@@ -1234,56 +1384,25 @@ export default function SimplifiedBillingManagementScreen() {
         subtitle={propertyName}
         showBack
         rightAction={
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            {rentBills.length > 0 && (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Export monthly rent report"
-                style={({ pressed }) => [
-                  styles.headerActionBtn,
-                  pressed && styles.cardPressed,
-                ]}
-                onPress={handleExportMonthlyReport}>
-                <Share2 size={14} color={OwnerTheme.colors.primary} />
-                <Text style={styles.headerActionBtnText}>Export</Text>
-              </Pressable>
-            )}
-            {billingMode === 'EB' ? (
-              <Pressable
-                accessibilityRole="button"
-                style={({ pressed }) => [
-                  styles.headerActionBtn,
-                  pressed && styles.cardPressed,
-                ]}
-                onPress={() => setSplitEbModalVisible(true)}>
-                <Zap size={15} color={OwnerTheme.colors.warning} />
-                <Text
-                  style={[
-                    styles.headerActionBtnText,
-                    { color: OwnerTheme.colors.warning },
-                  ]}>
-                  Split EB
-                </Text>
-              </Pressable>
-            ) : (
-              <Pressable
-                accessibilityRole="button"
-                style={({ pressed }) => [
-                  styles.headerActionBtn,
-                  pressed && styles.cardPressed,
-                ]}
-                onPress={handleOpenGenerateRent}>
-                <Edit3 size={15} color={OwnerTheme.colors.primary} />
-                <Text style={styles.headerActionBtnText}>Set Rent</Text>
-              </Pressable>
-            )}
-          </View>
+          rentBills.length > 0 ? (
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Export monthly rent report"
+              style={({ pressed }) => [
+                styles.headerActionBtn,
+                pressed && styles.cardPressed,
+              ]}
+              onPress={handleExportMonthlyReport}>
+              <Share2 size={14} color={OwnerTheme.colors.primary} />
+              <Text style={styles.headerActionBtnText}>Export</Text>
+            </Pressable>
+          ) : undefined
         }
       />
 
       <FlatList
         data={pagedBillingRows}
-        keyExtractor={(row) => `${row.mode}:${row.item.resident_id}`}
+        keyExtractor={billingKeyExtractor}
         renderItem={({ item: row }) => {
           if (row.mode === 'RENT') {
             return (
@@ -1303,6 +1422,7 @@ export default function SimplifiedBillingManagementScreen() {
                 onConfirmCashPayment={(chargeId) =>
                   void handleConfirmPayment(chargeId, null, 'cash')
                 }
+                onOpenPartialPayment={setPartialPaymentTarget}
                 onSendReminder={(name, phone, amount, label, due) =>
                   void handleSendReminder(name, phone, amount, label, due)
                 }
@@ -1323,6 +1443,7 @@ export default function SimplifiedBillingManagementScreen() {
                 onConfirmCashPayment={(chargeId) =>
                   void handleConfirmPayment(chargeId, null, 'cash')
                 }
+                onOpenPartialPayment={setPartialPaymentTarget}
                 onSendReminder={(name, phone, amount, label, due) =>
                   void handleSendReminder(name, phone, amount, label, due)
                 }
@@ -1390,6 +1511,35 @@ export default function SimplifiedBillingManagementScreen() {
       />
 
       {/* Modal 1: Generate / Update Rent Amount */}
+      <PartialPaymentModal
+        target={partialPaymentTarget}
+        submitting={recordPartialMutation.isPending}
+        onClose={() => setPartialPaymentTarget(null)}
+        onConfirm={async ({ chargeId, amountPaise, method, notes }) => {
+          try {
+            const res = await recordPartialMutation.mutateAsync({
+              chargeId,
+              amountPaise,
+              method,
+              notes: notes || null,
+            });
+            setPartialPaymentTarget(null);
+            showToast(
+              res.is_fully_settled
+                ? `Settled in full · Receipt #${res.receipt_number}`
+                : `Recorded ${formatPaiseToRupees(res.allocated_paise)} · ${formatPaiseToRupees(
+                    res.remaining_paise
+                  )} due`
+            );
+          } catch (err) {
+            Alert.alert(
+              'Payment Failed',
+              err instanceof Error ? err.message : 'Could not record payment.'
+            );
+          }
+        }}
+      />
+
       <ChargeFormModal
         mode="generate-rent"
         visible={generateRentModalVisible}
@@ -1487,6 +1637,36 @@ export default function SimplifiedBillingManagementScreen() {
         onCopyAll={() => void handleCopyAllReminders()}
       />
 
+      {/* Thumb-Friendly Floating Action Pill */}
+      {billingMode === 'RENT' && (
+        <FloatingActionPill
+          label="Set Rent"
+          icon={Edit3}
+          hasBottomNav
+          accessibilityLabel="Set Monthly Rent"
+          onPress={handleOpenGenerateRent}
+        />
+      )}
+      {billingMode === 'EB' && (
+        <FloatingActionPill
+          label="Split EB"
+          icon={Zap}
+          hasBottomNav
+          color={OwnerTheme.colors.warning}
+          accessibilityLabel="Split EB Bill"
+          onPress={() => setSplitEbModalVisible(true)}
+        />
+      )}
+      {billingMode === 'EXPENSES' && (
+        <FloatingActionPill
+          label="Add Expense"
+          icon={Plus}
+          hasBottomNav
+          accessibilityLabel="Add Expense"
+          onPress={() => setExpenseModalVisible(true)}
+        />
+      )}
+
       <RoleBottomNav activeTab="bill" roleOverride="owner" />
     </SafeAreaView>
   );
@@ -1500,6 +1680,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 12,
+    paddingBottom: 96,
     maxWidth: 960,
     width: '100%',
     alignSelf: 'center',
