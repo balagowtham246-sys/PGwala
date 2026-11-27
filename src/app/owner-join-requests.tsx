@@ -26,6 +26,7 @@ import {
 import { OwnerTheme } from '@/constants/theme';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
+import { trackEvent } from '@/lib/analytics';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { formatGateEventTimestamp } from '@/lib/ux-utils';
@@ -143,6 +144,7 @@ export default function OwnerJoinRequestsScreen() {
       setSelectedReq(null);
       broadcastPropertySync('joinRequests', selectedPropertyId);
       broadcastPropertySync('residents', selectedPropertyId);
+      trackEvent('resident_added', { source: 'join_request' });
       showToast(`${name} admitted to Room ${room}!`);
       void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });

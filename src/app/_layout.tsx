@@ -16,6 +16,7 @@ import { AuthProvider, useAuth } from '@/context/auth-context';
 import { PropertyProvider } from '@/context/property-context';
 import { ResidentProvider } from '@/context/resident-context';
 import { ToastProvider } from '@/context/toast-context';
+import { useAnalyticsLifecycle } from '@/hooks/use-analytics-lifecycle';
 import { useGlobalRealtimeSync } from '@/hooks/use-global-realtime-sync';
 import { evaluateNavigationRedirect } from '@/lib/navigation-guards';
 import { resolveNotificationRoute } from '@/lib/notification-routing';
@@ -49,6 +50,7 @@ SplashScreen.preventAutoHideAsync();
 function RootNavigationLayout() {
   const { session, profile, isLoading } = useAuth();
   useGlobalRealtimeSync();
+  useAnalyticsLifecycle();
   const segments = useSegments();
   const pushRole = profile?.role;
   const handledNotifIdsRef = useRef<Set<string>>(new Set());

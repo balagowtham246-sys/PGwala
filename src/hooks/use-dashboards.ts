@@ -9,6 +9,7 @@ import {
   FoodAudienceType,
   FoodMealType,
 } from '@/lib/food-alert-utils';
+import { trackEvent } from '@/lib/analytics';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { supabase } from '@/lib/supabase';
@@ -362,6 +363,10 @@ export function useSendWardenFoodAlertMutation() {
     },
     onSuccess: (_data, variables) => {
       broadcastPropertySync('food');
+      trackEvent('food_alert_sent', {
+        meal_type: variables.meal_type,
+        status: variables.status,
+      });
       void qc.invalidateQueries({
         queryKey: variables.userId
           ? queryKeys.dashboard.warden(variables.userId)

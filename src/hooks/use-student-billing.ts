@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { trackEvent } from '@/lib/analytics';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import {
@@ -39,6 +40,9 @@ export function useSubmitPaymentProofMutation() {
         throw new Error(result.error.message);
       }
       return result.data;
+    },
+    onSuccess: (_data, variables) => {
+      trackEvent('payment_proof_submitted', { method: variables.paymentMethod });
     },
     onSettled: (_data, err) => {
       if (!err) broadcastPropertySync('billing');

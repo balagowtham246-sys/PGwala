@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { trackEvent } from '@/lib/analytics';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import {
@@ -56,6 +57,9 @@ export function useGenerateMonthlyBillsMutation() {
         throw new Error(result.error.message);
       }
       return result.data;
+    },
+    onSuccess: (data) => {
+      trackEvent('bill_generated', { created_count: data.created_count });
     },
     onSettled: (_data, err) => {
       if (!err) broadcastPropertySync('billing');
@@ -219,6 +223,9 @@ export function useConfirmMonthlyPaymentMutation() {
       }
       return result.data;
     },
+    onSuccess: (_data, variables) => {
+      trackEvent('payment_confirmed', { method: variables.method ?? 'cash' });
+    },
     onSettled: (_data, err) => {
       if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
@@ -238,6 +245,9 @@ export function useRecordPartialPaymentMutation() {
         throw new Error(result.error.message);
       }
       return result.data;
+    },
+    onSuccess: (_data, variables) => {
+      trackEvent('partial_payment_recorded', { method: variables.method ?? 'cash' });
     },
     onSettled: (_data, err) => {
       if (!err) broadcastPropertySync('billing');

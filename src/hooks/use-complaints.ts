@@ -14,6 +14,7 @@ import {
 } from '@/components/complaints/OwnerComplaintsModals';
 import { StudentComplaintItem } from '@/components/complaints/StudentComplaintModals';
 import { uploadStorageWithRetry } from '@/lib/image-upload';
+import { trackEvent } from '@/lib/analytics';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { decodeBase64ToBytes, supabase } from '@/lib/supabase';
@@ -236,7 +237,11 @@ export function useOwnerCreateComplaintMutation() {
 
       return { previousQueries, optimisticId };
     },
-    onSuccess: (serverRow, _variables, context) => {
+    onSuccess: (serverRow, variables, context) => {
+      trackEvent('complaint_created', {
+        category: variables.category,
+        priority: variables.priority,
+      });
       if (!context?.optimisticId) return;
       const currentQueries = qc.getQueriesData<InfiniteData<OwnerComplaintsPage>>({
         queryKey: ['complaints', 'owner'],
@@ -518,7 +523,11 @@ export function useStudentCreateComplaintMutation() {
 
       return { previous, optimisticId, queryKey };
     },
-    onSuccess: (serverRow, _variables, context) => {
+    onSuccess: (serverRow, variables, context) => {
+      trackEvent('complaint_created', {
+        category: variables.category,
+        priority: variables.priority,
+      });
       if (!context) return;
       const current =
         qc.getQueryData<InfiniteData<StudentComplaintsPage>>(context.queryKey);

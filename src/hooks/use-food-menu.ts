@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { trackEvent } from '@/lib/analytics';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import {
@@ -134,6 +135,11 @@ export function useSaveFoodMenuMutation() {
 
       return { key, previous };
     },
+    onSuccess: (_data, input) => {
+      if (input.isPublished) {
+        trackEvent('food_menu_published', { meal_type: input.mealType });
+      }
+    },
     onError: (_err, _vars, context) => {
       if (!context) return;
       qc.setQueryData(context.key, context.previous);
@@ -193,6 +199,11 @@ export function useToggleFoodMenuPublishMutation() {
       }
 
       return { key, previous };
+    },
+    onSuccess: (_data, input) => {
+      if (input.nextPublished) {
+        trackEvent('food_menu_published', { meal_type: input.mealType });
+      }
     },
     onError: (_err, _vars, context) => {
       if (!context) return;

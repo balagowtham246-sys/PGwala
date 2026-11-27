@@ -27,6 +27,7 @@ import { useActiveResidentPeersQuery } from '@/hooks/use-residents';
 import { EdgeFunctionError, invokeEdgeFunction } from '@/lib/edge-functions';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
+import { trackEvent } from '@/lib/analytics';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { normalizeAppError } from '@/lib/service-result';
@@ -583,6 +584,7 @@ export default function AddResidentScreen() {
     },
     onSuccess: async () => {
       broadcastPropertySync('residents', selectedProperty?.id);
+      trackEvent('resident_added', { source: 'owner_form' });
       await Promise.all([
         qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
         qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),

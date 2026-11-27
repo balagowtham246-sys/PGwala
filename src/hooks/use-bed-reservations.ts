@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { trackEvent } from '@/lib/analytics';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { PropertyGenderType } from '@/lib/ux-utils';
@@ -60,6 +61,9 @@ export function useCreateBedReservationMutation() {
         throw new Error(res.error.message);
       }
       return res.data;
+    },
+    onSuccess: () => {
+      trackEvent('bed_reserved');
     },
     onSettled: (_data, err, variables) => {
       if (!err) broadcastPropertySync('residents', variables.propertyId);

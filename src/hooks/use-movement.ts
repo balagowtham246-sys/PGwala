@@ -6,6 +6,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 
+import { trackEvent } from '@/lib/analytics';
 import { sortLogsDescending } from '@/lib/movement-utils';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
@@ -315,7 +316,22 @@ export function useRecordStudentMovementMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: (data) => {
+    onSettled: (data, err, variables) => {
+      if (!err) {
+        const { input } = variables;
+        if (input.direction === 'IN') {
+          trackEvent('gate_marked_in');
+        } else if (input.expectedReturnDate) {
+          trackEvent('home_leave_started', {
+            purpose: input.purpose ?? 'Home Visit',
+          });
+        } else {
+          trackEvent('gate_marked_out', {
+            purpose: input.purpose ?? 'Other',
+            food_required: input.foodRequired ?? true,
+          });
+        }
+      }
       if (data?.queued) {
         // Offline queue holds the authoritative pending state until sync completes
         return;
