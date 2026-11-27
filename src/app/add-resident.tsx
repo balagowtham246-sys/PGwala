@@ -27,6 +27,7 @@ import { useActiveResidentPeersQuery } from '@/hooks/use-residents';
 import { EdgeFunctionError, invokeEdgeFunction } from '@/lib/edge-functions';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
+import { posthog } from '@/lib/posthog';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { normalizeAppError } from '@/lib/service-result';
@@ -672,6 +673,13 @@ export default function AddResidentScreen() {
           depositPaise: depositParsed.paise,
           emergencyContact: trimmedEmergency,
         });
+
+      posthog?.capture('resident_added', {
+        has_monthly_rent: rentParsed.paise !== undefined,
+        has_deposit: depositParsed.paise !== undefined,
+        has_emergency_contact: Boolean(trimmedEmergency),
+        from_bed_reservation: Boolean(sourceReservationId),
+      });
 
       if (createdResidentId) {
         router.replace({

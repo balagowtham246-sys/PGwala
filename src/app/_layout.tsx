@@ -7,6 +7,7 @@ import { StatusBar } from 'expo-status-bar';
 import * as Updates from 'expo-updates';
 import * as Sentry from '@sentry/react-native';
 import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client';
+import { PostHogProvider } from 'posthog-react-native';
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
@@ -20,6 +21,7 @@ import { useGlobalRealtimeSync } from '@/hooks/use-global-realtime-sync';
 import { evaluateNavigationRedirect } from '@/lib/navigation-guards';
 import { resolveNotificationRoute } from '@/lib/notification-routing';
 import { registerForPushNotifications, subscribeToPushTokenChanges } from '@/lib/push-notifications';
+import { posthog } from '@/lib/posthog';
 import { queryClient, setupReactNativeFocusManager } from '@/lib/query-client';
 import {
   mmkvQueryPersister,
@@ -174,7 +176,7 @@ function RootNavigationLayout() {
 function RootLayout() {
   useEffect(() => setupReactNativeFocusManager(), []);
 
-  return (
+  const app = (
     <PersistQueryClientProvider
       client={queryClient}
       persistOptions={{
@@ -204,6 +206,16 @@ function RootLayout() {
         </AppErrorBoundary>
       </ThemeProvider>
     </PersistQueryClientProvider>
+  );
+
+  return posthog ? (
+    <PostHogProvider
+      client={posthog}
+      autocapture={{ captureTouches: true, propsToCapture: ['testID'] }}>
+      {app}
+    </PostHogProvider>
+  ) : (
+    app
   );
 }
 

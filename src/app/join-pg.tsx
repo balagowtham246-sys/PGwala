@@ -23,6 +23,7 @@ import {
   isValidInviteCodeFormat,
   normalizeInviteCode,
 } from '@/lib/invite-utils';
+import { posthog } from '@/lib/posthog';
 import { supabase } from '@/lib/supabase';
 import {
   formatPropertyGenderLabel,
@@ -148,6 +149,10 @@ export default function JoinPgScreen() {
         return;
       }
 
+      posthog?.capture('resident_join_request_submitted', {
+        has_room_hint: Boolean(roomHint.trim()),
+        has_emergency_contact: Boolean(emergencyContact.trim()),
+      });
       showToast(`Join request sent to ${verifiedProperty.name}!`);
       router.replace('/pending-approval');
     } catch (err) {

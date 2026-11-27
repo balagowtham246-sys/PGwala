@@ -12,6 +12,7 @@ import { supabase } from '@/lib/supabase';
 import { clearUserSessionState } from '@/lib/session-cleanup';
 import { isLikelyNetworkError } from '@/lib/service-result';
 import { unregisterPushToken } from '@/lib/push-notifications';
+import { posthog } from '@/lib/posthog';
 
 export interface UserProfile {
   id: string;
@@ -45,6 +46,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const lastUserIdRef = useRef<string | null>(null);
+  const posthogIdentityUserIdRef = useRef<string | null>(null);
+
+  const identifyPostHogUser = useCallback((authenticatedUser: User) => {
+    if (posthogIdentityUserIdRef.current === authenticatedUser.id) return;
+
+    posthog?.identify(
+      authenticatedUser.id,
+      authenticatedUser.email
+        ? {
+            $set: {
+              email: authenticatedUser.email,
+            },
+          }
+        : undefined,
+    );
+    posthogIdentityUserIdRef.current = authenticatedUser.id;
+  }, []);
+
+  const resetPostHog = useCallback(() => {
+    if (!posthogIdentityUserIdRef.current) return;
+
+    posthog?.reset();
+    posthogIdentityUserIdRef.current = null;
+  }, []);
 
   // Fetch the role and profile from public.profiles for the authenticated user
   const fetchProfile = useCallback(async (userId: string) => {
@@ -101,6 +126,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(initialSession?.user ?? null);
         lastUserIdRef.current = initialSession?.user?.id ?? null;
         if (initialSession?.user) {
+          identifyPostHogUser(initialSession.user);
           await fetchProfile(initialSession.user.id);
         }
       })
@@ -118,6 +144,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         const userChanged = prevUid !== nextUid;
         lastUserIdRef.current = nextUid;
         if (prevUid && prevUid !== nextUid) {
+          resetPostHog();
           await clearUserSessionState();
         }
         // Only show loading spinner when switching/signing in a different user;
@@ -127,6 +154,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         setSession(newSession);
         setUser(newSession.user);
+        if (userChanged) {
+          identifyPostHogUser(newSession.user);
+        }
         if (userChanged || event === 'USER_UPDATED') {
           await fetchProfile(newSession.user.id);
         }
@@ -134,6 +164,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setIsLoading(false);
         }
       } else if (event === 'SIGNED_OUT') {
+        resetPostHog();
         lastUserIdRef.current = null;
         setSession(null);
         setUser(null);
@@ -148,9 +179,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       subscription.unsubscribe();
     };
-  }, [fetchProfile]);
+  }, [fetchProfile, identifyPostHogUser, resetPostHog]);
 
   const signOut = useCallback(async () => {
+    resetPostHog();
     try {
       await unregisterPushToken();
       await supabase.auth.signOut();
@@ -163,7 +195,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setUser(null);
       setProfile(null);
     }
-  }, []);
+  }, [resetPostHog]);
 
   const contextValue = useMemo<AuthContextType>(
     () => ({

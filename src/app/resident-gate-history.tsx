@@ -45,6 +45,7 @@ import {
   useStudentGateHistoryQuery,
 } from '@/hooks/use-movement';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { posthog } from '@/lib/posthog';
 import { queryKeys } from '@/lib/query-keys';
 
 interface StudentResident {
@@ -425,6 +426,11 @@ export default function StudentGateHistoryScreen() {
           showToast('Saved offline — will sync automatically');
           return;
         }
+        posthog?.capture('gate_status_updated', {
+          direction: targetDirection,
+          is_undo: isUndo,
+          update_type: 'quick_toggle',
+        });
         if (!isUndo) {
           showToast(
             targetDirection === 'IN' ? 'Marked Inside PG' : 'Marked Outside PG',
@@ -486,6 +492,12 @@ export default function StudentGateHistoryScreen() {
         showToast('Saved offline — will sync automatically');
         return;
       }
+      posthog?.capture('gate_status_updated', {
+        direction: 'OUT',
+        is_leave: Boolean(payload.expectedReturnDate),
+        update_type: wasUpdate ? 'leave_update' : 'going_out',
+        food_required: payload.foodRequired,
+      });
       if (wasUpdate) {
         showToast('Return date updated');
       } else if (payload.expectedReturnDate) {
@@ -534,6 +546,9 @@ export default function StudentGateHistoryScreen() {
         return;
       }
 
+      posthog?.capture('late_return_reported', {
+        has_owner_whatsapp: Boolean(resident?.owner_phone),
+      });
       const ownerPhone = resident?.owner_phone ?? null;
       const whatsappUrl = buildWhatsAppReminderUrl(
         ownerPhone,

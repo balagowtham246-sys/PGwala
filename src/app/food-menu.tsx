@@ -32,6 +32,7 @@ import {
 } from '@/hooks/use-food-menu';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSuccessHaptic } from '@/lib/haptics';
+import { posthog } from '@/lib/posthog';
 import {
   formatHhMmTo12h,
   parseDishList,
@@ -266,6 +267,11 @@ export default function FoodMenuScreen() {
 
       const mealTitle = MEAL_CONFIG[targetMeal].title;
       const shortDate = formatDayMonth(selectedDate);
+      posthog?.capture('food_menu_saved', {
+        meal_type: targetMeal,
+        is_published: payload.isPublished,
+        is_update: Boolean(existing),
+      });
       triggerSuccessHaptic();
       showToast(
         payload.isPublished
@@ -296,6 +302,11 @@ export default function FoodMenuScreen() {
 
       const mealTitle = MEAL_CONFIG[menu.meal_type].title;
       const shortDate = formatDayMonth(selectedDate);
+      posthog?.capture('food_menu_saved', {
+        meal_type: menu.meal_type,
+        is_published: nextStatus,
+        is_update: true,
+      });
       triggerSuccessHaptic();
       showToast(
         nextStatus

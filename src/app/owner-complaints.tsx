@@ -47,6 +47,7 @@ import {
 } from '@/hooks/use-complaints';
 import { sortComplaintsByUrgencyThenDate } from '@/lib/complaint-utils';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { posthog } from '@/lib/posthog';
 import { getSignedComplaintPhotoUrl, supabase } from '@/lib/supabase';
 
 export type {
@@ -324,6 +325,11 @@ export default function OwnerComplaintsScreen() {
         status: targetStatus,
         ownerNotes: trimmedNotes,
         resolvedAt: resolvedAtValue,
+      });
+      posthog?.capture('complaint_status_updated', {
+        previous_status: targetComplaint.status,
+        status: targetStatus,
+        has_owner_notes: Boolean(trimmedNotes),
       });
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Operation failed. Please try again.');

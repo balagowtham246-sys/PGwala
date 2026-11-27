@@ -79,6 +79,7 @@ import {
   formatDueStatus,
   formatPaiseToRupees,
 } from '@/lib/billing-utils';
+import { posthog } from '@/lib/posthog';
 import { isValidUpiId } from '@/lib/upi';
 import { findDuplicatePhones } from '@/lib/ux-utils';
 import {
@@ -460,6 +461,10 @@ export default function SimplifiedBillingManagementScreen() {
           });
         }
         setGenerateRentModalVisible(false);
+        posthog?.capture('monthly_bills_generated', {
+          mode: 'fill_missing',
+          resident_count: missingRentResidents.length,
+        });
         showToast(
           `Set rent to ₹${parsedRupees.toLocaleString('en-IN')} for ${
             missingRentResidents.length
@@ -480,6 +485,12 @@ export default function SimplifiedBillingManagementScreen() {
       setGenerateRentModalVisible(false);
       const { created_count: created, updated_count: updated, skipped_count: skipped } =
         data;
+      posthog?.capture('monthly_bills_generated', {
+        mode: 'generate',
+        created_count: created,
+        updated_count: updated,
+        skipped_count: skipped,
+      });
       const parts: string[] = [];
       if (created > 0) {
         parts.push(`${created} new bill${created > 1 ? 's' : ''} created`);
@@ -644,6 +655,10 @@ export default function SimplifiedBillingManagementScreen() {
 
       setReviewModalVisible(false);
       setSelectedReviewItem(null);
+      posthog?.capture('payment_confirmed', {
+        method,
+        has_payment_proof: Boolean(reportId),
+      });
       showToast(`Payment confirmed · Receipt ${data.receipt_number}`);
     } catch (err) {
       Alert.alert(

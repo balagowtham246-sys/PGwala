@@ -26,6 +26,7 @@ import {
 import { OwnerTheme } from '@/constants/theme';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
+import { posthog } from '@/lib/posthog';
 import { queryKeys } from '@/lib/query-keys';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { formatGateEventTimestamp } from '@/lib/ux-utils';
@@ -140,6 +141,11 @@ export default function OwnerJoinRequestsScreen() {
       });
 
       const name = selectedReq.full_name;
+      posthog?.capture('join_request_reviewed', {
+        outcome: 'approved',
+        has_bed_assignment: Boolean(bedInput.trim()),
+        has_deposit: !isNaN(depositRs) && depositRs > 0,
+      });
       setSelectedReq(null);
       broadcastPropertySync('joinRequests', selectedPropertyId);
       broadcastPropertySync('residents', selectedPropertyId);
@@ -173,6 +179,7 @@ export default function OwnerJoinRequestsScreen() {
                   request_id: req.id,
                   rejection_reason: 'Declined by PG owner',
                 });
+                posthog?.capture('join_request_reviewed', { outcome: 'declined' });
                 broadcastPropertySync('joinRequests', selectedPropertyId);
                 showToast(`Declined ${req.full_name}.`);
                 await loadRequests(true);

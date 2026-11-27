@@ -24,6 +24,7 @@ import {
 import { OwnerTheme } from '@/constants/theme';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { supabase } from '@/lib/supabase';
+import { posthogLog } from '@/lib/posthog';
 import { useAuth, UserProfile } from '@/context/auth-context';
 import { PrimaryButton } from '@/components/ui/owner';
 import {
@@ -75,6 +76,7 @@ export default function LoginScreen() {
   ) => {
     setLoading(true);
     setErrorMessage(null);
+    const authenticationMethod = fromBiometric ? 'biometric' : 'password';
 
     try {
       // 1. Authenticate with Supabase Auth
@@ -85,6 +87,19 @@ export default function LoginScreen() {
         });
 
       if (authError) {
+        const failureKind = authError.message
+          .toLowerCase()
+          .includes('invalid login credentials')
+          ? 'invalid_credentials'
+          : authError.message.toLowerCase().includes('network')
+            ? 'network'
+            : 'provider';
+        posthogLog?.warn('authentication attempt completed', {
+          event: 'authentication_attempt',
+          outcome: 'failed',
+          authentication_method: authenticationMethod,
+          failure_kind: failureKind,
+        });
         if (
           authError.message.toLowerCase().includes('invalid login credentials')
         ) {
@@ -111,6 +126,12 @@ export default function LoginScreen() {
 
       const user = authData.user;
       if (!user) {
+        posthogLog?.warn('authentication attempt completed', {
+          event: 'authentication_attempt',
+          outcome: 'failed',
+          authentication_method: authenticationMethod,
+          failure_kind: 'missing_user',
+        });
         setErrorMessage('Authentication failed. No user record returned.');
         return;
       }
@@ -123,6 +144,11 @@ export default function LoginScreen() {
         .single();
 
       if (profileError || !profileData) {
+        posthogLog?.error('account profile lookup completed', {
+          event: 'account_profile_lookup',
+          outcome: 'failed',
+          authentication_method: authenticationMethod,
+        });
         await signOut();
         setErrorMessage(
           'Profile record not found for this account. Contact system support.'
@@ -139,6 +165,18 @@ export default function LoginScreen() {
       }
 
       // 4. Enforce Role Check and Navigation
+      if (
+        profile.role === 'owner' ||
+        profile.role === 'student' ||
+        profile.role === 'warden'
+      ) {
+        posthogLog?.info('authentication attempt completed', {
+          event: 'authentication_attempt',
+          outcome: 'succeeded',
+          authentication_method: authenticationMethod,
+          account_role: profile.role,
+        });
+      }
       if (profile.role === 'owner') {
         router.replace('/owner-tabs');
       } else if (profile.role === 'student') {

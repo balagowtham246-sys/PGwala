@@ -47,6 +47,7 @@ import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
+import { posthog } from '@/lib/posthog';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { supabase } from '@/lib/supabase';
 import { formatGateEventTimestamp, formatRoomLabel } from '@/lib/ux-utils';
@@ -236,6 +237,11 @@ export default function OwnerAnnouncementsScreen() {
       }
 
       triggerSuccessHaptic();
+      posthog?.capture('announcement_sent', {
+        audience,
+        channel,
+        recipient_count: res.data.item.recipientCount,
+      });
       broadcastPropertySync('food', selectedPropertyId);
       setTitle('');
       setMessage('');

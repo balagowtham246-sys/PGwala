@@ -17,6 +17,7 @@ import { ChevronRight, Disc3 } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { OwnerTheme } from '@/constants/theme';
 import { useToast } from '@/context/toast-context';
+import { posthog } from '@/lib/posthog';
 import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import {
@@ -599,6 +600,10 @@ export function WashingMachineCard({
       broadcastPropertySync('washingMachine', propertyId);
       await fetchStatus(false);
       const resolvedMachineName = result.data.machineName || 'selected machine';
+      posthog?.capture('washing_machine_session_started', {
+        user_role: userRole,
+        used_legacy_fallback: result.data.usedLegacyFallback,
+      });
       const alarmScheduled =
         userRole === 'student'
           ? await scheduleMyWashCompletionNotification(propertyId, resolvedMachineName)
@@ -664,6 +669,9 @@ export function WashingMachineCard({
               }
 
               broadcastPropertySync('washingMachine', propertyId);
+              posthog?.capture('washing_machine_session_completed', {
+                user_role: userRole,
+              });
               await cancelMyWashCompletionNotification(propertyId);
               await fetchStatus(false);
               showToast('Machine marked free for fellow residents');

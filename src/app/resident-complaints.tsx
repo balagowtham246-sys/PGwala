@@ -39,6 +39,7 @@ import {
 } from '@/hooks/use-complaints';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { compressPickedImage } from '@/lib/image-upload';
+import { posthog } from '@/lib/posthog';
 import {
   enqueueOfflineMutation,
   flushOfflineQueue,
@@ -330,6 +331,11 @@ export default function StudentComplaintsScreen() {
         selectedPhoto: photoToUpload,
       });
 
+      posthog?.capture('complaint_submitted', {
+        category: chosenCategory,
+        priority: chosenPriority,
+        has_photo: Boolean(photoToUpload),
+      });
       showToast('Complaint submitted to PG owner');
       setShowModal(false);
       setTitle('');
