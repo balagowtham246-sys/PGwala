@@ -6,7 +6,9 @@ import { buildWhatsAppReminderUrl } from '@/lib/billing-utils';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
 import {
   countDaysOutThisMonth,
+  formatShortReturnDate,
   groupLogsByLocalDay,
+  isOnMultiDayLeave,
   isOutOverHours,
 } from '@/lib/movement-utils';
 import {
@@ -66,6 +68,7 @@ interface MovementLog {
   note: string | null;
   purpose?: string | null;
   expected_return_time?: string | null;
+  expected_return_date?: string | null;
   food_required?: boolean;
   recorded_by: string;
 }
@@ -91,11 +94,16 @@ async function cancelReturnReminderNotification(): Promise<void> {
 
 async function scheduleReturnReminderNotification(
   expectedReturnTime: string | null | undefined,
-  departedAtIso: string
+  departedAtIso: string,
+  expectedReturnDate?: string | null
 ): Promise<void> {
   await cancelReturnReminderNotification();
   if (Platform.OS === 'web') return;
-  const targetDate = resolveExpectedReturnDate(expectedReturnTime, departedAtIso);
+  const targetDate = resolveExpectedReturnDate(
+    expectedReturnTime,
+    departedAtIso,
+    expectedReturnDate
+  );
   if (!targetDate || targetDate.getTime() <= Date.now()) return;
   try {
     const existing = await Notifications.getPermissionsAsync();
@@ -226,6 +234,7 @@ export default function StudentGateHistoryScreen() {
   const [fallbackResident, setFallbackResident] = useState<StudentResident | null>(null);
   const [filter, setFilter] = useState<DateFilter>('all');
   const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
+  const [goingOutModalMode, setGoingOutModalMode] = useState<'create' | 'update_leave'>('create');
   const [nowMs, setNowMs] = useState(() => Date.now());
   const savingRef = useRef(false);
   const lastErrorAtRef = useRef(0);
@@ -297,6 +306,7 @@ export default function StudentGateHistoryScreen() {
             note: item.note,
             purpose: item.purpose,
             expected_return_time: item.expected_return_time,
+            expected_return_date: item.expected_return_date ?? null,
             food_required: item.food_required,
             recorded_by: item.recorded_by,
           });
@@ -359,15 +369,23 @@ export default function StudentGateHistoryScreen() {
   // Current status based on most recent log (default IN if no logs yet)
   const latestLog = logs.length > 0 ? logs[0] : null;
   const currentStatus = latestLog ? latestLog.direction : 'IN';
+  const onLeave = isOnMultiDayLeave(latestLog);
   const lastEventTime = latestLog ? formatEventTime(latestLog.event_time) : null;
   const lastEventDate = latestLog ? formatDateHeader(latestLog.event_time) : null;
-  const outNudge = isOutOverHours(currentStatus, latestLog?.event_time);
+  const outNudge = useMemo(
+    () =>
+      onLeave
+        ? { isOver: false, hoursOut: 0 }
+        : isOutOverHours(currentStatus, latestLog?.event_time),
+    [onLeave, currentStatus, latestLog?.event_time]
+  );
   const daysOutThisMonth = useMemo(() => countDaysOutThisMonth(logs), [logs]);
   const expectedReturnDate =
     currentStatus === 'OUT' && latestLog
       ? resolveExpectedReturnDate(
         latestLog.expected_return_time,
-        latestLog.event_time
+        latestLog.event_time,
+        latestLog.expected_return_date
       )
       : null;
   const isRunningLate = Boolean(
@@ -449,23 +467,42 @@ export default function StudentGateHistoryScreen() {
           direction: 'OUT',
           purpose: payload.purpose,
           expectedReturnTime: payload.expectedReturnTime || undefined,
+          expectedReturnDate: payload.expectedReturnDate ?? undefined,
           foodRequired: payload.foodRequired,
+          note: payload.note,
           userId,
         },
       });
+      const wasUpdate = goingOutModalMode === 'update_leave';
       setGoingOutModalVisible(false);
+      setGoingOutModalMode('create');
       triggerSuccessHaptic();
-      void scheduleReturnReminderNotification(payload.expectedReturnTime, nowIso);
+      void scheduleReturnReminderNotification(
+        payload.expectedReturnTime,
+        nowIso,
+        payload.expectedReturnDate
+      );
       if (outcome.queued) {
         showToast('Saved offline — will sync automatically');
         return;
       }
-      showToast('Marked Outside PG', {
-        actionLabel: 'Undo',
-        onAction: () => {
-          void recordGateToggleRef.current?.('IN', true);
-        },
-      });
+      if (wasUpdate) {
+        showToast('Return date updated');
+      } else if (payload.expectedReturnDate) {
+        showToast('Marked On Leave · Meals paused', {
+          actionLabel: 'Undo',
+          onAction: () => {
+            void recordGateToggleRef.current?.('IN', true);
+          },
+        });
+      } else {
+        showToast('Marked Outside PG', {
+          actionLabel: 'Undo',
+          onAction: () => {
+            void recordGateToggleRef.current?.('IN', true);
+          },
+        });
+      }
     } catch (err: unknown) {
       const msg = extractErrorMessage(err, 'Could not update gate status.');
       Alert.alert('Update Failed', msg);
@@ -635,62 +672,97 @@ export default function StudentGateHistoryScreen() {
                   color:
                     currentStatus === 'IN'
                       ? '#34D399'
-                      : currentStatus === 'OUT'
-                        ? '#FCD34D'
-                        : '#E2E8F0',
+                      : onLeave
+                        ? '#C4B5FD'
+                        : currentStatus === 'OUT'
+                          ? '#FCD34D'
+                          : '#E2E8F0',
                 },
               ]}>
               {currentStatus === 'IN'
                 ? 'Checked in'
-                : currentStatus === 'OUT'
-                  ? 'Checked out'
-                  : 'No Gate Logs Recorded'}
+                : onLeave
+                  ? `On Leave · Returns ${formatShortReturnDate(latestLog?.expected_return_date)}`
+                  : currentStatus === 'OUT'
+                    ? 'Checked out'
+                    : 'No Gate Logs Recorded'}
             </Text>
-            {lastEventTime && (
+            {onLeave ? (
+              <Text style={[styles.statusSub, { color: '#DDD6FE' }]}>
+                Meals & daily meal alerts paused until check-in
+              </Text>
+            ) : lastEventTime ? (
               <Text style={[styles.statusSub, { color: '#CBD5E1' }]}>
                 Last recorded: {lastEventDate} at {lastEventTime}
               </Text>
+            ) : null}
+          </View>
+          <View style={{ alignItems: 'flex-end', gap: 6 }}>
+            <Pressable
+              style={[
+                styles.gateQuickBtn,
+                currentStatus === 'IN' ? styles.gateQuickOutBtn : styles.gateQuickInBtn,
+                savingMovement && { opacity: 0.6 },
+              ]}
+              disabled={savingMovement}
+              onPress={() => {
+                if (currentStatus === 'IN') {
+                  setGoingOutModalMode('create');
+                  setGoingOutModalVisible(true);
+                  return;
+                }
+                const eventMs = latestLog?.event_time
+                  ? new Date(latestLog.event_time).getTime()
+                  : NaN;
+                if (
+                  !onLeave &&
+                  !Number.isNaN(eventMs) &&
+                  Date.now() - eventMs < ACCIDENTAL_TAP_WINDOW_MS
+                ) {
+                  Alert.alert(
+                    'Confirm Check-In',
+                    'You marked Going Out less than 5 minutes ago. Record check-in anyway?',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      { text: 'Mark Inside', onPress: () => void recordGateToggle('IN') },
+                    ]
+                  );
+                  return;
+                }
+                void recordGateToggle('IN');
+              }}>
+              {savingMovement ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.gateQuickBtnText}>
+                  {currentStatus === 'IN' ? 'Going Out' : 'Mark Inside'}
+                </Text>
+              )}
+            </Pressable>
+            {onLeave && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Update leave return date"
+                disabled={savingMovement}
+                style={{
+                  paddingHorizontal: 10,
+                  paddingVertical: 5,
+                  borderRadius: 8,
+                  backgroundColor: 'rgba(139, 92, 246, 0.25)',
+                  borderWidth: 1,
+                  borderColor: 'rgba(196, 181, 253, 0.45)',
+                }}
+                onPress={() => {
+                  triggerLightHaptic();
+                  setGoingOutModalMode('update_leave');
+                  setGoingOutModalVisible(true);
+                }}>
+                <Text style={{ fontSize: 11, fontWeight: '700', color: '#EDE9FE' }}>
+                  Update Date
+                </Text>
+              </Pressable>
             )}
           </View>
-          <Pressable
-            style={[
-              styles.gateQuickBtn,
-              currentStatus === 'IN' ? styles.gateQuickOutBtn : styles.gateQuickInBtn,
-              savingMovement && { opacity: 0.6 },
-            ]}
-            disabled={savingMovement}
-            onPress={() => {
-              if (currentStatus === 'IN') {
-                setGoingOutModalVisible(true);
-                return;
-              }
-              const eventMs = latestLog?.event_time
-                ? new Date(latestLog.event_time).getTime()
-                : NaN;
-              if (
-                !Number.isNaN(eventMs) &&
-                Date.now() - eventMs < ACCIDENTAL_TAP_WINDOW_MS
-              ) {
-                Alert.alert(
-                  'Confirm Check-In',
-                  'You marked Going Out less than 5 minutes ago. Record check-in anyway?',
-                  [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Mark Inside', onPress: () => void recordGateToggle('IN') },
-                  ]
-                );
-                return;
-              }
-              void recordGateToggle('IN');
-            }}>
-            {savingMovement ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <Text style={styles.gateQuickBtnText}>
-                {currentStatus === 'IN' ? 'Going Out' : 'Mark Inside'}
-              </Text>
-            )}
-          </Pressable>
         </View>
 
         {/* Running Late Banner when expected return time has passed */}
@@ -771,6 +843,7 @@ export default function StudentGateHistoryScreen() {
     loading,
     resident,
     currentStatus,
+    onLeave,
     lastEventTime,
     lastEventDate,
     savingMovement,
@@ -871,7 +944,13 @@ export default function StudentGateHistoryScreen() {
         visible={goingOutModalVisible}
         saving={savingMovement}
         curfewTime={resident?.curfew_time ?? null}
-        onClose={() => setGoingOutModalVisible(false)}
+        mode={goingOutModalMode}
+        initialReturnDate={latestLog?.expected_return_date ?? null}
+        initialPurpose={latestLog?.purpose ?? null}
+        onClose={() => {
+          setGoingOutModalVisible(false);
+          setGoingOutModalMode('create');
+        }}
         onConfirm={handleConfirmGoingOut}
       />
 

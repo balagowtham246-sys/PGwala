@@ -16,6 +16,7 @@ import { useAuth } from '@/context/auth-context';
 import { useToast } from '@/context/toast-context';
 import { supabase } from '@/lib/supabase';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { OwnerHeader, PrimaryButton, ErrorState } from '@/components/ui/owner';
 
 export default function OwnerProfileEditScreen() {
@@ -89,6 +90,7 @@ export default function OwnerProfileEditScreen() {
       }
 
       await refreshProfile();
+      broadcastPropertySync('settings');
       setSuccessMessage('Profile and credentials updated successfully.');
       showToast('Your profile details have been updated.');
     } catch (err: unknown) {

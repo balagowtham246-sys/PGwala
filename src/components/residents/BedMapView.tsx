@@ -8,7 +8,7 @@ import {
   Text,
   View,
 } from 'react-native';
-import { BedDouble, Plus, Share2, UserPlus } from 'lucide-react-native';
+import { BedDouble, Plus, Share2, Snowflake, UserPlus } from 'lucide-react-native';
 
 import { EmptyState, LoadingState } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
@@ -115,6 +115,7 @@ interface ResolvedRoomCard {
   totalBeds: number;
   occupiedOrReservedCount: number;
   freeCount: number;
+  isAc: boolean;
   beds: ResolvedBedItem[];
 }
 
@@ -152,7 +153,28 @@ const RoomBedCard = memo(function RoomBedCard({
     <View style={styles.roomCard}>
       <View style={styles.roomHeader}>
         <View style={styles.roomTitleWrap}>
-          <Text style={styles.roomTitle}>Room {room.roomNumber}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+            <Text style={styles.roomTitle}>Room {room.roomNumber}</Text>
+            {room.isAc && (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 3,
+                  paddingHorizontal: 6,
+                  paddingVertical: 2,
+                  borderRadius: 6,
+                  backgroundColor: '#ECFEFF',
+                  borderWidth: 1,
+                  borderColor: '#A5F3FC',
+                }}>
+                <Snowflake size={10} color="#0891B2" />
+                <Text style={{ fontSize: 10, fontWeight: '800', color: '#0E7490' }}>
+                  AC
+                </Text>
+              </View>
+            )}
+          </View>
           <Text style={styles.roomMeta}>
             {room.occupiedOrReservedCount}/{room.totalBeds} filled
             {room.freeCount > 0 ? ` · ${room.freeCount} free` : ' · Full'}
@@ -351,6 +373,7 @@ export function BedMapView({
           totalBeds: room.beds.length,
           occupiedOrReservedCount: room.beds.length - resolvedBeds.filter((b) => b.status === 'free').length,
           freeCount,
+          isAc: Boolean(room.isAc),
           beds: matchingBeds,
         });
       } else {
@@ -360,6 +383,7 @@ export function BedMapView({
           totalBeds: resolvedBeds.length,
           occupiedOrReservedCount: resolvedBeds.length - freeCount,
           freeCount,
+          isAc: Boolean(room.isAc),
           beds: resolvedBeds,
         });
       }

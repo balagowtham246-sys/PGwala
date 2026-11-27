@@ -50,9 +50,15 @@ export const DEV_TASK_AREAS: readonly DevTaskArea[] = [
   'General',
 ];
 
+const DEFAULT_ADMIN_EMAILS = [
+  'balagowtham246@gmail.com',
+  'admin.pgwala@gmail.com',
+];
+
 /**
- * Gates Developer Monitor access to dev builds (__DEV__) or explicitly
- * allowlisted developer emails via EXPO_PUBLIC_DEV_EMAILS (comma-separated).
+ * Gates Developer Monitor & Admin Owner Admission access to dev builds (__DEV__),
+ * built-in PGwala super-admin emails, or explicitly allowlisted developer emails
+ * via EXPO_PUBLIC_DEV_EMAILS (comma-separated).
  */
 export function isDeveloperAccessAllowed(
   userEmail?: string | null,
@@ -66,6 +72,10 @@ export function isDeveloperAccessAllowed(
 
   const normalizedEmail = userEmail?.trim().toLowerCase();
   if (!normalizedEmail) return false;
+
+  if (DEFAULT_ADMIN_EMAILS.includes(normalizedEmail)) {
+    return true;
+  }
 
   const rawList =
     options?.allowlistRaw !== undefined

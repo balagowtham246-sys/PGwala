@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { supabase } from '@/lib/supabase';
 import {
   checkoutResident,
@@ -174,7 +175,8 @@ export function useUpdateResidentWithLockMutation() {
         qc.setQueryData(key, list);
       }
     },
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, err, variables) => {
+      if (!err) broadcastPropertySync('residents', variables.propertyId);
       void qc.invalidateQueries({
         queryKey: queryKeys.residents.detail(variables.residentId),
       });
@@ -259,7 +261,8 @@ export function useCheckoutResidentMutation() {
       qc.setQueryData(context.detailKey, context.previousDetail);
       qc.setQueryData(context.directoryKey, context.previousDirectory);
     },
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, err, variables) => {
+      if (!err) broadcastPropertySync('residents', variables.propertyId);
       void qc.invalidateQueries({
         queryKey: queryKeys.residents.detail(variables.residentId),
       });

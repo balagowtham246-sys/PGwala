@@ -448,6 +448,40 @@ export async function fetchRawMenusForDate(
   }
 }
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Resolves the real DB UUID for a (property_id, menu_date, meal_type) slot so we
+ * can cleanly run column-scoped UPDATE (items, notes, is_published, meal_time)
+ * vs INSERT without hitting Postgres column-level GRANT errors on PostgREST upsert.
+ */
+async function resolveExistingMealId(
+  propertyId: string,
+  menuDate: string,
+  mealType: MealType,
+  candidateId?: string | null
+): Promise<string | null> {
+  if (candidateId && UUID_REGEX.test(candidateId)) {
+    return candidateId;
+  }
+  try {
+    const { data, error } = await supabase
+      .from('food_menus')
+      .select('id')
+      .eq('property_id', propertyId)
+      .eq('menu_date', menuDate)
+      .eq('meal_type', mealType)
+      .maybeSingle();
+    if (!error && data && typeof (data as { id?: unknown }).id === 'string') {
+      return (data as { id: string }).id;
+    }
+  } catch {
+    // Non-fatal: e.g. in unit test mocks that only stub insert/update
+  }
+  return null;
+}
+
 export async function saveFoodMenu(
   input: SaveFoodMenuInput
 ): Promise<ServiceResult<{ menu: FoodMenuRecord; isUpdate: boolean }>> {
@@ -459,7 +493,14 @@ export async function saveFoodMenu(
     : undefined;
 
   try {
-    if (input.existingId) {
+    const validExistingId = await resolveExistingMealId(
+      input.propertyId,
+      input.menuDate,
+      input.mealType,
+      input.existingId
+    );
+
+    if (validExistingId) {
       const richPayload: {
         items: string;
         notes: string | null;
@@ -477,7 +518,7 @@ export async function saveFoodMenu(
       const richRes = await supabase
         .from('food_menus')
         .update(richPayload)
-        .eq('id', input.existingId)
+        .eq('id', validExistingId)
         .eq('property_id', input.propertyId)
         .select(
           'id, property_id, menu_date, meal_type, items, notes, is_published, meal_time'
@@ -497,7 +538,7 @@ export async function saveFoodMenu(
               notes: input.notes,
               is_published: input.isPublished,
             })
-            .eq('id', input.existingId)
+            .eq('id', validExistingId)
             .eq('property_id', input.propertyId)
             .select('id, property_id, menu_date, meal_type, items, notes, is_published')
             .single();
@@ -716,20 +757,49 @@ export async function upsertMealsForDate(input: {
   menuDate: string;
   existingMenus: MealMenuMap;
   entries: WeeklyTemplateEntry[];
-}): Promise<ServiceResult<void>> {
+}): Promise<ServiceResult<FoodMenuRecord[]>> {
   const traceLabel = `food-menu:bulk-upsert:${input.propertyId}:${input.menuDate}`;
   startTrace(traceLabel);
   let wroteAny = false;
+  const savedRows: FoodMenuRecord[] = [];
   try {
+    // Fetch real existing IDs for this date in 1 query so we always respect
+    // column-level UPDATE grants (items, notes, is_published, meal_time) vs INSERT.
+    const existingIdByMeal = new Map<MealType, string>();
+    for (const mealType of MEAL_ORDER) {
+      const candidate = input.existingMenus[mealType]?.id;
+      if (candidate && UUID_REGEX.test(candidate)) {
+        existingIdByMeal.set(mealType, candidate);
+      }
+    }
+    try {
+      const { data: dbExisting } = await supabase
+        .from('food_menus')
+        .select('id, meal_type')
+        .eq('property_id', input.propertyId)
+        .eq('menu_date', input.menuDate);
+      if (Array.isArray(dbExisting)) {
+        for (const row of dbExisting as { id?: string; meal_type?: MealType }[]) {
+          if (row.id && row.meal_type && UUID_REGEX.test(row.id)) {
+            existingIdByMeal.set(row.meal_type, row.id);
+          }
+        }
+      }
+    } catch {
+      // Non-fatal fallback
+    }
+
     for (const entry of input.entries) {
-      const existing = input.existingMenus[entry.meal_type];
+      const existingId = existingIdByMeal.get(entry.meal_type) ?? null;
       const hasMealTime = entry.meal_time !== undefined;
       const normalizedMealTime = hasMealTime
         ? normalizeMealTime(entry.meal_time)
         : undefined;
 
-      if (existing) {
-        const richPayload: {
+      let rowData: FoodMenuRecord | null = null;
+
+      if (existingId) {
+        const updatePayload: {
           items: string;
           notes: string | null;
           is_published: boolean;
@@ -740,15 +810,20 @@ export async function upsertMealsForDate(input: {
           is_published: entry.is_published,
         };
         if (hasMealTime) {
-          richPayload.meal_time = normalizedMealTime ?? null;
+          updatePayload.meal_time = normalizedMealTime ?? null;
         }
 
         const richRes = await supabase
           .from('food_menus')
-          .update(richPayload)
-          .eq('id', existing.id)
-          .eq('property_id', input.propertyId);
+          .update(updatePayload)
+          .eq('id', existingId)
+          .eq('property_id', input.propertyId)
+          .select(
+            'id, property_id, menu_date, meal_type, items, notes, is_published, meal_time'
+          )
+          .single();
         recordRoundTrip(traceLabel);
+
         if (richRes.error) {
           const appError = normalizeAppError(
             richRes.error,
@@ -762,27 +837,25 @@ export async function upsertMealsForDate(input: {
                 notes: entry.notes,
                 is_published: entry.is_published,
               })
-              .eq('id', existing.id)
-              .eq('property_id', input.propertyId);
+              .eq('id', existingId)
+              .eq('property_id', input.propertyId)
+              .select(
+                'id, property_id, menu_date, meal_type, items, notes, is_published'
+              )
+              .single();
             recordRoundTrip(traceLabel);
             if (fallbackRes.error) {
               return fail(fallbackRes.error, 'Failed to update meal menu.');
             }
+            rowData = fallbackRes.data as FoodMenuRecord | null;
           } else {
             return fail(richRes.error, 'Failed to update meal menu.');
           }
+        } else {
+          rowData = richRes.data as FoodMenuRecord | null;
         }
-        if (hasMealTime) {
-          await writeLocalMealTime(
-            input.propertyId,
-            input.menuDate,
-            entry.meal_type,
-            normalizedMealTime ?? null
-          );
-        }
-        wroteAny = true;
       } else {
-        const richInsert: {
+        const insertPayload: {
           property_id: string;
           menu_date: string;
           meal_type: MealType;
@@ -799,46 +872,71 @@ export async function upsertMealsForDate(input: {
           is_published: entry.is_published,
         };
         if (hasMealTime) {
-          richInsert.meal_time = normalizedMealTime ?? null;
+          insertPayload.meal_time = normalizedMealTime ?? null;
         }
 
-        const richRes = await supabase.from('food_menus').insert(richInsert);
+        const richRes = await supabase
+          .from('food_menus')
+          .insert(insertPayload)
+          .select(
+            'id, property_id, menu_date, meal_type, items, notes, is_published, meal_time'
+          )
+          .single();
         recordRoundTrip(traceLabel);
+
         if (richRes.error) {
           const appError = normalizeAppError(
             richRes.error,
             'Failed to insert meal menu.'
           );
           if (isMissingSchemaError(appError)) {
-            const fallbackRes = await supabase.from('food_menus').insert({
-              property_id: input.propertyId,
-              menu_date: input.menuDate,
-              meal_type: entry.meal_type,
-              items: entry.items,
-              notes: entry.notes,
-              is_published: entry.is_published,
-            });
+            const fallbackRes = await supabase
+              .from('food_menus')
+              .insert({
+                property_id: input.propertyId,
+                menu_date: input.menuDate,
+                meal_type: entry.meal_type,
+                items: entry.items,
+                notes: entry.notes,
+                is_published: entry.is_published,
+              })
+              .select(
+                'id, property_id, menu_date, meal_type, items, notes, is_published'
+              )
+              .single();
             recordRoundTrip(traceLabel);
             if (fallbackRes.error) {
               return fail(fallbackRes.error, 'Failed to insert meal menu.');
             }
+            rowData = fallbackRes.data as FoodMenuRecord | null;
           } else {
             return fail(richRes.error, 'Failed to insert meal menu.');
           }
+        } else {
+          rowData = richRes.data as FoodMenuRecord | null;
         }
-        if (hasMealTime) {
-          await writeLocalMealTime(
-            input.propertyId,
-            input.menuDate,
-            entry.meal_type,
-            normalizedMealTime ?? null
-          );
-        }
-        wroteAny = true;
       }
+
+      if (hasMealTime) {
+        await writeLocalMealTime(
+          input.propertyId,
+          input.menuDate,
+          entry.meal_type,
+          normalizedMealTime ?? null
+        );
+      }
+      if (rowData) {
+        savedRows.push({
+          ...rowData,
+          meal_time: hasMealTime
+            ? (normalizedMealTime ?? null)
+            : (normalizeMealTime(rowData.meal_time) ?? null),
+        });
+      }
+      wroteAny = true;
     }
 
-    return ok(undefined);
+    return ok(savedRows);
   } catch (err: unknown) {
     return fail(err, 'Failed to save meals.');
   } finally {

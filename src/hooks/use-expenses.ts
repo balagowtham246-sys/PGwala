@@ -1,5 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
+import { broadcastPropertySync } from '@/lib/realtime-sync';
+
 import {
   addPropertyExpense,
   deletePropertyExpense,
@@ -58,7 +60,8 @@ export function useAddPropertyExpenseMutation() {
       if (!res.ok) throw new Error(res.error.message);
       return res.data;
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: expenseQueryKeys.all });
     },
   });
@@ -72,7 +75,8 @@ export function useDeletePropertyExpenseMutation() {
       const res = await deletePropertyExpense(expenseId);
       if (!res.ok) throw new Error(res.error.message);
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: expenseQueryKeys.all });
     },
   });

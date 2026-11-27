@@ -293,6 +293,14 @@ export function StudentChargeList({
                       </Text>
                     </View>
                   )}
+                  {(currentRentBill.ac_paise || 0) > 0 && (
+                    <View style={styles.breakdownRow}>
+                      <Text style={styles.breakdownLabel}>AC Room Fee</Text>
+                      <Text style={styles.breakdownVal}>
+                        {formatPaiseToRupees(currentRentBill.ac_paise || 0)}
+                      </Text>
+                    </View>
+                  )}
                   {currentRentBill.status !== 'paid' &&
                     renderUnpaidItemRow(currentRentBill, 'Rent')}
                 </>

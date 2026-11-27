@@ -23,6 +23,7 @@ export interface RoomDefinition {
   room_number: string;
   total_beds: number;
   gender_type: PropertyGenderType;
+  is_ac?: boolean;
 }
 
 export interface BedSlot {
@@ -41,6 +42,7 @@ export interface RoomWithOccupancy {
   occupiedBeds: number;
   genderType: PropertyGenderType;
   isGenderAllowed: boolean;
+  isAc: boolean;
   beds: BedSlot[];
 }
 
@@ -77,6 +79,7 @@ export interface ResidentMovementItem {
   event_time: string;
   purpose: string | null;
   expected_return_time: string | null;
+  expected_return_date?: string | null;
   food_required: boolean | null;
   note: string | null;
 }
@@ -313,11 +316,20 @@ async function fetchRoomsTableRaw(
   traceLabel: string
 ): Promise<RoomDefinition[]> {
   const localRooms = await readLocalRooms(propertyId);
-  const { data, error } = await supabase
+  let { data, error } = await supabase
     .from('rooms')
-    .select('id, property_id, room_number, total_beds, gender_type')
+    .select('id, property_id, room_number, total_beds, gender_type, is_ac')
     .eq('property_id', propertyId);
   recordRoundTrip(traceLabel, 1);
+
+  if (error && isMissingSchemaError(error)) {
+    const fallback = await supabase
+      .from('rooms')
+      .select('id, property_id, room_number, total_beds, gender_type')
+      .eq('property_id', propertyId);
+    data = fallback.data as typeof data;
+    error = fallback.error;
+  }
 
   if (error) {
     if (isMissingSchemaError(error)) {
@@ -464,6 +476,7 @@ export async function fetchRoomsWithOccupancy(
         occupiedBeds,
         genderType: effectiveGender,
         isGenderAllowed,
+        isAc: Boolean(def.is_ac),
         beds,
       };
     });
@@ -482,6 +495,7 @@ export async function createRoom(
     roomNumber: string;
     totalBeds: number;
     genderType: PropertyGenderType;
+    isAc?: boolean;
   }
 ): Promise<ServiceResult<RoomDefinition>> {
   const cleanRoom = normalizeRoomCode(input.roomNumber);
@@ -489,6 +503,7 @@ export async function createRoom(
     return fail(new Error('Room number is required.'));
   }
   const cleanBeds = Math.max(1, Math.min(20, Math.round(input.totalBeds || 2)));
+  const isAc = Boolean(input.isAc);
   const traceLabel = `residents:create-room:${propertyId}`;
   startTrace(traceLabel);
 
@@ -498,14 +513,31 @@ export async function createRoom(
       room_number: cleanRoom,
       total_beds: cleanBeds,
       gender_type: input.genderType,
+      is_ac: isAc,
     };
 
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('rooms')
       .upsert(payload, { onConflict: 'property_id,room_number' })
-      .select('id, property_id, room_number, total_beds, gender_type')
+      .select('id, property_id, room_number, total_beds, gender_type, is_ac')
       .single();
     recordRoundTrip(traceLabel, 1);
+
+    if (error && isMissingSchemaError(error)) {
+      const legacyPayload = {
+        property_id: propertyId,
+        room_number: cleanRoom,
+        total_beds: cleanBeds,
+        gender_type: input.genderType,
+      };
+      const fallback = await supabase
+        .from('rooms')
+        .upsert(legacyPayload, { onConflict: 'property_id,room_number' })
+        .select('id, property_id, room_number, total_beds, gender_type')
+        .single();
+      data = fallback.data ? { ...fallback.data, is_ac: isAc } : null;
+      error = fallback.error;
+    }
 
     if (error && !isMissingSchemaError(error)) {
       return fail(error, 'Could not save room.');
@@ -516,10 +548,10 @@ export async function createRoom(
     const nextLocal = existingLocal.filter(
       (r) => normalizeRoomCode(r.room_number).toLowerCase() !== cleanRoom.toLowerCase()
     );
-    nextLocal.push({ ...saved, room_number: cleanRoom, total_beds: cleanBeds });
+    nextLocal.push({ ...saved, room_number: cleanRoom, total_beds: cleanBeds, is_ac: isAc });
     await writeLocalRooms(propertyId, nextLocal);
 
-    return ok({ ...saved, room_number: cleanRoom, total_beds: cleanBeds });
+    return ok({ ...saved, room_number: cleanRoom, total_beds: cleanBeds, is_ac: isAc });
   } catch (err) {
     return fail(err, 'Could not create room.');
   } finally {
@@ -534,6 +566,7 @@ export async function renameRoom(
     roomNumber: string;
     totalBeds: number;
     genderType: PropertyGenderType;
+    isAc?: boolean;
   }
 ): Promise<ServiceResult<RoomDefinition>> {
   const cleanOld = normalizeRoomCode(oldRoomNumber);
@@ -566,16 +599,18 @@ export async function renameRoom(
     }
 
     // Update rooms table row (or insert if it only existed implicitly via residents)
+    const isAc = Boolean(input.isAc);
     const { data: updatedRoom, error: roomErr } = await supabase
       .from('rooms')
       .update({
         room_number: cleanNext,
         total_beds: cleanBeds,
         gender_type: input.genderType,
+        is_ac: isAc,
       })
       .eq('property_id', propertyId)
       .eq('room_number', cleanOld)
-      .select('id, property_id, room_number, total_beds, gender_type')
+      .select('id, property_id, room_number, total_beds, gender_type, is_ac')
       .maybeSingle();
 
     if (roomErr && !isMissingSchemaError(roomErr)) {
@@ -587,13 +622,14 @@ export async function renameRoom(
       room_number: cleanNext,
       total_beds: cleanBeds,
       gender_type: input.genderType,
+      is_ac: isAc,
     };
 
     if (!updatedRoom && !isMissingSchemaError(roomErr)) {
       const { data: inserted } = await supabase
         .from('rooms')
         .upsert(saved, { onConflict: 'property_id,room_number' })
-        .select('id, property_id, room_number, total_beds, gender_type')
+        .select('id, property_id, room_number, total_beds, gender_type, is_ac')
         .maybeSingle();
       if (inserted) saved = inserted as RoomDefinition;
     }
@@ -905,7 +941,7 @@ export async function fetchResidentProfile(
         .limit(12),
       supabase
         .from('movement_logs')
-        .select('id, direction, event_time, purpose, expected_return_time, food_required, note')
+        .select('id, direction, event_time, purpose, expected_return_time, expected_return_date, food_required, note')
         .eq('resident_id', rawRes.id)
         .gte('event_time', sevenDaysAgo)
         .order('event_time', { ascending: false })
@@ -948,12 +984,16 @@ export async function fetchResidentProfile(
       (c) => c.status === 'resolved'
     ).length;
 
+    const onLeave =
+      gateStatus === 'OUT' && Boolean(latestLog?.expected_return_date);
     const mealOptIn = rawRes.meal_opt_in !== false;
     const dinnerIncludedByGate =
-      gateStatus === 'IN' || Boolean(latestLog?.food_required);
+      gateStatus === 'IN' || (!onLeave && Boolean(latestLog?.food_required));
     const dinnerRegisteredToday = mealOptIn && dinnerIncludedByGate;
     const dinnerStatusLabel = !mealOptIn
       ? 'Opted out of daily meals'
+      : onLeave
+      ? `Meals paused (On leave until ${latestLog?.expected_return_date})`
       : gateStatus === 'IN'
       ? 'Registered (Inside PG)'
       : latestLog?.food_required

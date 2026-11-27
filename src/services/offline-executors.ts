@@ -10,6 +10,7 @@ export interface GateMovementOfflinePayload {
   p_direction: 'IN' | 'OUT';
   p_purpose?: string;
   p_expected_return_time?: string;
+  p_expected_return_date?: string | null;
   p_food_required?: boolean;
   p_note?: string;
 }
@@ -42,6 +43,9 @@ export const defaultOfflineExecutors: OfflineExecutorMap = {
       p_direction: typed.p_direction,
       p_purpose: typed.p_purpose,
       p_expected_return_time: typed.p_expected_return_time,
+      ...(typed.p_expected_return_date !== undefined
+        ? { p_expected_return_date: typed.p_expected_return_date }
+        : {}),
       p_food_required: typed.p_food_required,
       p_note: typed.p_note,
     });

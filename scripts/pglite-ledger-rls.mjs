@@ -536,6 +536,128 @@ async function runRealMigrationRlsTests() {
       owner2CannotInsertProp1Reservation = true;
     }
 
+    // --- Migration 37 RLS: Warden 1 can read Owner 1 phone, NOT Owner 2 ---
+    await db.query(`UPDATE public.profiles SET phone_number = '9876543210' WHERE id = $1`, [IDS.owner1]);
+    await db.query(`UPDATE public.profiles SET phone_number = '9999999999' WHERE id = $1`, [IDS.owner2]);
+    const warden1OwnerProfiles = await asAuthenticatedUser(db, IDS.warden1, () =>
+      db.query(`SELECT id, phone_number FROM public.profiles WHERE id IN ($1, $2) ORDER BY id`, [
+        IDS.owner1,
+        IDS.owner2,
+      ])
+    );
+    const warden1CanSeeOwner1Phone =
+      warden1OwnerProfiles.rows.length === 1 &&
+      warden1OwnerProfiles.rows[0].id === IDS.owner1 &&
+      warden1OwnerProfiles.rows[0].phone_number === '9876543210';
+
+    // --- Migration 38: Multi-Day Home Visit / Vacation Leave ---
+    const leaveOutRes = await asAuthenticatedUser(db, IDS.user1, async () => {
+      const r = await db.query(
+        `SELECT public.record_student_movement('OUT', 'Semester Break', 'Returns 5 Dec', true, NULL, '2026-12-05'::date) AS res`
+      );
+      return r.rows[0].res;
+    });
+    const leaveForcesFoodFalse =
+      leaveOutRes?.success === true &&
+      leaveOutRes?.food_required === false &&
+      leaveOutRes?.expected_return_date === '2026-12-05';
+
+    const audienceWhileOnLeave = await asAuthenticatedUser(db, IDS.warden1, () =>
+      db.query(`SELECT resident_id FROM public.get_alert_audience($1)`, [IDS.prop1])
+    );
+    const onLeaveExcludedFromAudience = !audienceWhileOnLeave.rows.some(
+      (r) => r.resident_id === IDS.res1
+    );
+
+    const leaveInRes = await asAuthenticatedUser(db, IDS.user1, async () => {
+      const r = await db.query(`SELECT public.record_student_movement('IN') AS res`);
+      return r.rows[0].res;
+    });
+    const checkInClearsLeave =
+      leaveInRes?.success === true && leaveInRes?.expected_return_date === null;
+
+    const audienceAfterReturn = await asAuthenticatedUser(db, IDS.warden1, () =>
+      db.query(`SELECT resident_id FROM public.get_alert_audience($1)`, [IDS.prop1])
+    );
+    const returnedRestoredToAudience = audienceAfterReturn.rows.some(
+      (r) => r.resident_id === IDS.res1
+    );
+
+    // --- Migration 40: Room AC (+₹500) & Owner Bill Reversal / Cancel ---
+    await db.query(
+      `INSERT INTO public.rooms (property_id, room_number, total_beds, gender_type, is_ac)
+       VALUES ($1, '101', 2, 'coed', true), ($1, 'D', 2, 'coed', false)
+       ON CONFLICT (property_id, room_number) DO UPDATE SET is_ac = EXCLUDED.is_ac`,
+      [IDS.prop1]
+    );
+
+    await asAuthenticatedUser(db, IDS.owner1, () =>
+      db.query(
+        `SELECT public.generate_monthly_bills($1, '2026-12-01'::date, 800000)`,
+        [IDS.prop1]
+      )
+    );
+
+    const acChargesRes = await db.query(
+      `SELECT id, resident_id, rent_amount_paise, wm_amount_paise, ac_amount_paise, amount_paise, status
+       FROM public.charges
+       WHERE property_id = $1 AND billing_period_start = '2026-12-01'::date AND category = 'rent'
+       ORDER BY resident_id`,
+      [IDS.prop1]
+    );
+    const res1Chg = acChargesRes.rows.find((c) => c.resident_id === IDS.res1); // Room D (Non-AC)
+    const res2Chg = acChargesRes.rows.find((c) => c.resident_id === IDS.res2); // Room 101 (AC)
+    const acFeeAppliedCorrectly =
+      Number(res2Chg?.ac_amount_paise) === 50000 &&
+      Number(res2Chg?.amount_paise) === 800000 + 50000 + 50000 &&
+      Number(res1Chg?.ac_amount_paise) === 0 &&
+      Number(res1Chg?.amount_paise) === 800000 + 50000;
+
+    // Confirm payment on res2Chg, verify cancel is blocked while paid, then reverse payment
+    await asAuthenticatedUser(db, IDS.owner1, () =>
+      db.query(
+        `SELECT public.confirm_monthly_payment($1, NULL, 'cash')`,
+        [res2Chg.id]
+      )
+    );
+    const cancelPaidBlockedRes = await asAuthenticatedUser(db, IDS.owner1, async () => {
+      const r = await db.query(
+        `SELECT public.cancel_unpaid_charge($1, 'Mistake') AS res`,
+        [res2Chg.id]
+      );
+      return r.rows[0].res;
+    });
+    const cancelPaidBlocked = cancelPaidBlockedRes?.success === false;
+
+    const reverseRes = await asAuthenticatedUser(db, IDS.owner1, async () => {
+      const r = await db.query(
+        `SELECT public.reverse_charge_payments($1, 'Wrong resident') AS res`,
+        [res2Chg.id]
+      );
+      return r.rows[0].res;
+    });
+    const afterReverseChg = await db.query(
+      `SELECT status FROM public.charges WHERE id = $1`,
+      [res2Chg.id]
+    );
+    const paymentReversedAndReopened =
+      reverseRes?.success === true && afterReverseChg.rows[0]?.status === 'outstanding';
+
+    // Now cancel unpaid res1Chg
+    const cancelUnpaidRes = await asAuthenticatedUser(db, IDS.owner1, async () => {
+      const r = await db.query(
+        `SELECT public.cancel_unpaid_charge($1, 'Generated by mistake') AS res`,
+        [res1Chg.id]
+      );
+      return r.rows[0].res;
+    });
+    const afterCancelChg = await db.query(
+      `SELECT status FROM public.charges WHERE id = $1`,
+      [res1Chg.id]
+    );
+    const unpaidBillCancelled =
+      cancelUnpaidRes?.success === true && afterCancelChg.rows[0]?.status === 'cancelled';
+
     return {
       user1AnnouncementIds: user1Announcements.rows.map((r) => r.id),
       user2AnnouncementIds: user2Announcements.rows.map((r) => r.id),
@@ -584,6 +706,15 @@ async function runRealMigrationRlsTests() {
         owner2VisibleReservationCount: owner2VisibleReservations.rows.length,
         residentVisibleReservationCount: residentVisibleReservations.rows.length,
         owner2CannotInsertProp1Reservation,
+        warden1CanSeeOwner1Phone,
+        leaveForcesFoodFalse,
+        onLeaveExcludedFromAudience,
+        checkInClearsLeave,
+        returnedRestoredToAudience,
+        acFeeAppliedCorrectly,
+        cancelPaidBlocked,
+        paymentReversedAndReopened,
+        unpaidBillCancelled,
       },
     };
   } finally {

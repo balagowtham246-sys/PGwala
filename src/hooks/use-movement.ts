@@ -8,6 +8,7 @@ import {
 
 import { sortLogsDescending } from '@/lib/movement-utils';
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { supabase } from '@/lib/supabase';
 import {
   recordStudentMovement,
@@ -35,6 +36,7 @@ export interface MovementLogItem {
   note: string | null;
   purpose?: string | null;
   expected_return_time?: string | null;
+  expected_return_date?: string | null;
   food_required?: boolean;
   recorded_by: string;
 }
@@ -119,7 +121,7 @@ export function useOwnerMovementQuery(params: {
       let { data: logsData, error: logsError } = await supabase
         .from('movement_logs')
         .select(
-          'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
+          'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, expected_return_date, food_required, recorded_by'
         )
         .eq('property_id', activePropId)
         .order('event_time', { ascending: false })
@@ -133,7 +135,7 @@ export function useOwnerMovementQuery(params: {
         const { data: fallbackData } = await supabase
           .from('movement_logs')
           .select(
-            'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
+            'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, expected_return_date, food_required, recorded_by'
           )
           .in('resident_id', allResidentIds)
           .order('event_time', { ascending: false })
@@ -188,7 +190,7 @@ export function useStudentGateHistoryQuery(residentId: string | undefined) {
       const { data, error } = await supabase
         .from('movement_logs')
         .select(
-          'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, food_required, recorded_by'
+          'id, resident_id, property_id, direction, event_time, note, purpose, expected_return_time, expected_return_date, food_required, recorded_by'
         )
         .eq('resident_id', residentId!)
         .order('event_time', { ascending: false })
@@ -253,6 +255,8 @@ export function useRecordStudentMovementMutation() {
       });
 
       const nowIso = new Date().toISOString();
+      const isLeave =
+        input.direction === 'OUT' && Boolean(input.expectedReturnDate?.trim());
       const optimisticLog: MovementLogItem = {
         id: `optimistic-gate-${Date.now()}`,
         resident_id: residentId ?? '',
@@ -260,7 +264,9 @@ export function useRecordStudentMovementMutation() {
         event_time: nowIso,
         purpose: input.purpose ?? null,
         expected_return_time: input.expectedReturnTime ?? null,
-        food_required: input.foodRequired ?? true,
+        expected_return_date:
+          input.direction === 'IN' ? null : (input.expectedReturnDate ?? null),
+        food_required: isLeave ? false : (input.foodRequired ?? true),
         note: input.note ?? null,
         recorded_by: input.userId ?? '',
       };
@@ -291,7 +297,8 @@ export function useRecordStudentMovementMutation() {
             event_time: nowIso,
             purpose: input.purpose ?? null,
             expected_return_time: input.expectedReturnTime ?? null,
-            food_required: input.foodRequired ?? true,
+            expected_return_date: optimisticLog.expected_return_date ?? null,
+            food_required: optimisticLog.food_required ?? true,
             note: input.note ?? null,
           },
         });
@@ -313,6 +320,7 @@ export function useRecordStudentMovementMutation() {
         // Offline queue holds the authoritative pending state until sync completes
         return;
       }
+      broadcastPropertySync('movement');
       void qc.invalidateQueries({ queryKey: queryKeys.movement.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
       void qc.invalidateQueries({ queryKey: queryKeys.residents.all });

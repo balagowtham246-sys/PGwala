@@ -19,6 +19,7 @@ import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import {
   assignPropertyWarden,
   fetchOwnerWardens,
@@ -145,6 +146,7 @@ export default function OwnerWardensScreen() {
               Alert.alert('Could not remove', res.error.message);
               return;
             }
+            broadcastPropertySync('settings', propertyId);
             showToast(`${wardenName} removed`);
           } finally {
             setRemovingPropertyId(null);

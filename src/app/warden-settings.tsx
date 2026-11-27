@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   Alert,
   Linking,
@@ -10,7 +10,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Building2, LogOut, Phone, ShieldCheck } from 'lucide-react-native';
 
 import { SettingsComplianceSection } from '@/components/settings-compliance-section';
@@ -20,40 +20,43 @@ import { supabase } from '@/lib/supabase';
 
 export default function WardenSettingsScreen() {
   const { user, profile, signOut } = useAuth();
+  const userId = user?.id;
   const [propertyName, setPropertyName] = useState<string | null>(null);
   const [ownerPhone, setOwnerPhone] = useState<string | null>(null);
 
-  useEffect(() => {
-    let active = true;
-    (async () => {
-      if (!user?.id) return;
-      const { data } = await supabase
-        .from('property_wardens')
-        .select('properties(name, owner_id)')
-        .eq('warden_profile_id', user.id)
-        .eq('is_active', true)
-        .maybeSingle();
-      if (!active || !data) return;
-
-      const rel = (data as { properties?: { name?: string; owner_id?: string } | { name?: string; owner_id?: string }[] }).properties;
-      const prop = Array.isArray(rel) ? rel[0] : rel;
-      setPropertyName(prop?.name ?? null);
-
-      if (prop?.owner_id) {
-        const { data: ownerProf } = await supabase
-          .from('profiles')
-          .select('phone_number')
-          .eq('id', prop.owner_id)
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      (async () => {
+        if (!userId) return;
+        const { data } = await supabase
+          .from('property_wardens')
+          .select('properties(name, owner_id)')
+          .eq('warden_profile_id', userId)
+          .eq('is_active', true)
           .maybeSingle();
-        if (active && ownerProf?.phone_number) {
-          setOwnerPhone(ownerProf.phone_number);
+        if (!active || !data) return;
+
+        const rel = (data as { properties?: { name?: string; owner_id?: string } | { name?: string; owner_id?: string }[] }).properties;
+        const prop = Array.isArray(rel) ? rel[0] : rel;
+        setPropertyName(prop?.name ?? null);
+
+        if (prop?.owner_id) {
+          const { data: ownerProf } = await supabase
+            .from('profiles')
+            .select('phone_number')
+            .eq('id', prop.owner_id)
+            .maybeSingle();
+          if (active) {
+            setOwnerPhone(ownerProf?.phone_number?.trim() || null);
+          }
         }
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [user?.id]);
+      })();
+      return () => {
+        active = false;
+      };
+    }, [userId])
+  );
 
   const handleCallOwner = () => {
     if (!ownerPhone) {

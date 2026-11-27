@@ -1,5 +1,6 @@
 import { useAuth } from '@/context/auth-context';
 import { extractErrorMessage } from '@/lib/error-utils';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { supabase } from '@/lib/supabase';
 import { inferPropertyGender, PropertyGenderType } from '@/lib/ux-utils';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -513,6 +514,7 @@ export function PropertyProvider({ children }: { children: React.ReactNode }) {
             : p
         )
       );
+      broadcastPropertySync('settings', id);
     },
     [ownerUserId]
   );

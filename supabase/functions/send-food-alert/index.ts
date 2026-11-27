@@ -205,12 +205,49 @@ serve(async (req) => {
     if (residentError) {
       return json(500, { success: false, code: 'DB_ERROR', error: 'Could not resolve recipients.' });
     }
-    const recipients = (residents ?? []) as { id: string; profile_id: string; room_number: string }[];
-    if (recipients.length === 0) {
+    const allOptedIn = (residents ?? []) as { id: string; profile_id: string; room_number: string }[];
+    if (allOptedIn.length === 0) {
       return json(400, {
         success: false,
         code: 'NO_RECIPIENTS',
         error: 'No eligible residents found (must be active, opted in for meals and have a login).',
+      });
+    }
+
+    // ---- Exclude residents currently on multi-day Home / Vacation Leave ----
+    const onLeaveIds = new Set<string>();
+    try {
+      const candidateIds = allOptedIn.map((r) => r.id);
+      const { data: latestLogs } = await admin
+        .from('movement_logs')
+        .select('resident_id, direction, expected_return_date, event_time')
+        .eq('property_id', propertyId)
+        .in('resident_id', candidateIds)
+        .order('event_time', { ascending: false })
+        .limit(Math.max(candidateIds.length * 4, 200));
+
+      const seenResident = new Set<string>();
+      for (const row of (latestLogs ?? []) as {
+        resident_id: string;
+        direction: string;
+        expected_return_date?: string | null;
+      }[]) {
+        if (seenResident.has(row.resident_id)) continue;
+        seenResident.add(row.resident_id);
+        if (row.direction === 'OUT' && row.expected_return_date) {
+          onLeaveIds.add(row.resident_id);
+        }
+      }
+    } catch {
+      // Non-fatal fallback if expected_return_date migration is not yet applied
+    }
+
+    const recipients = allOptedIn.filter((r) => !onLeaveIds.has(r.id));
+    if (recipients.length === 0) {
+      return json(400, {
+        success: false,
+        code: 'NO_RECIPIENTS',
+        error: 'All eligible residents are currently on multi-day leave.',
       });
     }
 

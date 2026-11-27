@@ -1,9 +1,12 @@
 import {
   countDaysOutThisMonth,
   formatMovementDayLabel,
+  formatShortReturnDate,
   getLocalDateKey,
   groupLogsByLocalDay,
   isLateReturn,
+  isLeaveOverdue,
+  isOnMultiDayLeave,
   isOutOverHours,
   sortLogsDescending,
 } from '../movement-utils';
@@ -91,5 +94,34 @@ describe('movement-utils', () => {
       { direction: 'OUT', event_time: new Date(2026, 9, 28, 10, 0).toISOString() }, // Oct ignored
     ];
     expect(countDaysOutThisMonth(logs, now)).toBe(2);
+  });
+
+  test('isOnMultiDayLeave detects active OUT logs with valid expected_return_date', () => {
+    expect(isOnMultiDayLeave({ direction: 'OUT', expected_return_date: '2026-12-05' })).toBe(true);
+    expect(isOnMultiDayLeave({ direction: 'OUT', expected_return_date: null })).toBe(false);
+    expect(isOnMultiDayLeave({ direction: 'IN', expected_return_date: '2026-12-05' })).toBe(false);
+    expect(isOnMultiDayLeave(null)).toBe(false);
+  });
+
+  test('isLeaveOverdue & isLateReturn do not flag nightly curfew during active multi-day leave', () => {
+    const dec3LateNight = new Date(2026, 11, 3, 23, 30, 0); // Dec 3, 11:30 PM
+    const dec5Night = new Date(2026, 11, 5, 23, 30, 0); // Dec 5 (return date itself)
+    const dec6Morning = new Date(2026, 11, 6, 8, 0, 0); // Dec 6 (day after return date)
+
+    expect(isLeaveOverdue('2026-12-05', dec3LateNight)).toBe(false);
+    expect(isLeaveOverdue('2026-12-05', dec5Night)).toBe(false);
+    expect(isLeaveOverdue('2026-12-05', dec6Morning)).toBe(true);
+
+    // Even if expected_return_time has a clock string, expectedReturnDate takes precedence
+    expect(isLateReturn('Evening (~8:00 PM)', dec3LateNight, '2026-12-05')).toBe(false);
+    expect(isLateReturn('Returns 5 Dec', dec5Night, '2026-12-05')).toBe(false);
+    expect(isLateReturn('Returns 5 Dec', dec6Morning, '2026-12-05')).toBe(true);
+  });
+
+  test('formatShortReturnDate formats Today, Tomorrow, and short calendar dates', () => {
+    const nov27 = new Date(2026, 10, 27, 10, 0, 0);
+    expect(formatShortReturnDate('2026-11-27', nov27)).toBe('Today');
+    expect(formatShortReturnDate('2026-11-28', nov27)).toBe('Tomorrow');
+    expect(formatShortReturnDate('2026-12-05', nov27)).toMatch(/5\s*Dec|Dec\s*5/);
   });
 });

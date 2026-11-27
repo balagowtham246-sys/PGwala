@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { PropertyGenderType } from '@/lib/ux-utils';
 import {
   BedReservation,
@@ -60,7 +61,8 @@ export function useCreateBedReservationMutation() {
       }
       return res.data;
     },
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, err, variables) => {
+      if (!err) broadcastPropertySync('residents', variables.propertyId);
       void qc.invalidateQueries({
         queryKey: queryKeys.residents.reservations(variables.propertyId),
       });
@@ -106,7 +108,8 @@ export function useCancelBedReservationMutation() {
       if (!context) return;
       qc.setQueryData(context.reservationsKey, context.previousReservations);
     },
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, err, variables) => {
+      if (!err) broadcastPropertySync('residents', variables.propertyId);
       void qc.invalidateQueries({
         queryKey: queryKeys.residents.reservations(variables.propertyId),
       });

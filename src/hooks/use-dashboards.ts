@@ -10,6 +10,7 @@ import {
   FoodMealType,
 } from '@/lib/food-alert-utils';
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { supabase } from '@/lib/supabase';
 import {
   DashboardWmUnit,
@@ -136,7 +137,10 @@ export function useOwnerReleaseWmMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, err, variables) => {
+      if (!err) {
+        broadcastPropertySync('washingMachine', variables.propertyId);
+      }
       void qc.invalidateQueries({
         queryKey: ['dashboard', 'owner', variables.propertyId],
       });
@@ -203,7 +207,10 @@ export function useOwnerSetWmOutOfOrderMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: (_data, _err, variables) => {
+    onSettled: (_data, err, variables) => {
+      if (!err) {
+        broadcastPropertySync('washingMachine', variables.propertyId);
+      }
       void qc.invalidateQueries({
         queryKey: ['dashboard', 'owner', variables.propertyId],
       });
@@ -354,6 +361,7 @@ export function useSendWardenFoodAlertMutation() {
       );
     },
     onSuccess: (_data, variables) => {
+      broadcastPropertySync('food');
       void qc.invalidateQueries({
         queryKey: variables.userId
           ? queryKeys.dashboard.warden(variables.userId)

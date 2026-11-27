@@ -7,6 +7,9 @@ import {
   Eye,
   MessageCircle,
   Receipt,
+  RotateCcw,
+  Snowflake,
+  XCircle,
 } from 'lucide-react-native';
 import {
   HIGH_CONTRAST_SWITCH_COLORS,
@@ -25,6 +28,7 @@ import {
   ReviewPaymentItem,
 } from '@/services/billing.service';
 import type { PartialPaymentTarget } from '@/components/billing/PartialPaymentModal';
+import type { ReverseBillTarget } from '@/components/billing/ReverseBillModal';
 
 export type ResidentLedgerCardProps =
   | {
@@ -38,6 +42,7 @@ export type ResidentLedgerCardProps =
       onReviewProof: (reviewItem: ReviewPaymentItem) => void;
       onConfirmCashPayment: (chargeId: string) => void;
       onOpenPartialPayment?: (target: PartialPaymentTarget) => void;
+      onOpenReverseBill?: (target: ReverseBillTarget) => void;
       onSendReminder: (
         residentName: string,
         phoneNumber: string | null | undefined,
@@ -55,6 +60,7 @@ export type ResidentLedgerCardProps =
       onReviewProof: (reviewItem: ReviewPaymentItem) => void;
       onConfirmCashPayment: (chargeId: string) => void;
       onOpenPartialPayment?: (target: PartialPaymentTarget) => void;
+      onOpenReverseBill?: (target: ReverseBillTarget) => void;
       onSendReminder: (
         residentName: string,
         phoneNumber: string | null | undefined,
@@ -224,6 +230,7 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
       onReviewProof,
       onConfirmCashPayment,
       onOpenPartialPayment,
+      onOpenReverseBill,
       onSendReminder,
     } = props;
     const isPaid = res.status === 'paid';
@@ -342,6 +349,18 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
             </Text>
           </View>
 
+          {(res.ac_paise ?? (res.is_ac ? 50000 : 0)) > 0 && (
+            <View style={styles.breakdownRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                <Snowflake size={12} color="#0891B2" />
+                <Text style={styles.breakdownLabel}>AC Room Fee</Text>
+              </View>
+              <Text style={[styles.breakdownValue, { color: '#0E7490' }]}>
+                {formatPaiseToRupees(res.ac_paise ?? 50000)}
+              </Text>
+            </View>
+          )}
+
           <View style={styles.totalRow}>
             <Text style={styles.totalLabel}>
               {isPartial ? `Paid ${formatPaiseToRupees(paidPaise)} · Due` : 'Total'}
@@ -352,7 +371,43 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
           </View>
         </View>
 
-        {isPaid ? null : hasReport && res.pending_report && res.charge_id ? (
+        {isPaid ? (
+          res.charge_id && onOpenReverseBill ? (
+            <View style={styles.actionRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Reverse rent payment for ${res.full_name}`}
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  paddingVertical: 9,
+                  borderRadius: OwnerTheme.radius.md,
+                  borderWidth: 1,
+                  borderColor: '#FECACA',
+                  backgroundColor: '#FEF2F2',
+                }}
+                onPress={() =>
+                  onOpenReverseBill({
+                    mode: 'reverse_payment',
+                    chargeId: res.charge_id!,
+                    residentName: res.full_name,
+                    roomNumber: res.room_number,
+                    billLabel: `${monthLabel} Rent`,
+                    amountPaise: res.total_paise,
+                    paidPaise,
+                  })
+                }>
+                <RotateCcw size={13} color="#B91C1C" />
+                <Text style={{ fontSize: 12, fontWeight: '700', color: '#B91C1C' }}>
+                  Reverse Payment
+                </Text>
+              </Pressable>
+            </View>
+          ) : null
+        ) : hasReport && res.pending_report && res.charge_id ? (
           <View style={styles.actionRow}>
             <Pressable
               style={styles.reviewActionBtn}
@@ -443,6 +498,45 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
                 </Text>
               </Pressable>
             </View>
+            {res.charge_id && onOpenReverseBill && (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={
+                  isPartial
+                    ? `Reverse partial payment for ${res.full_name}`
+                    : `Cancel unpaid rent bill for ${res.full_name}`
+                }
+                style={{
+                  marginTop: 6,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 5,
+                  paddingVertical: 7,
+                  borderRadius: OwnerTheme.radius.sm,
+                  backgroundColor: '#FFF5F5',
+                }}
+                onPress={() =>
+                  onOpenReverseBill({
+                    mode: isPartial ? 'reverse_payment' : 'cancel_bill',
+                    chargeId: res.charge_id!,
+                    residentName: res.full_name,
+                    roomNumber: res.room_number,
+                    billLabel: `${monthLabel} Rent`,
+                    amountPaise: res.total_paise,
+                    paidPaise,
+                  })
+                }>
+                {isPartial ? (
+                  <RotateCcw size={12} color="#B91C1C" />
+                ) : (
+                  <XCircle size={12} color="#B91C1C" />
+                )}
+                <Text style={{ fontSize: 11, fontWeight: '700', color: '#B91C1C' }}>
+                  {isPartial ? 'Reverse partial payment' : 'Cancel bill'}
+                </Text>
+              </Pressable>
+            )}
           </>
         )}
       </View>
@@ -458,6 +552,7 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
       onReviewProof,
       onConfirmCashPayment,
       onOpenPartialPayment,
+      onOpenReverseBill,
       onSendReminder,
     } = props;
     const isPaid = res.status === 'paid';
@@ -506,7 +601,43 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
           </View>
         </View>
 
-        {isPaid ? null : hasReport && res.pending_report && res.charge_id ? (
+        {isPaid ? (
+          res.charge_id && onOpenReverseBill ? (
+            <View style={styles.actionRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Reverse EB payment for ${res.full_name}`}
+                style={{
+                  flex: 1,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  paddingVertical: 9,
+                  borderRadius: OwnerTheme.radius.md,
+                  borderWidth: 1,
+                  borderColor: '#FECACA',
+                  backgroundColor: '#FEF2F2',
+                }}
+                onPress={() =>
+                  onOpenReverseBill({
+                    mode: 'reverse_payment',
+                    chargeId: res.charge_id!,
+                    residentName: res.full_name,
+                    roomNumber: res.room_number,
+                    billLabel: `${monthLabel} EB`,
+                    amountPaise: res.amount_paise,
+                    paidPaise,
+                  })
+                }>
+                <RotateCcw size={13} color="#B91C1C" />
+                <Text style={{ fontSize: 12, fontWeight: '700', color: '#B91C1C' }}>
+                  Reverse Payment
+                </Text>
+              </Pressable>
+            </View>
+          ) : null
+        ) : hasReport && res.pending_report && res.charge_id ? (
           <View style={styles.actionRow}>
             <Pressable
               style={styles.reviewActionBtn}
@@ -580,14 +711,53 @@ function ResidentLedgerCardInner(props: ResidentLedgerCardProps) {
                 </Text>
               </Pressable>
             </View>
-          </>
-        )}
-      </View>
-    );
-  }
+            {res.charge_id && onOpenReverseBill && (
+              <Pressable
+                accessibilityRole="button"
+                    accessibilityLabel={
+                      isPartial
+                        ? `Reverse partial EB payment for ${res.full_name}`
+                        : `Cancel unpaid EB bill for ${res.full_name}`
+                    }
+                    style={{
+                      marginTop: 6,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 5,
+                      paddingVertical: 7,
+                      borderRadius: OwnerTheme.radius.sm,
+                      backgroundColor: '#FFF5F5',
+                    }}
+                    onPress={() =>
+                      onOpenReverseBill({
+                        mode: isPartial ? 'reverse_payment' : 'cancel_bill',
+                        chargeId: res.charge_id!,
+                        residentName: res.full_name,
+                        roomNumber: res.room_number,
+                        billLabel: `${monthLabel} EB`,
+                        amountPaise: res.amount_paise,
+                        paidPaise,
+                      })
+                    }>
+                    {isPartial ? (
+                      <RotateCcw size={12} color="#B91C1C" />
+                    ) : (
+                      <XCircle size={12} color="#B91C1C" />
+                    )}
+                    <Text style={{ fontSize: 11, fontWeight: '700', color: '#B91C1C' }}>
+                      {isPartial ? 'Reverse partial payment' : 'Cancel EB bill'}
+                    </Text>
+                  </Pressable>
+                )}
+              </>
+            )}
+          </View>
+        );
+      }
 
-  const {
-    item: res,
+      const {
+        item: res,
     isDuplicatePhone = false,
     unpaidChargeIds = [],
     onOpenProfile,

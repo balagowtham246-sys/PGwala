@@ -60,6 +60,15 @@ interface PgliteSuiteResult {
       owner2VisibleReservationCount: number;
       residentVisibleReservationCount: number;
       owner2CannotInsertProp1Reservation: boolean;
+      warden1CanSeeOwner1Phone: boolean;
+      leaveForcesFoodFalse: boolean;
+      onLeaveExcludedFromAudience: boolean;
+      checkInClearsLeave: boolean;
+      returnedRestoredToAudience: boolean;
+      acFeeAppliedCorrectly: boolean;
+      cancelPaidBlocked: boolean;
+      paymentReversedAndReopened: boolean;
+      unpaidBillCancelled: boolean;
     };
   };
 }
@@ -156,6 +165,15 @@ describe('Postgres ledger & RLS scoping invariants (PGlite)', () => {
       owner2VisibleReservationCount: 0,
       residentVisibleReservationCount: 0,
       owner2CannotInsertProp1Reservation: true,
+      warden1CanSeeOwner1Phone: true,
+      leaveForcesFoodFalse: true,
+      onLeaveExcludedFromAudience: true,
+      checkInClearsLeave: true,
+      returnedRestoredToAudience: true,
+      acFeeAppliedCorrectly: true,
+      cancelPaidBlocked: true,
+      paymentReversedAndReopened: true,
+      unpaidBillCancelled: true,
     });
   });
 });

@@ -41,11 +41,13 @@ export interface ResidentRentBillItem {
   room_number: string;
   phone_number: string | null;
   opt_in_wm: boolean;
+  is_ac?: boolean;
   wm_request_pending?: boolean;
   monthly_rent_paise: number;
   charge_id: string | null;
   rent_paise: number;
   wm_paise: number;
+  ac_paise?: number;
   total_paise: number;
   paid_paise?: number;
   remaining_paise?: number;
@@ -138,6 +140,7 @@ export interface StudentBillCardItem {
   due_date: string;
   rent_paise?: number;
   wm_paise?: number;
+  ac_paise?: number;
   total_paise: number;
   status: 'paid' | 'unpaid';
   receipt_number?: string | null;
@@ -257,6 +260,7 @@ interface RawChargeRow {
   amount_paise: number;
   rent_amount_paise: number | null;
   wm_amount_paise: number | null;
+  ac_amount_paise?: number | null;
   status: string;
   due_date: string | null;
   billing_period_start?: string;
@@ -316,6 +320,7 @@ interface RawOwnerResidentRow {
   phone_number: string | null;
   monthly_rent_paise: number | null;
   is_active: boolean;
+  is_ac?: boolean | null;
 }
 
 interface RawOwnerOptInRow {
@@ -468,6 +473,9 @@ function buildOwnerBillingSnapshot(params: {
     const isPendingReport = rep?.status === 'pending';
     const isRejectedReport = rep?.status === 'rejected';
 
+    const isAc = Boolean(r.is_ac);
+    const defaultAcPaise = isAc ? 50000 : 0;
+
     if (chg) {
       const isSettled = chg.status === 'settled';
       const pInfo = paymentMap.get(chg.id);
@@ -482,11 +490,13 @@ function buildOwnerBillingSnapshot(params: {
         room_number: r.room_number,
         phone_number: r.phone_number,
         opt_in_wm: optWm,
+        is_ac: isAc,
         wm_request_pending: wmPendingRequestSet.has(r.id),
         monthly_rent_paise: defaultRent,
         charge_id: chg.id,
         rent_paise: chg.rent_amount_paise || defaultRent,
         wm_paise: chg.wm_amount_paise || (optWm ? 50000 : 0),
+        ac_paise: chg.ac_amount_paise ?? defaultAcPaise,
         total_paise: chg.amount_paise,
         paid_paise: paidPaise,
         remaining_paise: remainingPaise,
@@ -510,12 +520,14 @@ function buildOwnerBillingSnapshot(params: {
       room_number: r.room_number,
       phone_number: r.phone_number,
       opt_in_wm: optWm,
+      is_ac: isAc,
       wm_request_pending: wmPendingRequestSet.has(r.id),
       monthly_rent_paise: defaultRent,
       charge_id: null,
       rent_paise: defaultRent,
       wm_paise: optWm ? 50000 : 0,
-      total_paise: defaultRent + (optWm ? 50000 : 0),
+      ac_paise: defaultAcPaise,
+      total_paise: defaultRent + (optWm ? 50000 : 0) + defaultAcPaise,
       status: 'not_generated',
       has_pending_report: false,
       pending_report: null,
@@ -1044,6 +1056,7 @@ function buildStudentBillingSnapshot(params: {
       due_date: c.due_date || '',
       rent_paise: isRent ? c.rent_amount_paise || c.amount_paise : undefined,
       wm_paise: isRent ? c.wm_amount_paise || 0 : undefined,
+      ac_paise: isRent ? c.ac_amount_paise || 0 : undefined,
       total_paise: c.amount_paise,
       status: isSettled ? 'paid' : 'unpaid',
       receipt_number: pInfo?.receipt || null,
@@ -1277,5 +1290,75 @@ export async function submitStudentPaymentProof(
     return await run;
   } finally {
     inFlightPaymentProofs.delete(flightKey);
+  }
+}
+
+export interface ReverseChargePaymentsParams {
+  chargeId: string;
+  reason: string;
+}
+
+export interface CancelUnpaidChargeParams {
+  chargeId: string;
+  reason: string;
+}
+
+export async function reverseChargePayments(
+  params: ReverseChargePaymentsParams
+): Promise<ServiceResult<{ message: string }>> {
+  const traceLabel = `billing:reverse:${params.chargeId}`;
+  startTrace(traceLabel);
+  try {
+    const { data, error } = await supabase.rpc('reverse_charge_payments', {
+      p_charge_id: params.chargeId,
+      p_reason: params.reason.trim(),
+    });
+    recordRoundTrip(traceLabel, 1);
+
+    if (error) throw error;
+    if (!data?.success) {
+      throw new Error(data?.error || 'Could not reverse payment.');
+    }
+
+    await Promise.all([
+      invalidatePrefix(BILLING_CACHE_PREFIX),
+      invalidatePrefix('dashboard:'),
+      invalidatePrefix('residents:'),
+    ]);
+    return ok({ message: data.message || 'Payment reversed.' });
+  } catch (err) {
+    return fail(err, 'Could not reverse payment.');
+  } finally {
+    endTrace(traceLabel);
+  }
+}
+
+export async function cancelUnpaidCharge(
+  params: CancelUnpaidChargeParams
+): Promise<ServiceResult<{ message: string }>> {
+  const traceLabel = `billing:cancel:${params.chargeId}`;
+  startTrace(traceLabel);
+  try {
+    const { data, error } = await supabase.rpc('cancel_unpaid_charge', {
+      p_charge_id: params.chargeId,
+      p_reason: params.reason.trim(),
+    });
+    recordRoundTrip(traceLabel, 1);
+
+    if (error) throw error;
+    if (!data?.success) {
+      throw new Error(data?.error || 'Could not cancel bill.');
+    }
+
+    await Promise.all([
+      invalidatePrefix(BILLING_CACHE_PREFIX),
+      invalidatePrefix('dashboard:'),
+      invalidatePrefix('residents:'),
+    ]);
+    return ok({ message: data.message || 'Unpaid bill cancelled.' });
+  } catch (err) {
+    return fail(err, 'Could not cancel bill.');
+  } finally {
+    endTrace(traceLabel);
   }
 }

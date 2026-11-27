@@ -29,6 +29,7 @@ interface MovementLogRecord {
   note: string | null;
   purpose?: string | null;
   expected_return_time?: string | null;
+  expected_return_date?: string | null;
   food_required?: boolean;
 }
 
@@ -185,6 +186,7 @@ export interface ResidentMovementRecord {
   event_time: string;
   purpose: string | null;
   expected_return_time: string | null;
+  expected_return_date?: string | null;
   food_required: boolean;
   note: string | null;
 }
@@ -193,6 +195,8 @@ export interface StudentDashboardData {
   resident: ResidentAccommodationInfo | null;
   menus: Record<MealType, ResidentFoodMenu | null>;
   pendingDuesPaise: number | null;
+  pendingRentPaise?: number | null;
+  pendingEbPaise?: number | null;
   pendingReviewPaise?: number | null;
   currentMonthBillGenerated?: boolean;
   latestMovement: ResidentMovementRecord | null;
@@ -203,6 +207,7 @@ export interface RecordStudentMovementInput {
   direction: 'IN' | 'OUT';
   purpose?: string;
   expectedReturnTime?: string;
+  expectedReturnDate?: string | null;
   foodRequired?: boolean;
   note?: string;
   userId?: string;
@@ -1118,7 +1123,7 @@ export async function fetchStudentDashboard(
         }),
         supabase
           .from('charges')
-          .select('id, amount_paise')
+          .select('id, category, amount_paise')
           .eq('resident_id', residentInfo.id)
           .eq('status', 'outstanding'),
         fetchPendingReportsSafe(),
@@ -1155,19 +1160,34 @@ export async function fetchStudentDashboard(
     );
 
     let pendingDuesPaise: number | null = null;
+    let pendingRentPaise: number | null = null;
+    let pendingEbPaise: number | null = null;
     let pendingReviewPaise: number | null = null;
     if (!chargesRes.error && chargesRes.data) {
       let totalDue = 0;
+      let totalRentDue = 0;
+      let totalEbDue = 0;
       let totalReview = 0;
-      for (const ch of chargesRes.data as { id?: string; amount_paise?: number }[]) {
+      for (const ch of chargesRes.data as {
+        id?: string;
+        category?: string | null;
+        amount_paise?: number;
+      }[]) {
         const amt = ch.amount_paise || 0;
         if (ch.id && pendingChargeIds.has(ch.id)) {
           totalReview += amt;
         } else {
           totalDue += amt;
+          if (ch.category === 'electricity') {
+            totalEbDue += amt;
+          } else if (ch.category === 'rent') {
+            totalRentDue += amt;
+          }
         }
       }
       pendingDuesPaise = totalDue;
+      pendingRentPaise = totalRentDue;
+      pendingEbPaise = totalEbDue;
       pendingReviewPaise = totalReview;
     } else if (chargesRes.error) {
       console.warn('[ResidentDashboard] Dues fetch error:', chargesRes.error.message);
@@ -1201,6 +1221,7 @@ export async function fetchStudentDashboard(
           event_time: gateStatus.eventTime,
           purpose: gateStatus.purpose ?? null,
           expected_return_time: gateStatus.expectedReturnTime ?? null,
+          expected_return_date: gateStatus.expectedReturnDate ?? null,
           food_required: Boolean(gateStatus.foodRequired ?? true),
           note: null,
         };
@@ -1229,7 +1250,7 @@ export async function fetchStudentDashboard(
         fetchMenusFallback(),
         supabase
           .from('movement_logs')
-          .select('id, direction, event_time, purpose, expected_return_time, food_required, note')
+          .select('id, direction, event_time, purpose, expected_return_time, expected_return_date, food_required, note')
           .eq('resident_id', residentInfo.id)
           .order('event_time', { ascending: false })
           .limit(1)
@@ -1282,6 +1303,8 @@ export async function fetchStudentDashboard(
       resident: residentInfo,
       menus: resolvedMenus,
       pendingDuesPaise,
+      pendingRentPaise,
+      pendingEbPaise,
       pendingReviewPaise,
       currentMonthBillGenerated,
       latestMovement: latestGateRecord,
@@ -1313,14 +1336,23 @@ export async function recordStudentMovement(
     startTrace(traceLabel);
 
     try {
+      const isMultiDayLeave =
+        input.direction === 'OUT' && Boolean(input.expectedReturnDate?.trim());
+      const effectiveFoodRequired = isMultiDayLeave
+        ? false
+        : input.foodRequired;
+
       const { data, error } = await supabase.rpc('record_student_movement', {
         p_direction: input.direction,
         ...(input.purpose !== undefined ? { p_purpose: input.purpose } : {}),
         ...(input.expectedReturnTime !== undefined
           ? { p_expected_return_time: input.expectedReturnTime }
           : {}),
-        ...(input.foodRequired !== undefined ? { p_food_required: input.foodRequired } : {}),
+        ...(effectiveFoodRequired !== undefined ? { p_food_required: effectiveFoodRequired } : {}),
         ...(input.note !== undefined ? { p_note: input.note } : {}),
+        ...(input.expectedReturnDate !== undefined
+          ? { p_expected_return_date: input.expectedReturnDate }
+          : {}),
       });
       recordRoundTrip(traceLabel, 1);
 
@@ -1335,14 +1367,22 @@ export async function recordStudentMovement(
       return ok({ queued: false });
     } catch (err: unknown) {
       if (isLikelyNetworkError(err)) {
+        const isMultiDayLeave =
+          input.direction === 'OUT' && Boolean(input.expectedReturnDate?.trim());
+        const effectiveFoodRequired = isMultiDayLeave
+          ? false
+          : input.foodRequired;
         const payload: GateMovementOfflinePayload & Record<string, unknown> = {
           p_direction: input.direction,
           ...(input.purpose !== undefined ? { p_purpose: input.purpose } : {}),
           ...(input.expectedReturnTime !== undefined
             ? { p_expected_return_time: input.expectedReturnTime }
             : {}),
-          ...(input.foodRequired !== undefined ? { p_food_required: input.foodRequired } : {}),
+          ...(effectiveFoodRequired !== undefined ? { p_food_required: effectiveFoodRequired } : {}),
           ...(input.note !== undefined ? { p_note: input.note } : {}),
+          ...(input.expectedReturnDate !== undefined
+            ? { p_expected_return_date: input.expectedReturnDate }
+            : {}),
         };
         const key =
           input.idempotencyKey?.trim() ||

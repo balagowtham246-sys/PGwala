@@ -86,7 +86,18 @@ describe('food-menu.service', () => {
     });
     await fetchFoodMenusForDate('prop-1', '2026-11-19');
 
-    // Insert
+    // Lookup existing ID returns null -> Insert
+    mockedFrom.mockReturnValueOnce({
+      select: () => ({
+        eq: () => ({
+          eq: () => ({
+            eq: () => ({
+              maybeSingle: jest.fn().mockResolvedValue({ data: null, error: null }),
+            }),
+          }),
+        }),
+      }),
+    });
     mockedFrom.mockReturnValueOnce({
       insert: () => ({
         select: () => ({
@@ -113,6 +124,7 @@ describe('food-menu.service', () => {
       items: 'Rice, Dal',
       notes: null,
       isPublished: false,
+      existingId: 'optimistic-template-lunch',
     });
     expect(saved.ok).toBe(true);
 

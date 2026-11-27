@@ -15,6 +15,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Href, router, useLocalSearchParams } from 'expo-router';
 import {
+  Calendar,
   LogIn,
   LogOut,
   MessageCircle,
@@ -24,6 +25,7 @@ import {
 import { useQueryClient } from '@tanstack/react-query';
 
 import { GateHistoryModal } from '@/components/student-gate/GateHistoryModal';
+import { CalendarDatePickerModal } from '@/components/ui/calendar-date-picker-modal';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
@@ -36,13 +38,19 @@ import {
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import { buildWhatsAppReminderUrl } from '@/lib/billing-utils';
 import {
+  formatShortReturnDate,
   groupLogsByLocalDay,
   isLateReturn,
+  isLeaveOverdue,
+  isOnMultiDayLeave,
 } from '@/lib/movement-utils';
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { supabase } from '@/lib/supabase';
 import {
+  addDaysToIsoDate,
   formatGateEventTimestamp,
+  formatLocalIsoDate,
   toSentenceCaseStatus,
 } from '@/lib/ux-utils';
 import {
@@ -91,6 +99,49 @@ export default function StudentInOutScreen() {
   const [togglingResidentId, setTogglingResidentId] = useState<string | null>(
     null
   );
+  const [leaveTargetResident, setLeaveTargetResident] =
+    useState<MovementResidentRecord | null>(null);
+
+  const handleOwnerMarkLeave = useCallback(
+    async (resident: MovementResidentRecord, returnDateIso: string) => {
+      if (!userId || togglingResidentId) return;
+      setTogglingResidentId(resident.id);
+      try {
+        const { error } = await supabase.from('movement_logs').insert({
+          property_id: resident.property_id,
+          resident_id: resident.id,
+          direction: 'OUT',
+          event_time: new Date().toISOString(),
+          purpose: 'Home Visit',
+          expected_return_time: `Returns ${formatShortReturnDate(returnDateIso)}`,
+          expected_return_date: returnDateIso,
+          food_required: false,
+          note: 'Marked on leave by owner',
+          recorded_by: userId,
+        });
+        if (error) throw error;
+        broadcastPropertySync('movement', resident.property_id);
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: queryKeys.movement.all }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
+          queryClient.invalidateQueries({ queryKey: queryKeys.residents.all }),
+        ]);
+        showToast(
+          `${resident.full_name} marked On Leave until ${formatShortReturnDate(returnDateIso)}.`
+        );
+      } catch (err) {
+        Alert.alert(
+          'Update Failed',
+          err instanceof Error
+            ? err.message
+            : 'Could not mark resident on leave.'
+        );
+      } finally {
+        setTogglingResidentId(null);
+      }
+    },
+    [queryClient, showToast, togglingResidentId, userId]
+  );
 
   const handleOwnerToggleGate = useCallback(
     async (resident: MovementResidentRecord, currentlyInside: boolean) => {
@@ -108,6 +159,7 @@ export default function StudentInOutScreen() {
           recorded_by: userId,
         });
         if (error) throw error;
+        broadcastPropertySync('movement', resident.property_id);
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: queryKeys.movement.all }),
           queryClient.invalidateQueries({ queryKey: queryKeys.dashboard.all }),
@@ -157,7 +209,7 @@ export default function StudentInOutScreen() {
   };
 
   // Filter Tabs & Search
-  type FilterTab = 'ALL' | 'OUT' | 'IN' | 'LATE';
+  type FilterTab = 'ALL' | 'OUT' | 'ON_LEAVE' | 'IN' | 'LATE';
   const [activeTab, setActiveTab] = useState<FilterTab>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -236,7 +288,8 @@ export default function StudentInOutScreen() {
   // Live count derivation (memoized)
   const { counts, outsideMealsCount, lateReturnCount } = useMemo(() => {
     let inside = 0;
-    let outside = 0;
+    let outsideDay = 0;
+    let onLeave = 0;
     let outsideMeals = 0;
     let late = 0;
 
@@ -245,19 +298,36 @@ export default function StudentInOutScreen() {
       if (status === 'IN') {
         inside += 1;
       } else {
-        outside += 1;
         const latest = getLatestResidentLog(r.id);
-        if (latest?.food_required) {
-          outsideMeals += 1;
+        const residentOnLeave = isOnMultiDayLeave(latest);
+        if (residentOnLeave) {
+          onLeave += 1;
+        } else {
+          outsideDay += 1;
+          if (latest?.food_required) {
+            outsideMeals += 1;
+          }
         }
-        if (latest && isLateReturn(latest.expected_return_time)) {
+        if (
+          latest &&
+          isLateReturn(
+            latest.expected_return_time,
+            undefined,
+            latest.expected_return_date
+          )
+        ) {
           late += 1;
         }
       }
     }
 
     return {
-      counts: { inside, outside },
+      counts: {
+        inside,
+        outsideDay,
+        onLeave,
+        outside: outsideDay + onLeave,
+      },
       outsideMealsCount: outsideMeals,
       lateReturnCount: late,
     };
@@ -266,7 +336,11 @@ export default function StudentInOutScreen() {
   const mealsRequiredCount = counts.inside + outsideMealsCount;
 
   const effectiveTab: FilterTab =
-    activeTab === 'LATE' && lateReturnCount === 0 ? 'ALL' : activeTab;
+    activeTab === 'LATE' && lateReturnCount === 0
+      ? 'ALL'
+      : activeTab === 'ON_LEAVE' && counts.onLeave === 0
+        ? 'ALL'
+        : activeTab;
 
   const normalizedSearch = searchQuery.trim().toLowerCase();
   const filteredResidents = useMemo(
@@ -274,11 +348,21 @@ export default function StudentInOutScreen() {
       residents.filter((r) => {
         if (activeResidentFilterId && r.id !== activeResidentFilterId) return false;
         const status = getResidentCurrentStatus(r.id);
-        if (effectiveTab === 'OUT' && status !== 'OUT') return false;
+        const latest = getLatestResidentLog(r.id);
+        const residentOnLeave = isOnMultiDayLeave(latest);
+        if (effectiveTab === 'OUT' && (status !== 'OUT' || residentOnLeave)) return false;
+        if (effectiveTab === 'ON_LEAVE' && !residentOnLeave) return false;
         if (effectiveTab === 'IN' && status !== 'IN') return false;
         if (effectiveTab === 'LATE') {
-          const latest = getLatestResidentLog(r.id);
-          if (status !== 'OUT' || !latest || !isLateReturn(latest.expected_return_time)) {
+          if (
+            status !== 'OUT' ||
+            !latest ||
+            !isLateReturn(
+              latest.expected_return_time,
+              undefined,
+              latest.expected_return_date
+            )
+          ) {
             return false;
           }
         }
@@ -363,8 +447,16 @@ export default function StudentInOutScreen() {
       const latestLog = getLatestResidentLog(resident.id);
       const isInside = currentStatus === 'IN';
       const isOutside = currentStatus === 'OUT';
+      const onLeave = isOnMultiDayLeave(latestLog);
+      const leaveOverdue = onLeave && isLeaveOverdue(latestLog?.expected_return_date);
       const isLate = Boolean(
-        isOutside && latestLog && isLateReturn(latestLog.expected_return_time)
+        isOutside &&
+          latestLog &&
+          isLateReturn(
+            latestLog.expected_return_time,
+            undefined,
+            latestLog.expected_return_date
+          )
       );
 
       const initials = resident.full_name
@@ -401,7 +493,9 @@ export default function StudentInOutScreen() {
                       ? '#FEE2E2'
                       : isInside
                         ? '#DCFCE7'
-                        : '#FEF3C7',
+                        : onLeave
+                          ? '#EDE9FE'
+                          : '#FEF3C7',
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}>
@@ -413,7 +507,9 @@ export default function StudentInOutScreen() {
                         ? '#B91C1C'
                         : isInside
                           ? '#15803D'
-                          : '#B45309',
+                          : onLeave
+                            ? '#6D28D9'
+                            : '#B45309',
                     }}>
                     {initials}
                   </Text>
@@ -425,7 +521,7 @@ export default function StudentInOutScreen() {
                   <Text style={styles.residentRoom} numberOfLines={1}>
                     Room {resident.room_number}
                     {latestLog
-                      ? ` · ${isInside ? 'In' : 'Out'} ${formatGateEventTimestamp(latestLog.event_time)}`
+                      ? ` · ${isInside ? 'In' : onLeave ? 'On leave' : 'Out'} ${formatGateEventTimestamp(latestLog.event_time)}`
                       : ' · No gate logs yet'}
                   </Text>
                 </View>
@@ -433,16 +529,35 @@ export default function StudentInOutScreen() {
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
                 {isLate && (
                   <StatusBadge
-                    label={toSentenceCaseStatus('late')}
+                    label={leaveOverdue ? 'Overdue' : toSentenceCaseStatus('late')}
                     variant="danger"
                     size="sm"
                   />
                 )}
-                <StatusBadge
-                  label={toSentenceCaseStatus(isInside ? 'inside' : 'outside')}
-                  variant={isInside ? 'success' : 'warning'}
-                  size="sm"
-                />
+                {onLeave ? (
+                  <View
+                    style={{
+                      backgroundColor: '#EDE9FE',
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                      borderRadius: 999,
+                    }}>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: '700',
+                        color: '#6D28D9',
+                      }}>
+                      On Leave
+                    </Text>
+                  </View>
+                ) : (
+                  <StatusBadge
+                    label={toSentenceCaseStatus(isInside ? 'inside' : 'outside')}
+                    variant={isInside ? 'success' : 'warning'}
+                    size="sm"
+                  />
+                )}
               </View>
             </View>
 
@@ -455,7 +570,24 @@ export default function StudentInOutScreen() {
                   </Text>
                 </View>
               ) : null}
-              {isOutside && latestLog?.expected_return_time ? (
+              {onLeave && latestLog?.expected_return_date ? (
+                <View
+                  style={{
+                    backgroundColor: leaveOverdue ? '#FEE2E2' : '#EDE9FE',
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    borderRadius: 6,
+                  }}>
+                  <Text
+                    style={{
+                      fontSize: 11,
+                      fontWeight: '700',
+                      color: leaveOverdue ? '#B91C1C' : '#6D28D9',
+                    }}>
+                    Returns {formatShortReturnDate(latestLog.expected_return_date)}
+                  </Text>
+                </View>
+              ) : isOutside && latestLog?.expected_return_time ? (
                 <View
                   style={{
                     backgroundColor: isLate ? '#FEE2E2' : '#F1F5F9',
@@ -476,7 +608,9 @@ export default function StudentInOutScreen() {
               <View
                 style={{
                   backgroundColor:
-                    isInside || latestLog?.food_required ? '#DCFCE7' : '#F1F5F9',
+                    isInside || (!onLeave && latestLog?.food_required)
+                      ? '#DCFCE7'
+                      : '#F1F5F9',
                   paddingHorizontal: 8,
                   paddingVertical: 3,
                   borderRadius: 6,
@@ -486,16 +620,42 @@ export default function StudentInOutScreen() {
                     fontSize: 11,
                     fontWeight: '600',
                     color:
-                      isInside || latestLog?.food_required ? '#15803D' : '#64748B',
+                      isInside || (!onLeave && latestLog?.food_required)
+                        ? '#15803D'
+                        : '#64748B',
                   }}>
-                  Dinner: {isInside || latestLog?.food_required ? 'Yes' : 'No'}
+                  {onLeave
+                    ? 'Meals: Paused'
+                    : `Dinner: ${isInside || latestLog?.food_required ? 'Yes' : 'No'}`}
                 </Text>
               </View>
             </View>
           </Pressable>
 
-          {/* Actions shown ONLY for outside residents (owners do not mark residents out) */}
-          {isOutside && (
+          {/* Owner Actions: Mark Leave for inside residents, WhatsApp + Mark In for outside/on-leave */}
+          {isInside ? (
+            <View style={styles.cardActionRow}>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Mark ${resident.full_name} on multi-day leave`}
+                disabled={togglingResidentId === resident.id}
+                style={({ pressed }) => [
+                  styles.ownerOverrideBtn,
+                  {
+                    backgroundColor: '#FAF5FF',
+                    borderColor: '#DDD6FE',
+                  },
+                  togglingResidentId === resident.id && { opacity: 0.6 },
+                  pressed && styles.cardPressed,
+                ]}
+                onPress={() => setLeaveTargetResident(resident)}>
+                <Calendar size={14} color="#6D28D9" />
+                <Text style={{ fontSize: 12, fontWeight: '700', color: '#6D28D9' }}>
+                  Mark Leave
+                </Text>
+              </Pressable>
+            </View>
+          ) : (
             <View style={styles.cardActionRow}>
               {(resident.phone_number ?? '').replace(/\D/g, '').length >= 10 && (
                 <Pressable
@@ -600,13 +760,15 @@ export default function StudentInOutScreen() {
             <DarkSlateHeroCard
               eyebrow="LIVE GATE ATTENDANCE"
               title={`${counts.inside} of ${counts.inside + counts.outside} inside PG`}
-              subtitle={`${mealsRequiredCount} dinner meals (${counts.inside} in + ${outsideMealsCount} out)`}
+              subtitle={`${mealsRequiredCount} dinner meals (${counts.inside} in + ${outsideMealsCount} out)${counts.onLeave > 0 ? ` · ${counts.onLeave} on leave` : ''}`}
               badgeLabel={
                 lateReturnCount > 0
                   ? `${lateReturnCount} late`
-                  : counts.outside > 0
-                    ? `${counts.outside} outside`
-                    : 'All inside'
+                  : counts.onLeave > 0
+                    ? `${counts.onLeave} on leave`
+                    : counts.outsideDay > 0
+                      ? `${counts.outsideDay} outside`
+                      : 'All inside'
               }
               badgeTone={
                 lateReturnCount > 0
@@ -618,8 +780,8 @@ export default function StudentInOutScreen() {
               stats={[
                 { label: 'Inside', value: counts.inside, tone: 'success' },
                 {
-                  label: 'Outside',
-                  value: counts.outside,
+                  label: counts.onLeave > 0 ? 'On Leave' : 'Outside',
+                  value: counts.onLeave > 0 ? counts.onLeave : counts.outsideDay,
                   tone: counts.outside > 0 ? 'warning' : 'default',
                 },
                 { label: 'Dinner', value: mealsRequiredCount, tone: 'info' },
@@ -678,7 +840,10 @@ export default function StudentInOutScreen() {
             <SegmentedFilter
               options={[
                 { key: 'ALL', label: 'All', count: residents.length },
-                { key: 'OUT', label: 'Outside', count: counts.outside },
+                { key: 'OUT', label: 'Outside', count: counts.outsideDay },
+                ...(counts.onLeave > 0
+                  ? [{ key: 'ON_LEAVE', label: 'On Leave', count: counts.onLeave }]
+                  : []),
                 { key: 'IN', label: 'Inside', count: counts.inside },
                 ...(lateReturnCount > 0
                   ? [{ key: 'LATE', label: 'Late', count: lateReturnCount }]
@@ -739,6 +904,8 @@ export default function StudentInOutScreen() {
               description={
                 effectiveTab === 'LATE'
                   ? 'No residents are currently past their expected return time.'
+                  : effectiveTab === 'ON_LEAVE'
+                  ? 'No residents are currently on multi-day leave.'
                   : effectiveTab === 'OUT'
                   ? 'No residents are currently marked outside.'
                   : effectiveTab === 'IN'
@@ -838,6 +1005,24 @@ export default function StudentInOutScreen() {
         onSelectDirection={setHistoryDirectionFilter}
         onSelectTimeframe={setHistoryDateFilter}
         onClose={() => setFullHistoryVisible(false)}
+      />
+
+      <CalendarDatePickerModal
+        visible={Boolean(leaveTargetResident)}
+        value={addDaysToIsoDate(formatLocalIsoDate(), 2)}
+        title={
+          leaveTargetResident
+            ? `Return Date · ${leaveTargetResident.full_name}`
+            : 'Expected Return Date'
+        }
+        onSelect={(iso) => {
+          const target = leaveTargetResident;
+          setLeaveTargetResident(null);
+          if (target) {
+            void handleOwnerMarkLeave(target, iso);
+          }
+        }}
+        onClose={() => setLeaveTargetResident(null)}
       />
 
       <RoleBottomNav activeTab="gate" roleOverride="owner" />

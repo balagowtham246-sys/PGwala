@@ -399,12 +399,29 @@ export function formatHhMmTo12h(hhmm: string | null | undefined): string {
 }
 
 /**
- * Resolves a preset or custom expected return string relative to departure time into a concrete Date.
+ * Resolves a preset or custom expected return string (or multi-day expectedReturnDate)
+ * relative to departure time into a concrete Date.
  */
 export function resolveExpectedReturnDate(
   expectedReturnTime: string | null | undefined,
-  departedAtIso: string | null | undefined
+  departedAtIso: string | null | undefined,
+  expectedReturnDate?: string | null
 ): Date | null {
+  const cleanIsoDate = (expectedReturnDate || '').trim();
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(cleanIsoDate);
+  if (isoMatch) {
+    const target = new Date(
+      Number(isoMatch[1]),
+      Number(isoMatch[2]) - 1,
+      Number(isoMatch[3]),
+      21,
+      0,
+      0,
+      0
+    );
+    return Number.isNaN(target.getTime()) ? null : target;
+  }
+
   const clean = (expectedReturnTime || '').trim();
   if (!clean || !departedAtIso) return null;
   if (/running late/i.test(clean)) return null;

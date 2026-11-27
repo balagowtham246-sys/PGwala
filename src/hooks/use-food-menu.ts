@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import {
   createEmptyMealMenuMap,
   deleteFoodMenu,
@@ -137,7 +138,8 @@ export function useSaveFoodMenuMutation() {
       if (!context) return;
       qc.setQueryData(context.key, context.previous);
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('food');
       void qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
@@ -196,7 +198,8 @@ export function useToggleFoodMenuPublishMutation() {
       if (!context) return;
       qc.setQueryData(context.key, context.previous);
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('food');
       void qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
@@ -246,7 +249,8 @@ export function useDeleteFoodMenuMutation() {
       if (!context) return;
       qc.setQueryData(context.key, context.previous);
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('food');
       void qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
@@ -264,7 +268,7 @@ export function useUpsertMealsForDateMutation() {
   const qc = useQueryClient();
 
   return useMutation<
-    void,
+    FoodMenuRecord[],
     Error,
     UpsertMealsForDateVariables,
     FoodMenuMutationContext
@@ -274,6 +278,7 @@ export function useUpsertMealsForDateMutation() {
       if (!result.ok) {
         throw new Error(result.error.message);
       }
+      return result.data;
     },
     onMutate: async (input) => {
       const key = queryKeys.foodMenus.property(input.propertyId, input.menuDate);
@@ -305,11 +310,28 @@ export function useUpsertMealsForDateMutation() {
 
       return { key, previous };
     },
+    onSuccess: (savedRows, input) => {
+      if (!savedRows || savedRows.length === 0) return;
+      const key = queryKeys.foodMenus.property(input.propertyId, input.menuDate);
+      const current = qc.getQueryData<FetchFoodMenusResult>(key);
+      const nextMenus: MealMenuMap = {
+        ...(current?.menus ?? input.existingMenus),
+      };
+      for (const row of savedRows) {
+        nextMenus[row.meal_type] = row;
+      }
+      qc.setQueryData<FetchFoodMenusResult>(key, {
+        tableMissing: current?.tableMissing ?? false,
+        fromCache: false,
+        menus: nextMenus,
+      });
+    },
     onError: (_err, _vars, context) => {
       if (!context) return;
       qc.setQueryData(context.key, context.previous);
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('food');
       void qc.invalidateQueries({ queryKey: queryKeys.foodMenus.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },

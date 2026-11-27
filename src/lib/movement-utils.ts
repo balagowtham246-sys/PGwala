@@ -70,13 +70,75 @@ export function groupLogsByLocalDay<T extends { event_time: string }>(
 }
 
 /**
+ * Returns true when a movement log represents an active multi-day Home / Vacation Leave
+ * (direction is OUT and a strict YYYY-MM-DD expected_return_date is set).
+ */
+export function isOnMultiDayLeave(
+  log?: { direction?: 'IN' | 'OUT' | string | null; expected_return_date?: string | null } | null
+): boolean {
+  if (!log || log.direction !== 'OUT') return false;
+  const raw = (log.expected_return_date || '').trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(raw);
+}
+
+/**
+ * Returns true only after the student's multi-day leave expected_return_date has passed
+ * (i.e. today's local YYYY-MM-DD is strictly greater than expectedReturnDate).
+ */
+export function isLeaveOverdue(
+  expectedReturnDate?: string | null,
+  now: Date = new Date()
+): boolean {
+  const raw = (expectedReturnDate || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return false;
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const todayIso = `${year}-${month}-${day}`;
+  return todayIso > raw;
+}
+
+/**
+ * Formats a YYYY-MM-DD return date into a concise label ("Today", "Tomorrow", or "5 Dec").
+ */
+export function formatShortReturnDate(
+  isoDate?: string | null,
+  now: Date = new Date()
+): string {
+  const raw = (isoDate || '').trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  if (!match) return raw;
+
+  const target = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+  if (Number.isNaN(target.getTime())) return raw;
+
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const tomorrow = new Date(today);
+  tomorrow.setDate(today.getDate() + 1);
+
+  if (target.getTime() === today.getTime()) return 'Today';
+  if (target.getTime() === tomorrow.getTime()) return 'Tomorrow';
+
+  return target.toLocaleDateString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+  });
+}
+
+/**
  * Returns true if the current local time is past the resident's expected return time
  * (e.g., "Evening (~8:00 PM)", "Night (~10:00 PM)", or custom "7:30 PM").
+ * When expectedReturnDate is set (multi-day leave), delegates to isLeaveOverdue so
+ * students away on vacation are never falsely flagged late at nightly curfew.
  */
 export function isLateReturn(
   expectedReturnTime?: string | null,
-  now: Date = new Date()
+  now: Date = new Date(),
+  expectedReturnDate?: string | null
 ): boolean {
+  if (expectedReturnDate && /^\d{4}-\d{2}-\d{2}$/.test(expectedReturnDate.trim())) {
+    return isLeaveOverdue(expectedReturnDate, now);
+  }
   if (!expectedReturnTime) return false;
   const trimmed = expectedReturnTime.trim();
   if (!trimmed) return false;

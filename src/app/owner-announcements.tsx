@@ -47,6 +47,7 @@ import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { triggerSelectionHaptic, triggerSuccessHaptic } from '@/lib/haptics';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { supabase } from '@/lib/supabase';
 import { formatGateEventTimestamp, formatRoomLabel } from '@/lib/ux-utils';
 import {
@@ -235,6 +236,7 @@ export default function OwnerAnnouncementsScreen() {
       }
 
       triggerSuccessHaptic();
+      broadcastPropertySync('food', selectedPropertyId);
       setTitle('');
       setMessage('');
 

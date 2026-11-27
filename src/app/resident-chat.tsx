@@ -22,7 +22,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useAuth } from '@/context/auth-context';
@@ -60,6 +60,7 @@ interface CurrentResident {
 }
 
 export default function StudentChatScreen() {
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
   const { resident: sharedResident, refreshResident } = useResident();
   const [loading, setLoading] = useState(true);
@@ -523,8 +524,12 @@ export default function StudentChatScreen() {
           }
         />
 
-        {/* Input Bar */}
-        <View style={styles.inputContainer}>
+        {/* Input Bar (clears Android 3-button & gesture navigation bars) */}
+        <View
+          style={[
+            styles.inputContainer,
+            { paddingBottom: Math.max(insets.bottom, 10) },
+          ]}>
           <TextInput
             style={styles.textInput}
             placeholder="Type a message to your flatmates..."

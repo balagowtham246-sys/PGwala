@@ -7,22 +7,19 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
 import { Href, router, useFocusEffect } from 'expo-router';
-import { Bell, Megaphone, Utensils } from 'lucide-react-native';
+import { Bell, BellOff, Megaphone, Utensils } from 'lucide-react-native';
 
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
 import {
   EmptyState,
   ErrorState,
-  HIGH_CONTRAST_SWITCH_COLORS,
   OwnerHeader,
-  SWITCH_THUMB_COLOR,
 } from '@/components/ui/owner';
 import { OwnerTheme } from '@/constants/theme';
 import { useAuth } from '@/context/auth-context';
@@ -273,17 +270,40 @@ export default function StudentMenuScreen() {
           router.canGoBack() ? router.back() : router.replace('/resident-dashboard')
         }
         rightAction={
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel="View food and PG notices"
-            onPress={() => router.push('/resident-announcements' as Href)}
-            style={({ pressed }) => [
-              styles.noticesPill,
-              pressed && styles.noticesPillPressed,
-            ]}>
-            <Megaphone size={13} color={OwnerTheme.colors.primary} />
-            <Text style={styles.noticesPillText}>Notices ›</Text>
-          </Pressable>
+          <View style={styles.headerActionsRow}>
+            {hasAssignedProperty && (
+              <Pressable
+                accessibilityRole="switch"
+                accessibilityState={{ checked: mealOptIn }}
+                accessibilityLabel={
+                  mealOptIn ? 'Meal alerts on. Tap to mute' : 'Meal alerts muted. Tap to enable'
+                }
+                disabled={savingOptIn}
+                onPress={() => void handleToggleMealAlerts(!mealOptIn)}
+                style={({ pressed }) => [
+                  styles.alertIconBtn,
+                  mealOptIn && styles.alertIconBtnActive,
+                  pressed && styles.noticesPillPressed,
+                ]}>
+                {mealOptIn ? (
+                  <Bell size={14} color={OwnerTheme.colors.primary} />
+                ) : (
+                  <BellOff size={14} color={OwnerTheme.colors.textMuted} />
+                )}
+              </Pressable>
+            )}
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="View food and PG notices"
+              onPress={() => router.push('/resident-announcements' as Href)}
+              style={({ pressed }) => [
+                styles.noticesPill,
+                pressed && styles.noticesPillPressed,
+              ]}>
+              <Megaphone size={13} color={OwnerTheme.colors.primary} />
+              <Text style={styles.noticesPillText}>Notices ›</Text>
+            </Pressable>
+          </View>
         }
       />
 
@@ -359,28 +379,6 @@ export default function StudentMenuScreen() {
             );
           })}
         </ScrollView>
-
-        {/* Inline Meal Alerts Opt-In Card */}
-        {hasAssignedProperty && (
-          <View style={styles.optInCard}>
-            <View style={styles.optInIconWrap}>
-              <Bell size={18} color={OwnerTheme.colors.primary} />
-            </View>
-            <View style={styles.optInCopy}>
-              <Text style={styles.optInTitle}>Get meal alerts</Text>
-              <Text style={styles.optInSubtitle}>
-                Notify me when meals are ready, delayed, or cancelled
-              </Text>
-            </View>
-            <Switch
-              value={mealOptIn}
-              onValueChange={(val) => void handleToggleMealAlerts(val)}
-              disabled={savingOptIn}
-              trackColor={HIGH_CONTRAST_SWITCH_COLORS}
-              thumbColor={SWITCH_THUMB_COLOR}
-            />
-          </View>
-        )}
 
         {errorMessage && (
           <ErrorState
@@ -466,6 +464,25 @@ const styles = StyleSheet.create({
     borderRadius: OwnerTheme.radius.full,
     backgroundColor: OwnerTheme.colors.primaryLight,
     borderWidth: 1,
+    borderColor: '#BAE6FD',
+  },
+  headerActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  alertIconBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: OwnerTheme.colors.surfaceElevated,
+    borderWidth: 1,
+    borderColor: OwnerTheme.colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  alertIconBtnActive: {
+    backgroundColor: OwnerTheme.colors.primaryLight,
     borderColor: '#BAE6FD',
   },
   noticesPillPressed: {

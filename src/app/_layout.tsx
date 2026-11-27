@@ -10,11 +10,13 @@ import { PersistQueryClientProvider } from '@tanstack/react-query-persist-client
 
 import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { AppErrorBoundary } from '@/components/app-error-boundary';
+import { LiveSyncBanner } from '@/components/ui/live-sync-banner';
 import { UpdateGuard } from '@/components/update-guard';
 import { AuthProvider, useAuth } from '@/context/auth-context';
 import { PropertyProvider } from '@/context/property-context';
 import { ResidentProvider } from '@/context/resident-context';
 import { ToastProvider } from '@/context/toast-context';
+import { useGlobalRealtimeSync } from '@/hooks/use-global-realtime-sync';
 import { evaluateNavigationRedirect } from '@/lib/navigation-guards';
 import { resolveNotificationRoute } from '@/lib/notification-routing';
 import { registerForPushNotifications, subscribeToPushTokenChanges } from '@/lib/push-notifications';
@@ -46,6 +48,7 @@ SplashScreen.preventAutoHideAsync();
 
 function RootNavigationLayout() {
   const { session, profile, isLoading } = useAuth();
+  useGlobalRealtimeSync();
   const segments = useSegments();
   const pushRole = profile?.role;
   const handledNotifIdsRef = useRef<Set<string>>(new Set());
@@ -122,7 +125,8 @@ function RootNavigationLayout() {
   }
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
+    <View style={{ flex: 1 }}>
+      <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="login" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="owner-tabs" />
@@ -162,6 +166,8 @@ function RootNavigationLayout() {
       <Stack.Screen name="owner-join-requests" />
       <Stack.Screen name="admin-owners" />
     </Stack>
+      <LiveSyncBanner />
+    </View>
   );
 }
 

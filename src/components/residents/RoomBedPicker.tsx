@@ -7,7 +7,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import { BedDouble, Check, Pencil, Plus } from 'lucide-react-native';
+import { BedDouble, Check, Pencil, Plus, Snowflake } from 'lucide-react-native';
 
 import { BottomSheetModal } from '@/components/ui/bottom-sheet-modal';
 import { OwnerTheme } from '@/constants/theme';
@@ -60,6 +60,7 @@ export function RoomBedPicker({
   const [newRoomNumber, setNewRoomNumber] = useState('');
   const [newTotalBeds, setNewTotalBeds] = useState(2);
   const [newRoomGender, setNewRoomGender] = useState<PropertyGenderType>(propertyGender);
+  const [newRoomIsAc, setNewRoomIsAc] = useState(false);
   const [creatingRoom, setCreatingRoom] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
 
@@ -118,11 +119,13 @@ export function RoomBedPicker({
             roomNumber: clean,
             totalBeds: clampedBeds,
             genderType: newRoomGender,
+            isAc: newRoomIsAc,
           })
         : await createRoom(propertyId, {
             roomNumber: clean,
             totalBeds: clampedBeds,
             genderType: newRoomGender,
+            isAc: newRoomIsAc,
           });
     setCreatingRoom(false);
 
@@ -161,6 +164,7 @@ export function RoomBedPicker({
     setEditingRoomTarget(null);
     setNewRoomNumber('');
     setNewRoomGender(defaultGender);
+    setNewRoomIsAc(false);
     setNewTotalBeds(2);
     setCreateError(null);
     setCreateVisible(true);
@@ -174,6 +178,7 @@ export function RoomBedPicker({
     setNewRoomNumber(room.roomNumber);
     setNewTotalBeds(Math.max(1, room.totalBeds));
     setNewRoomGender(room.genderType);
+    setNewRoomIsAc(Boolean(room.isAc));
     setCreateError(null);
     setCreateVisible(true);
   };
@@ -229,9 +234,33 @@ export function RoomBedPicker({
                     disabled={disabledRoom}
                     onPress={() => setExpandedRoom(isExpanded ? '' : room.roomNumber)}
                     style={styles.roomHeaderMain}>
-                    <Text style={[styles.roomTitle, disabledRoom && styles.mutedText]}>
-                      {formatRoomLabel(room.roomNumber)}
-                    </Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={[styles.roomTitle, disabledRoom && styles.mutedText]}>
+                        {formatRoomLabel(room.roomNumber)}
+                      </Text>
+                      <View
+                        style={{
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 3,
+                          paddingHorizontal: 6,
+                          paddingVertical: 2,
+                          borderRadius: 6,
+                          backgroundColor: room.isAc ? '#ECFEFF' : '#F1F5F9',
+                          borderWidth: 1,
+                          borderColor: room.isAc ? '#A5F3FC' : '#E2E8F0',
+                        }}>
+                        {room.isAc && <Snowflake size={10} color="#0891B2" />}
+                        <Text
+                          style={{
+                            fontSize: 10,
+                            fontWeight: '700',
+                            color: room.isAc ? '#0E7490' : '#64748B',
+                          }}>
+                          {room.isAc ? 'AC' : 'Non-AC'}
+                        </Text>
+                      </View>
+                    </View>
                     <Text
                       style={[
                         styles.occupancyText,
@@ -367,6 +396,39 @@ export function RoomBedPicker({
                 onPress={() => setNewTotalBeds((b) => Math.min(20, b + 1))}>
                 <Text style={styles.stepBtnText}>+</Text>
               </Pressable>
+            </View>
+
+            <Text style={[styles.inputLabel, { marginTop: 12 }]}>Room Cooling Type</Text>
+            <View style={styles.genderRow}>
+              {[
+                { val: false, label: 'Non-AC' },
+                { val: true, label: 'AC (+₹500/mo)' },
+              ].map((opt) => {
+                const active = newRoomIsAc === opt.val;
+                return (
+                  <Pressable
+                    key={opt.label}
+                    style={[
+                      styles.genderChoice,
+                      active &&
+                        (opt.val
+                          ? { backgroundColor: '#ECFEFF', borderColor: '#06B6D4' }
+                          : styles.genderChoiceActive),
+                    ]}
+                    onPress={() => setNewRoomIsAc(opt.val)}>
+                    <Text
+                      style={[
+                        styles.genderChoiceText,
+                        active &&
+                          (opt.val
+                            ? { color: '#0E7490', fontWeight: '700' }
+                            : styles.genderChoiceTextActive),
+                      ]}>
+                      {opt.label}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
 
             <Text style={[styles.inputLabel, { marginTop: 12 }]}>Room Gender</Text>

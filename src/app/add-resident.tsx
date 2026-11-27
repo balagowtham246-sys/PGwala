@@ -28,6 +28,7 @@ import { EdgeFunctionError, invokeEdgeFunction } from '@/lib/edge-functions';
 import { extractErrorMessage } from '@/lib/error-utils';
 import { endTrace, recordRoundTrip, startTrace } from '@/lib/perf-monitor';
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { normalizeAppError } from '@/lib/service-result';
 import { supabase } from '@/lib/supabase';
 import {
@@ -581,6 +582,7 @@ export default function AddResidentScreen() {
       }
     },
     onSuccess: async () => {
+      broadcastPropertySync('residents', selectedProperty?.id);
       await Promise.all([
         qc.invalidateQueries({ queryKey: queryKeys.residents.all }),
         qc.invalidateQueries({ queryKey: queryKeys.dashboard.all }),

@@ -15,6 +15,7 @@ import {
 import { StudentComplaintItem } from '@/components/complaints/StudentComplaintModals';
 import { uploadStorageWithRetry } from '@/lib/image-upload';
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { decodeBase64ToBytes, supabase } from '@/lib/supabase';
 import { sortRoomCodes } from '@/lib/ux-utils';
 
@@ -259,7 +260,8 @@ export function useOwnerCreateComplaintMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('complaints');
       void qc.invalidateQueries({ queryKey: queryKeys.complaints.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
@@ -348,7 +350,8 @@ export function useOwnerUpdateComplaintMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('complaints');
       void qc.invalidateQueries({ queryKey: queryKeys.complaints.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
@@ -535,7 +538,8 @@ export function useStudentCreateComplaintMutation() {
       if (!context) return;
       qc.setQueryData(context.queryKey, context.previous);
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('complaints');
       void qc.invalidateQueries({ queryKey: queryKeys.complaints.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },

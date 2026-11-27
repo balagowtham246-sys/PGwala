@@ -1,9 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import {
   allocateEbBill,
   AllocateEbBillParams,
+  cancelUnpaidCharge,
+  CancelUnpaidChargeParams,
   confirmMonthlyPayment,
   ConfirmMonthlyPaymentParams,
   ConfirmMonthlyPaymentResult,
@@ -18,6 +21,8 @@ import {
   RecordPartialPaymentResult,
   rejectStudentPaymentReport,
   RejectPaymentReportParams,
+  reverseChargePayments,
+  ReverseChargePaymentsParams,
   toggleResidentWmBilling,
   ToggleWmBillingParams,
   updateResidentRent,
@@ -52,7 +57,8 @@ export function useGenerateMonthlyBillsMutation() {
       }
       return result.data;
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
@@ -69,7 +75,8 @@ export function useAllocateEbBillMutation() {
         throw new Error(result.error.message);
       }
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
@@ -80,10 +87,6 @@ interface OwnerBillingSnapshotContext {
   previousSnapshots: [readonly unknown[], OwnerBillingSnapshot | undefined][];
 }
 
-/**
- * Non-money resident rent edit with optimistic cache update, rollback on error,
- * and billing/dashboard invalidation on settle.
- */
 export function useUpdateResidentRentMutation() {
   const qc = useQueryClient();
 
@@ -116,6 +119,7 @@ export function useUpdateResidentRentMutation() {
               : item.opt_in_wm
                 ? 50000
                 : 0;
+            const acPaise = item.ac_paise ?? (item.is_ac ? 50000 : 0);
             return {
               ...item,
               monthly_rent_paise: variables.rentPaise,
@@ -123,7 +127,7 @@ export function useUpdateResidentRentMutation() {
               total_paise:
                 item.status === 'paid'
                   ? item.total_paise
-                  : variables.rentPaise + wmPaise,
+                  : variables.rentPaise + wmPaise + acPaise,
             };
           }),
         });
@@ -137,17 +141,14 @@ export function useUpdateResidentRentMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
 
-/**
- * Non-money washing-machine opt-in toggle with optimistic cache update,
- * rollback on error, and billing/dashboard invalidation on settle.
- */
 export function useToggleWmBillingMutation() {
   const qc = useQueryClient();
 
@@ -176,6 +177,7 @@ export function useToggleWmBillingMutation() {
           rentBills: data.rentBills.map((item) => {
             if (item.resident_id !== variables.residentId) return item;
             const nextWm = variables.isEnabled ? 50000 : 0;
+            const acPaise = item.ac_paise ?? (item.is_ac ? 50000 : 0);
             const keepExistingCharge = item.status === 'paid';
             return {
               ...item,
@@ -184,7 +186,7 @@ export function useToggleWmBillingMutation() {
               wm_paise: keepExistingCharge ? item.wm_paise : nextWm,
               total_paise: keepExistingCharge
                 ? item.total_paise
-                : item.rent_paise + nextWm,
+                : item.rent_paise + nextWm + acPaise,
             };
           }),
         });
@@ -198,17 +200,14 @@ export function useToggleWmBillingMutation() {
         qc.setQueryData(key, snapshot);
       }
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },
   });
 }
 
-/**
- * Money-confirmation mutation: uses pending state (no optimistic Paid state)
- * and invalidates billing + dashboard queries on settle.
- */
 export function useConfirmMonthlyPaymentMutation() {
   const qc = useQueryClient();
 
@@ -220,7 +219,8 @@ export function useConfirmMonthlyPaymentMutation() {
       }
       return result.data;
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
       void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
@@ -239,7 +239,8 @@ export function useRecordPartialPaymentMutation() {
       }
       return result.data;
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
       void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
@@ -247,10 +248,6 @@ export function useRecordPartialPaymentMutation() {
   });
 }
 
-/**
- * Payment-rejection mutation: uses pending state (no optimistic status flip)
- * and invalidates billing + dashboard queries on settle.
- */
 export function useRejectPaymentReportMutation() {
   const qc = useQueryClient();
 
@@ -261,9 +258,50 @@ export function useRejectPaymentReportMutation() {
         throw new Error(result.error.message);
       }
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
+    },
+  });
+}
+
+export function useReverseChargePaymentsMutation() {
+  const qc = useQueryClient();
+
+  return useMutation<{ message: string }, Error, ReverseChargePaymentsParams>({
+    mutationFn: async (params) => {
+      const result = await reverseChargePayments(params);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      return result.data;
+    },
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
+    },
+  });
+}
+
+export function useCancelUnpaidChargeMutation() {
+  const qc = useQueryClient();
+
+  return useMutation<{ message: string }, Error, CancelUnpaidChargeParams>({
+    mutationFn: async (params) => {
+      const result = await cancelUnpaidCharge(params);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      return result.data;
+    },
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
     },
   });
 }

@@ -38,6 +38,10 @@ import {
   PartialPaymentModal,
   PartialPaymentTarget,
 } from '@/components/billing/PartialPaymentModal';
+import {
+  ReverseBillModal,
+  ReverseBillTarget,
+} from '@/components/billing/ReverseBillModal';
 import { PaymentReportReviewModal } from '@/components/billing/PaymentReportReviewModal';
 import { ResidentLedgerCard } from '@/components/billing/ResidentLedgerCard';
 import { RoleBottomNav } from '@/components/ui/bottom-nav';
@@ -54,11 +58,13 @@ import {
 } from '@/hooks/use-expenses';
 import {
   useAllocateEbBillMutation,
+  useCancelUnpaidChargeMutation,
   useConfirmMonthlyPaymentMutation,
   useGenerateMonthlyBillsMutation,
   useOwnerBillingQuery,
   useRecordPartialPaymentMutation,
   useRejectPaymentReportMutation,
+  useReverseChargePaymentsMutation,
   useToggleWmBillingMutation,
   useUpdateResidentRentMutation,
 } from '@/hooks/use-owner-billing';
@@ -273,6 +279,10 @@ export default function SimplifiedBillingManagementScreen() {
   const generateBillsMutation = useGenerateMonthlyBillsMutation();
   const updateRentMutation = useUpdateResidentRentMutation();
   const allocateEbMutation = useAllocateEbBillMutation();
+  const reversePaymentsMutation = useReverseChargePaymentsMutation();
+  const cancelChargeMutation = useCancelUnpaidChargeMutation();
+  const [reverseBillTarget, setReverseBillTarget] =
+    useState<ReverseBillTarget | null>(null);
   const toggleWmMutation = useToggleWmBillingMutation();
   const confirmPaymentMutation = useConfirmMonthlyPaymentMutation();
   const recordPartialMutation = useRecordPartialPaymentMutation();
@@ -1423,6 +1433,7 @@ export default function SimplifiedBillingManagementScreen() {
                   void handleConfirmPayment(chargeId, null, 'cash')
                 }
                 onOpenPartialPayment={setPartialPaymentTarget}
+                onOpenReverseBill={setReverseBillTarget}
                 onSendReminder={(name, phone, amount, label, due) =>
                   void handleSendReminder(name, phone, amount, label, due)
                 }
@@ -1444,6 +1455,7 @@ export default function SimplifiedBillingManagementScreen() {
                   void handleConfirmPayment(chargeId, null, 'cash')
                 }
                 onOpenPartialPayment={setPartialPaymentTarget}
+                onOpenReverseBill={setReverseBillTarget}
                 onSendReminder={(name, phone, amount, label, due) =>
                   void handleSendReminder(name, phone, amount, label, due)
                 }
@@ -1535,6 +1547,38 @@ export default function SimplifiedBillingManagementScreen() {
             Alert.alert(
               'Payment Failed',
               err instanceof Error ? err.message : 'Could not record payment.'
+            );
+          }
+        }}
+      />
+
+      <ReverseBillModal
+        visible={Boolean(reverseBillTarget)}
+        target={reverseBillTarget}
+        submitting={
+          reversePaymentsMutation.isPending || cancelChargeMutation.isPending
+        }
+        onClose={() => setReverseBillTarget(null)}
+        onConfirm={async (target, reason) => {
+          try {
+            const res =
+              target.mode === 'reverse_payment'
+                ? await reversePaymentsMutation.mutateAsync({
+                    chargeId: target.chargeId,
+                    reason,
+                  })
+                : await cancelChargeMutation.mutateAsync({
+                    chargeId: target.chargeId,
+                    reason,
+                  });
+            setReverseBillTarget(null);
+            showToast(res.message);
+          } catch (err) {
+            Alert.alert(
+              target.mode === 'reverse_payment'
+                ? 'Reverse Failed'
+                : 'Cancel Failed',
+              err instanceof Error ? err.message : 'Operation failed.'
             );
           }
         }}

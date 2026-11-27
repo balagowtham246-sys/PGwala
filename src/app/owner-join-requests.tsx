@@ -27,6 +27,7 @@ import { OwnerTheme } from '@/constants/theme';
 import { useProperty } from '@/context/property-context';
 import { useToast } from '@/context/toast-context';
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { formatGateEventTimestamp } from '@/lib/ux-utils';
 import {
   approveJoinRequest,
@@ -140,6 +141,8 @@ export default function OwnerJoinRequestsScreen() {
 
       const name = selectedReq.full_name;
       setSelectedReq(null);
+      broadcastPropertySync('joinRequests', selectedPropertyId);
+      broadcastPropertySync('residents', selectedPropertyId);
       showToast(`${name} admitted to Room ${room}!`);
       void qc.invalidateQueries({ queryKey: queryKeys.residents.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
@@ -170,6 +173,7 @@ export default function OwnerJoinRequestsScreen() {
                   request_id: req.id,
                   rejection_reason: 'Declined by PG owner',
                 });
+                broadcastPropertySync('joinRequests', selectedPropertyId);
                 showToast(`Declined ${req.full_name}.`);
                 await loadRequests(true);
               } catch (err) {
@@ -183,7 +187,7 @@ export default function OwnerJoinRequestsScreen() {
         ]
       );
     },
-    [loadRequests, selectedProperty?.name, showToast]
+    [loadRequests, selectedProperty?.name, selectedPropertyId, showToast]
   );
 
   const renderItem = useCallback(

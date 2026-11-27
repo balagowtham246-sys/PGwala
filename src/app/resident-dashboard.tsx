@@ -78,11 +78,16 @@ async function cancelReturnReminderNotification(): Promise<void> {
 
 async function scheduleReturnReminderNotification(
   expectedReturnTime: string | null | undefined,
-  departedAtIso: string
+  departedAtIso: string,
+  expectedReturnDate?: string | null
 ): Promise<void> {
   await cancelReturnReminderNotification();
   if (Platform.OS === 'web') return;
-  const targetDate = resolveExpectedReturnDate(expectedReturnTime, departedAtIso);
+  const targetDate = resolveExpectedReturnDate(
+    expectedReturnTime,
+    departedAtIso,
+    expectedReturnDate
+  );
   if (!targetDate || targetDate.getTime() <= Date.now()) return;
   try {
     const existing = await Notifications.getPermissionsAsync();
@@ -121,6 +126,7 @@ export default function ResidentDashboardScreen() {
   const [manualMealTab, setManualMealTab] = useState<MealType | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [goingOutModalVisible, setGoingOutModalVisible] = useState(false);
+  const [goingOutModalMode, setGoingOutModalMode] = useState<'create' | 'update_leave'>('create');
   const [pendingOfflineCount, setPendingOfflineCount] = useState(0);
 
   const hasMountedRef = useRef(false);
@@ -218,7 +224,8 @@ export default function ResidentDashboardScreen() {
     isCurrentlyOut && latestMovement
       ? resolveExpectedReturnDate(
           latestMovement.expected_return_time,
-          latestMovement.event_time
+          latestMovement.event_time,
+          latestMovement.expected_return_date
         )
       : null;
   const isRunningLate = Boolean(
@@ -383,14 +390,22 @@ export default function ResidentDashboardScreen() {
           direction: 'OUT',
           purpose: payload.purpose,
           expectedReturnTime: payload.expectedReturnTime || undefined,
+          expectedReturnDate: payload.expectedReturnDate ?? undefined,
           foodRequired: payload.foodRequired,
+          note: payload.note,
           userId,
         },
       });
 
+      const wasUpdate = goingOutModalMode === 'update_leave';
       setGoingOutModalVisible(false);
+      setGoingOutModalMode('create');
       triggerSuccessHaptic();
-      void scheduleReturnReminderNotification(payload.expectedReturnTime, nowIso);
+      void scheduleReturnReminderNotification(
+        payload.expectedReturnTime,
+        nowIso,
+        payload.expectedReturnDate
+      );
 
       if (outcome.queued) {
         setPendingOfflineCount(await getPendingCount());
@@ -398,12 +413,23 @@ export default function ResidentDashboardScreen() {
         return;
       }
 
-      showToast('Marked Outside PG', {
-        actionLabel: 'Undo',
-        onAction: () => {
-          void performUndoDirection('IN');
-        },
-      });
+      if (wasUpdate) {
+        showToast('Return date updated');
+      } else if (payload.expectedReturnDate) {
+        showToast('Marked On Leave · Meals paused', {
+          actionLabel: 'Undo',
+          onAction: () => {
+            void performUndoDirection('IN');
+          },
+        });
+      } else {
+        showToast('Marked Outside PG', {
+          actionLabel: 'Undo',
+          onAction: () => {
+            void performUndoDirection('IN');
+          },
+        });
+      }
     } catch (err) {
       Alert.alert(
         'Update Failed',
@@ -598,6 +624,8 @@ export default function ResidentDashboardScreen() {
               roomLabel={formatRoomLabel(resident.room_number)}
               propertyName={resident.property?.name || 'My PG'}
               pendingDuesPaise={pendingDuesPaise}
+              pendingRentPaise={dashData?.pendingRentPaise ?? null}
+              pendingEbPaise={dashData?.pendingEbPaise ?? null}
               pendingReviewPaise={pendingReviewPaise}
               currentMonthBillGenerated={dashData?.currentMonthBillGenerated}
               latestMovement={latestMovement}
@@ -618,7 +646,14 @@ export default function ResidentDashboardScreen() {
                   router.push('/resident-billing');
                 }
               }}
-              onOpenGoingOut={() => setGoingOutModalVisible(true)}
+              onOpenGoingOut={() => {
+                setGoingOutModalMode('create');
+                setGoingOutModalVisible(true);
+              }}
+              onUpdateReturnDate={() => {
+                setGoingOutModalMode('update_leave');
+                setGoingOutModalVisible(true);
+              }}
               onMarkBackIn={handleMarkBackIn}
             />
 
@@ -692,12 +727,18 @@ export default function ResidentDashboardScreen() {
         <View style={{ height: BottomTabInset + 20 }} />
       </ScrollView>
 
-      {/* Modal: Mark Going Out */}
+      {/* Modal: Mark Going Out / Home Leave / Update Return Date */}
       <GoingOutModal
         visible={goingOutModalVisible}
         saving={savingMovement}
         curfewTime={resident?.curfew_time ?? null}
-        onClose={() => setGoingOutModalVisible(false)}
+        mode={goingOutModalMode}
+        initialReturnDate={latestMovement?.expected_return_date ?? null}
+        initialPurpose={latestMovement?.purpose ?? null}
+        onClose={() => {
+          setGoingOutModalVisible(false);
+          setGoingOutModalMode('create');
+        }}
         onConfirm={handleConfirmGoingOut}
       />
 

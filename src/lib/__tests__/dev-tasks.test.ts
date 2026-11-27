@@ -113,6 +113,18 @@ describe('dev-tasks store and helpers', () => {
         allowlistRaw: 'dev@pgwala.in, founder@pgwala.in',
       })
     ).toBe(true);
+    expect(
+      isDeveloperAccessAllowed('admin.pgwala@gmail.com', {
+        isDevBuild: false,
+        allowlistRaw: '',
+      })
+    ).toBe(true);
+    expect(
+      isDeveloperAccessAllowed('rajesh.pg@gmail.com', {
+        isDevBuild: false,
+        allowlistRaw: '',
+      })
+    ).toBe(false);
   });
 
   it('masks Supabase URLs safely', () => {

@@ -17,6 +17,7 @@ import { ChevronRight, Disc3 } from 'lucide-react-native';
 import { supabase } from '@/lib/supabase';
 import { OwnerTheme } from '@/constants/theme';
 import { useToast } from '@/context/toast-context';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import {
   CYCLE_DURATION_MINUTES,
@@ -595,6 +596,7 @@ export function WashingMachineCard({
         return;
       }
 
+      broadcastPropertySync('washingMachine', propertyId);
       await fetchStatus(false);
       const resolvedMachineName = result.data.machineName || 'selected machine';
       const alarmScheduled =
@@ -661,6 +663,7 @@ export function WashingMachineCard({
                 throw new Error(result.error.message);
               }
 
+              broadcastPropertySync('washingMachine', propertyId);
               await cancelMyWashCompletionNotification(propertyId);
               await fetchStatus(false);
               showToast('Machine marked free for fellow residents');

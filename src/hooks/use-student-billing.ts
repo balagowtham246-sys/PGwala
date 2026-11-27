@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { queryKeys } from '@/lib/query-keys';
+import { broadcastPropertySync } from '@/lib/realtime-sync';
 import {
   getStudentBilling,
   PreResolvedStudentContext,
@@ -39,7 +40,8 @@ export function useSubmitPaymentProofMutation() {
       }
       return result.data;
     },
-    onSettled: () => {
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
       void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
       void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
     },

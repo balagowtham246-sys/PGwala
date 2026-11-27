@@ -4,7 +4,11 @@ import { Check, LogIn, LogOut } from 'lucide-react-native';
 
 import { OwnerTheme } from '@/constants/theme';
 import { triggerLightHaptic, triggerSuccessHaptic } from '@/lib/haptics';
-import { isOutOverHours } from '@/lib/movement-utils';
+import {
+  formatShortReturnDate,
+  isOnMultiDayLeave,
+  isOutOverHours,
+} from '@/lib/movement-utils';
 import { formatGateEventTimestamp, toSentenceCaseStatus } from '@/lib/ux-utils';
 import type {
   MealType,
@@ -17,6 +21,8 @@ interface ResidentQuickTilesProps {
   roomLabel?: string;
   propertyName?: string;
   pendingDuesPaise: number | null;
+  pendingRentPaise?: number | null;
+  pendingEbPaise?: number | null;
   pendingReviewPaise?: number | null;
   currentMonthBillGenerated?: boolean;
   menus?: Record<MealType, ResidentFoodMenu | null>;
@@ -26,6 +32,7 @@ interface ResidentQuickTilesProps {
   onPressRentDue: () => void;
   onPressUpNextMeal?: () => void;
   onOpenGoingOut: () => void;
+  onUpdateReturnDate?: () => void;
   onMarkBackIn: () => void;
 }
 
@@ -34,6 +41,8 @@ export function ResidentQuickTiles({
   roomLabel,
   propertyName,
   pendingDuesPaise,
+  pendingRentPaise = null,
+  pendingEbPaise = null,
   pendingReviewPaise = null,
   currentMonthBillGenerated,
   latestMovement,
@@ -41,19 +50,35 @@ export function ResidentQuickTiles({
   washingMachineSlot,
   onPressRentDue,
   onOpenGoingOut,
+  onUpdateReturnDate,
   onMarkBackIn,
 }: ResidentQuickTilesProps) {
   const isInside = !latestMovement || latestMovement.direction === 'IN';
-  const outNudge = isOutOverHours(latestMovement?.direction, latestMovement?.event_time);
+  const onLeave = isOnMultiDayLeave(latestMovement);
+  const outNudge = onLeave
+    ? { isOver: false, hoursOut: 0 }
+    : isOutOverHours(latestMovement?.direction, latestMovement?.event_time);
   const formattedMovementTime = latestMovement?.event_time
     ? formatGateEventTimestamp(latestMovement.event_time)
     : '';
+  const returnDateLabel = onLeave
+    ? formatShortReturnDate(latestMovement?.expected_return_date)
+    : '';
+
+  const dueKindLabel =
+    (pendingRentPaise ?? 0) > 0 && (pendingEbPaise ?? 0) > 0
+      ? 'rent & EB due'
+      : (pendingEbPaise ?? 0) > 0 && (pendingRentPaise ?? 0) === 0
+        ? 'EB bill due'
+        : (pendingRentPaise ?? 0) > 0
+          ? 'rent due'
+          : 'bill due';
 
   const billingState =
     pendingDuesPaise !== null && pendingDuesPaise > 0
       ? {
           dotColor: '#FB7185',
-          title: `₹${(pendingDuesPaise / 100).toLocaleString('en-IN')} rent due`,
+          title: `₹${(pendingDuesPaise / 100).toLocaleString('en-IN')} ${dueKindLabel}`,
           subtitle: 'Tap to view breakdown & pay',
           cta: 'Pay now ›',
           ctaColor: '#FDA4AF',
@@ -76,7 +101,7 @@ export function ResidentQuickTiles({
             }
           : {
               dotColor: '#34D399',
-              title: 'Rent settled',
+              title: 'All bills settled',
               subtitle: 'View receipts & monthly summary',
               cta: 'Receipts ›',
               ctaColor: '#6EE7B7',
@@ -156,25 +181,37 @@ export function ResidentQuickTiles({
             <View
               style={[
                 styles.gatePill,
-                isInside ? styles.gatePillIn : styles.gatePillOut,
+                isInside
+                  ? styles.gatePillIn
+                  : onLeave
+                    ? { backgroundColor: '#EDE9FE' }
+                    : styles.gatePillOut,
               ]}>
               <Text
                 style={[
                   styles.gatePillText,
-                  isInside ? styles.gateTextIn : styles.gateTextOut,
+                  isInside
+                    ? styles.gateTextIn
+                    : onLeave
+                      ? { color: '#6D28D9' }
+                      : styles.gateTextOut,
                 ]}>
-                {toSentenceCaseStatus(isInside ? 'inside' : 'outside')}
+                {onLeave
+                  ? 'On leave'
+                  : toSentenceCaseStatus(isInside ? 'inside' : 'outside')}
               </Text>
             </View>
           </View>
 
           <Text style={styles.gateTitle}>Gate Attendance</Text>
           <Text style={styles.gateSubtitle} numberOfLines={1}>
-            {formattedMovementTime
-              ? `${isInside ? 'Checked in' : 'Checked out'}: ${formattedMovementTime}`
-              : 'Checked in'}
+            {onLeave
+              ? `Returns ${returnDateLabel} · Meals paused`
+              : formattedMovementTime
+                ? `${isInside ? 'Checked in' : 'Checked out'}: ${formattedMovementTime}`
+                : 'Checked in'}
           </Text>
-          {!isInside && outNudge.isOver && (
+          {!isInside && !onLeave && outNudge.isOver && (
             <Text style={styles.gateOverHoursNudge}>
               Out for {outNudge.hoursOut}+ hrs • Remember to mark Inside
             </Text>
@@ -195,27 +232,55 @@ export function ResidentQuickTiles({
                 <Text style={styles.gateOutBtnText}>Going Out</Text>
               </Pressable>
             ) : (
-              <Pressable
-                style={({ pressed }) => [
-                  styles.gateActionBtn,
-                  styles.gateInBtn,
-                  pressed && styles.btnPressed,
-                  savingMovement && styles.btnDisabled,
-                ]}
-                disabled={savingMovement}
-                onPress={() => {
-                  triggerSuccessHaptic();
-                  onMarkBackIn();
-                }}>
-                {savingMovement ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
-                    <Check size={14} color="#FFFFFF" />
-                    <Text style={styles.gateInBtnText}>Mark Inside</Text>
-                  </View>
+              <View style={{ gap: 6 }}>
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.gateActionBtn,
+                    styles.gateInBtn,
+                    pressed && styles.btnPressed,
+                    savingMovement && styles.btnDisabled,
+                  ]}
+                  disabled={savingMovement}
+                  onPress={() => {
+                    triggerSuccessHaptic();
+                    onMarkBackIn();
+                  }}>
+                  {savingMovement ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                      <Check size={14} color="#FFFFFF" />
+                      <Text style={styles.gateInBtnText}>Mark Inside</Text>
+                    </View>
+                  )}
+                </Pressable>
+                {onLeave && onUpdateReturnDate && (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Update leave return date"
+                    disabled={savingMovement}
+                    style={({ pressed }) => [
+                      {
+                        alignItems: 'center',
+                        paddingVertical: 4,
+                      },
+                      pressed && styles.btnPressed,
+                    ]}
+                    onPress={() => {
+                      triggerLightHaptic();
+                      onUpdateReturnDate();
+                    }}>
+                    <Text
+                      style={{
+                        fontSize: 11,
+                        fontWeight: '700',
+                        color: '#6D28D9',
+                      }}>
+                      Update return date
+                    </Text>
+                  </Pressable>
                 )}
-              </Pressable>
+              </View>
             )}
           </View>
         </View>
