@@ -5,6 +5,7 @@ export type AnalyticsEventName =
   | 'payment_confirmed'
   | 'partial_payment_recorded'
   | 'payment_proof_submitted'
+  | 'payment_proof_withdrawn'
   | 'gate_marked_out'
   | 'home_leave_started'
   | 'gate_marked_in'
@@ -106,27 +107,40 @@ export function normalizeScreenName(pathname: string | null | undefined): string
 }
 
 /**
- * Privacy-first user & property identification.
- * Sends ONLY userId, role, and propertyId group — zero PII (no name, phone, email).
+ * User & property identification for PostHog.
+ * Keeps `userId` as the unique `distinct_id` (so matching names never collide)
+ * and attaches display `name` + `role` + PG `propertyName` (no phone/email PII).
  */
 export function identifyAnalyticsUser(params: {
   userId: string;
   role?: string | null;
+  name?: string | null;
   propertyId?: string | null;
+  propertyName?: string | null;
 }): void {
   const client = getAnalyticsClient();
   if (!client || !params.userId) return;
 
   const role = params.role ?? 'unknown';
+  const name = params.name?.trim() || null;
   const propertyId = params.propertyId ?? null;
-  const dedupeKey = `${params.userId}:${role}:${propertyId ?? 'none'}`;
+  const propertyName = params.propertyName?.trim() || null;
+  const dedupeKey = `${params.userId}:${role}:${name ?? 'none'}:${propertyId ?? 'none'}:${propertyName ?? 'none'}`;
   if (lastIdentifiedKey === dedupeKey) return;
   lastIdentifiedKey = dedupeKey;
 
   try {
-    client.identify(params.userId, { role });
+    const personProps: Record<string, AnalyticsPropertyValue> = { role };
+    if (name) {
+      personProps.name = name;
+    }
+    client.identify(params.userId, personProps);
     if (propertyId) {
-      client.group('property', propertyId);
+      client.group(
+        'property',
+        propertyId,
+        propertyName ? { name: propertyName } : undefined
+      );
     }
   } catch {
     // Non-fatal

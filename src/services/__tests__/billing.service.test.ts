@@ -8,6 +8,7 @@ import {
   getStudentBilling,
   rejectStudentPaymentReport,
   submitStudentPaymentProof,
+  withdrawStudentPaymentProof,
 } from '../billing.service';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -378,5 +379,158 @@ describe('billing.service', () => {
         'https://demo.supabase.co/storage/v1/object/sign/payment-proofs/res-1/proof.jpg?token=abc'
       )
     ).toBe('res-1/proof.jpg');
+  });
+
+  it('never mixes Nov EB into Dec Rent, hides cancelled bills, and surfaces all unpaid bills with AC + partial balance', async () => {
+    mockedRpc.mockResolvedValueOnce({
+      data: {
+        success: true,
+        resident: {
+          id: 'res-1',
+          property_id: 'prop-1',
+          full_name: 'Balgowtham',
+          room_number: 'C',
+          property_name: 'Sri Lakshmi PG',
+          owner_upi_id: 'rajesh@okaxis',
+          owner_upi_payee_name: 'Sri Lakshmi PG',
+        },
+        charges: [
+          {
+            id: 'chg-rent-dec',
+            resident_id: 'res-1',
+            category: 'rent',
+            amount_paise: 1000000,
+            rent_amount_paise: 900000,
+            wm_amount_paise: 50000,
+            ac_amount_paise: 50000,
+            status: 'outstanding',
+            billing_period_start: '2026-12-01',
+            due_date: '2026-12-05',
+          },
+          {
+            id: 'chg-rent-dec-cancelled',
+            resident_id: 'res-1',
+            category: 'rent',
+            amount_paise: 950000,
+            rent_amount_paise: 900000,
+            wm_amount_paise: 50000,
+            ac_amount_paise: 0,
+            status: 'cancelled',
+            billing_period_start: '2026-12-01',
+            due_date: '2026-12-05',
+          },
+          {
+            id: 'chg-rent-nov',
+            resident_id: 'res-1',
+            category: 'rent',
+            amount_paise: 1000000,
+            rent_amount_paise: 900000,
+            wm_amount_paise: 50000,
+            ac_amount_paise: 50000,
+            status: 'outstanding',
+            billing_period_start: '2026-11-01',
+            due_date: '2026-11-05',
+          },
+          {
+            id: 'chg-eb-nov',
+            resident_id: 'res-1',
+            category: 'electricity',
+            amount_paise: 10000,
+            rent_amount_paise: 0,
+            wm_amount_paise: 0,
+            ac_amount_paise: 0,
+            status: 'outstanding',
+            billing_period_start: '2026-11-01',
+            due_date: '2026-11-10',
+          },
+          {
+            id: 'chg-rent-oct',
+            resident_id: 'res-1',
+            category: 'rent',
+            amount_paise: 1000000,
+            rent_amount_paise: 900000,
+            wm_amount_paise: 50000,
+            ac_amount_paise: 50000,
+            status: 'settled',
+            billing_period_start: '2026-10-01',
+            due_date: '2026-10-05',
+          },
+        ],
+        reports: [],
+        payment_allocations: [
+          {
+            charge_id: 'chg-rent-nov',
+            settled_amount_paise: 400000,
+            payment: {
+              id: 'pay-nov-part',
+              receipt_number: 'RCPT-NOV-1',
+              payment_date: '2026-11-03',
+              method: 'upi',
+            },
+          },
+          {
+            charge_id: 'chg-rent-oct',
+            settled_amount_paise: 1000000,
+            payment: {
+              id: 'pay-oct',
+              receipt_number: 'RCPT-OCT-1',
+              payment_date: '2026-10-03',
+              method: 'upi',
+            },
+          },
+        ],
+      },
+      error: null,
+    });
+
+    const res = await getStudentBilling('user-1');
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.data.currentRentBill?.charge_id).toBe('chg-rent-dec');
+      expect(res.data.currentEbBill).toBeNull(); // Nov EB must NOT be paired with Dec Rent
+      expect(res.data.unpaidBills.map((b) => b.charge_id)).toEqual([
+        'chg-rent-dec',
+        'chg-rent-nov',
+        'chg-eb-nov',
+      ]);
+      expect(res.data.unpaidBills[0]).toMatchObject({
+        ac_paise: 50000,
+        paid_paise: 0,
+        remaining_paise: 1000000,
+      });
+      expect(res.data.unpaidBills[1]).toMatchObject({
+        charge_id: 'chg-rent-nov',
+        paid_paise: 400000,
+        remaining_paise: 600000,
+      });
+      expect(res.data.pastBills.map((b) => b.charge_id)).toEqual(['chg-rent-oct']);
+    }
+  });
+
+  it('withdraws pending student payment proof and cleans up storage screenshot', async () => {
+    const remove = jest.fn().mockResolvedValue({ data: [], error: null });
+    mockedStorageFrom.mockReturnValue({ remove });
+    mockedRpc.mockResolvedValueOnce({
+      data: {
+        success: true,
+        screenshot_url: 'res-1/pending_proof.jpg',
+        message: 'Payment proof withdrawn.',
+      },
+      error: null,
+    });
+
+    const res = await withdrawStudentPaymentProof({
+      reportId: 'rep-pending-1',
+    });
+
+    expect(mockedRpc).toHaveBeenCalledWith('withdraw_student_payment_proof', {
+      p_report_id: 'rep-pending-1',
+    });
+    expect(mockedStorageFrom).toHaveBeenCalledWith('payment-proofs');
+    expect(remove).toHaveBeenCalledWith(['res-1/pending_proof.jpg']);
+    expect(res).toEqual({
+      ok: true,
+      data: { message: 'Payment proof withdrawn.' },
+    });
   });
 });

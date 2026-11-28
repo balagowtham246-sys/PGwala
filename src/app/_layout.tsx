@@ -53,19 +53,20 @@ function RootNavigationLayout() {
   useAnalyticsLifecycle();
   const segments = useSegments();
   const pushRole = profile?.role;
+  const authUserId = session?.user?.id ?? null;
   const handledNotifIdsRef = useRef<Set<string>>(new Set());
 
   // Register this device for food-alert pushes (residents and wardens only).
-  // Permission denial is fine: announcements remain available inside the app.
+  // Keyed on authUserId (not session object) so background JWT refreshes never re-trigger.
   useEffect(() => {
-    if (!session || (pushRole !== 'student' && pushRole !== 'warden')) return;
+    if (!authUserId || (pushRole !== 'student' && pushRole !== 'warden')) return;
     registerForPushNotifications().catch(() => {});
     return subscribeToPushTokenChanges();
-  }, [session, pushRole]);
+  }, [authUserId, pushRole]);
 
   // Route push & local notification taps (cold start + live) once signed in.
   useEffect(() => {
-    if (Platform.OS === 'web' || isLoading || !session || !pushRole) return;
+    if (Platform.OS === 'web' || isLoading || !authUserId || !pushRole) return;
 
     const handleResponse = (response: Notifications.NotificationResponse | null | undefined) => {
       if (!response) return;
@@ -101,7 +102,7 @@ function RootNavigationLayout() {
     return () => {
       sub.remove();
     };
-  }, [isLoading, session, pushRole]);
+  }, [isLoading, authUserId, pushRole]);
 
   useEffect(() => {
     if (isLoading) return;

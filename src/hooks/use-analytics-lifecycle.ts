@@ -17,16 +17,24 @@ import {
 export function useAnalyticsLifecycle(): void {
   const pathname = usePathname();
   const { session, user, profile } = useAuth();
-  const { selectedPropertyId } = useProperty();
+  const { selectedProperty, selectedPropertyId } = useProperty();
   const { resident } = useResident();
 
   const userId = user?.id ?? null;
   const role = profile?.role ?? null;
+  const displayName =
+    profile?.full_name?.trim() || resident?.fullName?.trim() || null;
   const activePropertyId =
     role === 'owner'
       ? selectedPropertyId
       : role === 'student'
         ? resident?.propertyId ?? null
+        : null;
+  const activePropertyName =
+    role === 'owner'
+      ? selectedProperty?.name?.trim() ?? null
+      : role === 'student'
+        ? resident?.propertyName?.trim() ?? null
         : null;
 
   const wasSignedInRef = useRef(false);
@@ -38,13 +46,15 @@ export function useAnalyticsLifecycle(): void {
       identifyAnalyticsUser({
         userId,
         role,
+        name: displayName,
         propertyId: activePropertyId,
+        propertyName: activePropertyName,
       });
     } else if (wasSignedInRef.current) {
       wasSignedInRef.current = false;
       resetAnalyticsUser();
     }
-  }, [session, userId, role, activePropertyId]);
+  }, [session, userId, role, displayName, activePropertyId, activePropertyName]);
 
   useEffect(() => {
     if (!pathname || pathname === lastTrackedPathRef.current) return;

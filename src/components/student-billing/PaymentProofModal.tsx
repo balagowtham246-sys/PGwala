@@ -29,6 +29,7 @@ export interface PaymentProofModalProps {
   selectedBill: StudentBillCardItem | null;
   currentRentBill: StudentBillCardItem | null;
   currentEbBill: StudentBillCardItem | null;
+  unpaidBills?: StudentBillCardItem[];
   paymentMethod: PaymentMethod;
   referenceNumber: string;
   studentNotes: string;
@@ -48,6 +49,7 @@ export function PaymentProofModal({
   selectedBill,
   currentRentBill,
   currentEbBill,
+  unpaidBills,
   paymentMethod,
   referenceNumber,
   studentNotes,
@@ -62,6 +64,19 @@ export function PaymentProofModal({
   onSubmit,
 }: PaymentProofModalProps) {
   useModalBackHandler(visible, onClose, submitting);
+
+  const selectableBills = (
+    unpaidBills ??
+    [currentRentBill, currentEbBill].filter((b): b is StudentBillCardItem =>
+      Boolean(b)
+    )
+  ).filter(
+    (b) => b.status !== 'paid' && b.pending_report?.status !== 'pending'
+  );
+  const hasMultipleMonths =
+    new Set(selectableBills.map((b) => b.billing_month)).size > 1;
+  const selectedDuePaise =
+    selectedBill?.remaining_paise ?? selectedBill?.total_paise ?? 0;
 
   const normalizedUtr = normalizeUpiUtr(referenceNumber);
   const isUpiMethod = paymentMethod === 'upi';
@@ -79,36 +94,39 @@ export function PaymentProofModal({
           <ScrollView
             style={{ maxHeight: 440 }}
             showsVerticalScrollIndicator={false}>
-            {/* Switch between unpaid Rent & EB when both are pending */}
-            {currentRentBill &&
-              currentEbBill &&
-              currentRentBill.status !== 'paid' &&
-              currentEbBill.status !== 'paid' && (
-                <View style={[styles.methodToggleRow, { marginBottom: 12 }]}>
-                  {[currentRentBill, currentEbBill].map((billOpt) => {
-                    const active =
-                      selectedBill?.charge_id === billOpt.charge_id;
-                    return (
-                      <Pressable
-                        key={billOpt.charge_id}
+            {/* Switch between unpaid bills when multiple are pending */}
+            {selectableBills.length > 1 && (
+              <View style={[styles.billSwitchWrap, { marginBottom: 12 }]}>
+                {selectableBills.map((billOpt) => {
+                  const active =
+                    selectedBill?.charge_id === billOpt.charge_id;
+                  const shortMonth = billOpt.month_label
+                    .split(' ')[0]
+                    ?.slice(0, 3);
+                  const kindLabel = billOpt.category === 'rent' ? 'Rent' : 'EB';
+                  const duePaise =
+                    billOpt.remaining_paise ?? billOpt.total_paise;
+                  return (
+                    <Pressable
+                      key={billOpt.charge_id}
+                      style={[
+                        styles.billSwitchChip,
+                        active && styles.methodBtnActive,
+                      ]}
+                      onPress={() => onSelectBill(billOpt)}>
+                      <Text
                         style={[
-                          styles.methodBtn,
-                          active && styles.methodBtnActive,
-                        ]}
-                        onPress={() => onSelectBill(billOpt)}>
-                        <Text
-                          style={[
-                            styles.methodBtnText,
-                            active && styles.methodBtnTextActive,
-                          ]}>
-                          {billOpt.category === 'rent' ? 'Rent' : 'EB'} (
-                          {formatPaiseToRupees(billOpt.total_paise)})
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              )}
+                          styles.methodBtnText,
+                          active && styles.methodBtnTextActive,
+                        ]}>
+                        {hasMultipleMonths ? `${shortMonth} ` : ''}
+                        {kindLabel} ({formatPaiseToRupees(duePaise)})
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            )}
 
             {/* Bill Details */}
             <View style={styles.modalBillBanner}>
@@ -116,8 +134,7 @@ export function PaymentProofModal({
                 {selectedBill?.title} • {selectedBill?.month_label}
               </Text>
               <Text style={styles.modalBillBannerAmount}>
-                Amount to Pay:{' '}
-                {formatPaiseToRupees(selectedBill?.total_paise || 0)}
+                Amount to Pay: {formatPaiseToRupees(selectedDuePaise)}
               </Text>
             </View>
 
@@ -365,6 +382,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     gap: 10,
     marginBottom: 10,
+  },
+  billSwitchWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  billSwitchChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
   },
   methodBtn: {
     flex: 1,

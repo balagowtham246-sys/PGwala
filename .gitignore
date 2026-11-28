@@ -45,6 +45,10 @@ example
 /ios
 /android
 
+# Android Studio / IntelliJ IDE metadata
+.idea/
+*.iml
+
 # Firebase admin private keys (never commit service account keys)
 *firebase-adminsdk*.json
 *-firebase-adminsdk-*.json

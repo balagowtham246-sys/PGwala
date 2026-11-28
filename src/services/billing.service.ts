@@ -142,6 +142,8 @@ export interface StudentBillCardItem {
   wm_paise?: number;
   ac_paise?: number;
   total_paise: number;
+  paid_paise?: number;
+  remaining_paise?: number;
   status: 'paid' | 'unpaid';
   receipt_number?: string | null;
   paid_date?: string | null;
@@ -159,6 +161,7 @@ export interface StudentBillingSnapshot {
   ownerUpiPayeeName?: string | null;
   currentRentBill: StudentBillCardItem | null;
   currentEbBill: StudentBillCardItem | null;
+  unpaidBills: StudentBillCardItem[];
   pastBills: StudentBillCardItem[];
 }
 
@@ -177,7 +180,7 @@ export interface GetOwnerBillingParams {
 export interface GenerateMonthlyBillsParams {
   propertyId: string;
   monthIsoStart: string;
-  rentPaise: number;
+  rentPaise: number | null;
 }
 
 export interface GenerateMonthlyBillsResult {
@@ -1035,59 +1038,90 @@ function buildStudentBillingSnapshot(params: {
     }
   }
 
-  const allBills: StudentBillCardItem[] = charges.map((c) => {
-    const billingStart = c.billing_period_start || '';
-    const d = new Date(billingStart);
-    const monthLabel = !isNaN(d.getTime())
-      ? d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
-      : billingStart;
+  // Defensively filter out cancelled charges even if an older RPC/cache returned them.
+  const activeCharges = charges.filter((c) => c.status !== 'cancelled');
 
-    const isSettled = c.status === 'settled';
-    const pInfo = paymentMap.get(c.id);
-    const pRep = pendingReportMap.get(c.id);
-    const isRent = c.category === 'rent';
+  const allBills: StudentBillCardItem[] = activeCharges
+    .map((c) => {
+      const billingStart = c.billing_period_start || '';
+      const d = new Date(billingStart);
+      const monthLabel = !isNaN(d.getTime())
+        ? d.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
+        : billingStart;
 
-    return {
-      charge_id: c.id,
-      category: c.category as 'rent' | 'electricity',
-      title: isRent ? 'Room Rent Bill' : 'Electricity (EB) Bill',
-      month_label: monthLabel,
-      billing_month: billingStart,
-      due_date: c.due_date || '',
-      rent_paise: isRent ? c.rent_amount_paise || c.amount_paise : undefined,
-      wm_paise: isRent ? c.wm_amount_paise || 0 : undefined,
-      ac_paise: isRent ? c.ac_amount_paise || 0 : undefined,
-      total_paise: c.amount_paise,
-      status: isSettled ? 'paid' : 'unpaid',
-      receipt_number: pInfo?.receipt || null,
-      paid_date: pInfo?.date || null,
-      paid_method: pInfo?.method || null,
-      payment_id: pInfo?.id || null,
-      pending_report: pRep
-        ? {
-            id: pRep.id,
-            claimed_method: pRep.claimed_method,
-            amount_paise: pRep.amount_paise,
-            reference_number: pRep.reference_number,
-            screenshot_url: pRep.screenshot_url,
-            notes: pRep.notes,
-            created_at: pRep.created_at,
-            status: pRep.status,
-            rejection_reason: pRep.rejection_reason,
-          }
-        : null,
-    };
-  });
+      const isSettled = c.status === 'settled';
+      const pInfo = paymentMap.get(c.id);
+      const pRep = pendingReportMap.get(c.id);
+      const isRent = c.category === 'rent';
+      const paidPaise = isSettled
+        ? c.amount_paise
+        : Math.min(c.amount_paise, pInfo?.paidPaise ?? 0);
+      const remainingPaise = Math.max(0, c.amount_paise - paidPaise);
 
-  const rentCharges = allBills.filter((b) => b.category === 'rent');
-  const ebCharges = allBills.filter((b) => b.category === 'electricity');
-  const currentRentBill = rentCharges.length > 0 ? rentCharges[0] : null;
-  const currentEbBill = ebCharges.length > 0 ? ebCharges[0] : null;
-  const pastBills = allBills.filter(
-    (b) =>
-      b.charge_id !== currentRentBill?.charge_id &&
-      b.charge_id !== currentEbBill?.charge_id
-  );
+      return {
+        charge_id: c.id,
+        category: c.category as 'rent' | 'electricity',
+        title: isRent ? 'Room Rent Bill' : 'Electricity (EB) Bill',
+        month_label: monthLabel,
+        billing_month: billingStart,
+        due_date: c.due_date || '',
+        rent_paise: isRent ? c.rent_amount_paise || c.amount_paise : undefined,
+        wm_paise: isRent ? c.wm_amount_paise || 0 : undefined,
+        ac_paise: isRent ? c.ac_amount_paise || 0 : undefined,
+        total_paise: c.amount_paise,
+        paid_paise: paidPaise,
+        remaining_paise: remainingPaise,
+        status: (isSettled ? 'paid' : 'unpaid') as 'paid' | 'unpaid',
+        receipt_number: pInfo?.receipt || null,
+        paid_date: pInfo?.date || null,
+        paid_method: pInfo?.method || null,
+        payment_id: pInfo?.id || null,
+        pending_report: pRep
+          ? {
+              id: pRep.id,
+              claimed_method: pRep.claimed_method,
+              amount_paise: pRep.amount_paise,
+              reference_number: pRep.reference_number,
+              screenshot_url: pRep.screenshot_url,
+              notes: pRep.notes,
+              created_at: pRep.created_at,
+              status: pRep.status,
+              rejection_reason: pRep.rejection_reason,
+            }
+          : null,
+      };
+    })
+    .sort((a, b) => {
+      const monthCmp = b.billing_month.localeCompare(a.billing_month);
+      if (monthCmp !== 0) return monthCmp;
+      if (a.category === b.category) return 0;
+      return a.category === 'rent' ? -1 : 1;
+    });
+
+  // Never pair Rent from one month with EB from a different month.
+  const latestMonthKey = allBills[0]?.billing_month ?? null;
+  const currentRentBill = latestMonthKey
+    ? allBills.find(
+        (b) => b.billing_month === latestMonthKey && b.category === 'rent'
+      ) ?? null
+    : null;
+  const currentEbBill = latestMonthKey
+    ? allBills.find(
+        (b) =>
+          b.billing_month === latestMonthKey && b.category === 'electricity'
+      ) ?? null
+    : null;
+
+  const unpaidBills = allBills.filter((b) => b.status !== 'paid');
+  const pastBills =
+    unpaidBills.length > 0
+      ? allBills.filter((b) => b.status === 'paid')
+      : allBills.filter(
+          (b) =>
+            b.status === 'paid' &&
+            b.charge_id !== currentRentBill?.charge_id &&
+            b.charge_id !== currentEbBill?.charge_id
+        );
 
   return {
     residentId,
@@ -1098,6 +1132,7 @@ function buildStudentBillingSnapshot(params: {
     ownerUpiPayeeName,
     currentRentBill,
     currentEbBill,
+    unpaidBills,
     pastBills,
   };
 }
@@ -1153,6 +1188,7 @@ export async function getStudentBilling(
         ownerUpiPayeeName: null,
         currentRentBill: null,
         currentEbBill: null,
+        unpaidBills: [],
         pastBills: [],
       });
     }
@@ -1290,6 +1326,58 @@ export async function submitStudentPaymentProof(
     return await run;
   } finally {
     inFlightPaymentProofs.delete(flightKey);
+  }
+}
+
+export interface WithdrawStudentPaymentProofParams {
+  reportId: string;
+  screenshotUrl?: string | null;
+}
+
+/**
+ * Lets a resident withdraw their own pending payment proof before owner approval
+ * and best-effort deletes the uploaded screenshot from `payment-proofs` storage.
+ */
+export async function withdrawStudentPaymentProof(
+  params: WithdrawStudentPaymentProofParams
+): Promise<ServiceResult<{ message: string }>> {
+  const traceLabel = `billing:rpc:withdraw_student_payment_proof:${params.reportId}`;
+  startTrace(traceLabel);
+  try {
+    const { data, error } = await supabase.rpc(
+      'withdraw_student_payment_proof',
+      {
+        p_report_id: params.reportId,
+      }
+    );
+    recordRoundTrip(traceLabel, 1);
+
+    if (error) throw error;
+    if (!data?.success) {
+      throw new Error(data?.error || 'Could not withdraw payment proof.');
+    }
+
+    const storagePath = extractPaymentProofStoragePath(
+      (typeof data.screenshot_url === 'string' ? data.screenshot_url : null) ??
+        params.screenshotUrl
+    );
+    if (storagePath && supabase.storage?.from) {
+      try {
+        await supabase.storage.from('payment-proofs').remove([storagePath]);
+      } catch {
+        // Non-fatal: proof withdrawal already succeeded
+      }
+    }
+
+    await Promise.all([
+      invalidatePrefix(BILLING_CACHE_PREFIX),
+      invalidatePrefix('dashboard:student:'),
+    ]);
+    return ok({ message: data.message || 'Payment proof withdrawn.' });
+  } catch (err) {
+    return fail(err, 'Could not withdraw payment proof.');
+  } finally {
+    endTrace(traceLabel);
   }
 }
 

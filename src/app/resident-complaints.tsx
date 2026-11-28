@@ -184,8 +184,8 @@ export default function StudentComplaintsScreen() {
       }
       const res = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
-        quality: 0.85,
+        allowsEditing: false,
+        quality: 0.7,
         base64: false,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {
@@ -214,8 +214,8 @@ export default function StudentComplaintsScreen() {
       }
       const res = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
-        quality: 0.85,
+        allowsEditing: false,
+        quality: 0.7,
         base64: false,
       });
       if (!res.canceled && res.assets && res.assets.length > 0) {

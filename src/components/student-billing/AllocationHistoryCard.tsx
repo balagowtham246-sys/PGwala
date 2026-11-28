@@ -1,11 +1,12 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { formatPaiseToRupees } from '@/lib/billing-utils';
 import { toSentenceCaseStatus } from '@/lib/ux-utils';
 import { StudentBillCardItem } from '@/services/billing.service';
 
 export interface AllocationHistoryCardProps {
   bill: StudentBillCardItem;
+  onOpenReceipt?: (paymentId: string) => void;
 }
 
 function formatHistoryDate(iso?: string | null): string | null {
@@ -22,7 +23,10 @@ function formatHistoryDate(iso?: string | null): string | null {
   });
 }
 
-export function AllocationHistoryCard({ bill }: AllocationHistoryCardProps) {
+export function AllocationHistoryCard({
+  bill,
+  onOpenReceipt,
+}: AllocationHistoryCardProps) {
   const paidDateLabel = formatHistoryDate(bill.paid_date);
   return (
     <View style={styles.historyCard}>
@@ -36,7 +40,12 @@ export function AllocationHistoryCard({ bill }: AllocationHistoryCardProps) {
         {bill.category === 'rent' && (
           <Text style={styles.historyMeta}>
             Rent: {formatPaiseToRupees(bill.rent_paise || 0)}
-            {(bill.wm_paise || 0) > 0 ? ' + WM: ₹500' : ''}
+            {(bill.wm_paise || 0) > 0
+              ? ` + WM: ${formatPaiseToRupees(bill.wm_paise || 0)}`
+              : ''}
+            {(bill.ac_paise || 0) > 0
+              ? ` + AC: ${formatPaiseToRupees(bill.ac_paise || 0)}`
+              : ''}
           </Text>
         )}
         {paidDateLabel && (
@@ -67,9 +76,18 @@ export function AllocationHistoryCard({ bill }: AllocationHistoryCardProps) {
           </View>
         )}
 
-        {bill.receipt_number && (
+        {bill.payment_id && onOpenReceipt ? (
+          <Pressable
+            accessibilityRole="button"
+            hitSlop={6}
+            onPress={() => onOpenReceipt(bill.payment_id!)}>
+            <Text style={styles.historyReceiptLink}>
+              {bill.receipt_number ? `${bill.receipt_number} ›` : 'Receipt ›'}
+            </Text>
+          </Pressable>
+        ) : bill.receipt_number ? (
           <Text style={styles.historyReceiptNum}>{bill.receipt_number}</Text>
-        )}
+        ) : null}
       </View>
     </View>
   );
@@ -111,6 +129,11 @@ const styles = StyleSheet.create({
   historyReceiptNum: {
     fontSize: 10,
     color: '#94A3B8',
+  },
+  historyReceiptLink: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#0284C7',
   },
   statusBadge: {
     paddingHorizontal: 10,

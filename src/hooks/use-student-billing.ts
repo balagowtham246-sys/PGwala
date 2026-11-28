@@ -9,6 +9,8 @@ import {
   StudentBillingSnapshot,
   SubmitStudentPaymentProofParams,
   submitStudentPaymentProof,
+  WithdrawStudentPaymentProofParams,
+  withdrawStudentPaymentProof,
 } from '@/services/billing.service';
 
 export function useStudentBillingQuery(
@@ -43,6 +45,28 @@ export function useSubmitPaymentProofMutation() {
     },
     onSuccess: (_data, variables) => {
       trackEvent('payment_proof_submitted', { method: variables.paymentMethod });
+    },
+    onSettled: (_data, err) => {
+      if (!err) broadcastPropertySync('billing');
+      void qc.invalidateQueries({ queryKey: queryKeys.billing.all });
+      void qc.invalidateQueries({ queryKey: queryKeys.dashboard.all });
+    },
+  });
+}
+
+export function useWithdrawPaymentProofMutation() {
+  const qc = useQueryClient();
+
+  return useMutation<{ message: string }, Error, WithdrawStudentPaymentProofParams>({
+    mutationFn: async (params) => {
+      const result = await withdrawStudentPaymentProof(params);
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+      return result.data;
+    },
+    onSuccess: () => {
+      trackEvent('payment_proof_withdrawn');
     },
     onSettled: (_data, err) => {
       if (!err) broadcastPropertySync('billing');

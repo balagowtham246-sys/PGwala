@@ -42,7 +42,7 @@ describe('analytics (PostHog privacy-first wrapper)', () => {
     }).not.toThrow();
   });
 
-  test('identifyAnalyticsUser sends only userId, role, and property group (zero PII) and deduplicates', () => {
+  test('identifyAnalyticsUser sends userId, role, display name, and property group name and deduplicates', () => {
     const mockClient: AnalyticsClientLike = {
       identify: jest.fn(),
       group: jest.fn(),
@@ -55,19 +55,28 @@ describe('analytics (PostHog privacy-first wrapper)', () => {
     identifyAnalyticsUser({
       userId: 'user-123',
       role: 'owner',
+      name: 'Rajesh Kumar',
       propertyId: 'prop-456',
+      propertyName: "Sri Lakshmi Men's PG",
     });
     // Duplicate call with identical key is skipped
     identifyAnalyticsUser({
       userId: 'user-123',
       role: 'owner',
+      name: 'Rajesh Kumar',
       propertyId: 'prop-456',
+      propertyName: "Sri Lakshmi Men's PG",
     });
 
     expect(mockClient.identify).toHaveBeenCalledTimes(1);
-    expect(mockClient.identify).toHaveBeenCalledWith('user-123', { role: 'owner' });
+    expect(mockClient.identify).toHaveBeenCalledWith('user-123', {
+      role: 'owner',
+      name: 'Rajesh Kumar',
+    });
     expect(mockClient.group).toHaveBeenCalledTimes(1);
-    expect(mockClient.group).toHaveBeenCalledWith('property', 'prop-456');
+    expect(mockClient.group).toHaveBeenCalledWith('property', 'prop-456', {
+      name: "Sri Lakshmi Men's PG",
+    });
 
     resetAnalyticsUser();
     expect(mockClient.reset).toHaveBeenCalledTimes(1);

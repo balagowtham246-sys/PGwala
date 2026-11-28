@@ -7,10 +7,12 @@ const MMKV_INSTANCE_ID = 'pgwala-query-cache';
 export const QUERY_CACHE_STORAGE_KEY = 'pgwala.tanstack.query.cache.v1';
 export const QUERY_CACHE_BUSTER = 'v1';
 export const QUERY_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const PERSIST_DEBOUNCE_MS = 1500;
+const PERSIST_DEBOUNCE_MS = 3000;
 
 let mmkvInstance: MMKV | null | undefined;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let deferredFlushTimer: ReturnType<typeof setTimeout> | null = null;
+let pendingRafId: number | null = null;
 let pendingClient: PersistedClient | null = null;
 
 function cancelPendingPersist(): void {
@@ -18,7 +20,35 @@ function cancelPendingPersist(): void {
     clearTimeout(persistTimer);
     persistTimer = null;
   }
+  if (pendingRafId !== null && typeof cancelAnimationFrame === 'function') {
+    cancelAnimationFrame(pendingRafId);
+    pendingRafId = null;
+  }
+  if (deferredFlushTimer) {
+    clearTimeout(deferredFlushTimer);
+    deferredFlushTimer = null;
+  }
   pendingClient = null;
+}
+
+function scheduleIdleWrite(client: PersistedClient): void {
+  if (typeof requestAnimationFrame === 'function') {
+    if (pendingRafId !== null && typeof cancelAnimationFrame === 'function') {
+      cancelAnimationFrame(pendingRafId);
+    }
+    pendingRafId = requestAnimationFrame(() => {
+      pendingRafId = null;
+      if (deferredFlushTimer) {
+        clearTimeout(deferredFlushTimer);
+      }
+      deferredFlushTimer = setTimeout(() => {
+        deferredFlushTimer = null;
+        writeClientToStorage(client);
+      }, 0);
+    });
+    return;
+  }
+  writeClientToStorage(client);
 }
 
 function writeClientToStorage(client: PersistedClient): void {
@@ -83,7 +113,7 @@ export const mmkvQueryPersister: Persister = {
       const toWrite = pendingClient;
       pendingClient = null;
       if (!toWrite) return;
-      writeClientToStorage(toWrite);
+      scheduleIdleWrite(toWrite);
     }, PERSIST_DEBOUNCE_MS);
   },
   restoreClient: (): PersistedClient | undefined => {

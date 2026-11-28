@@ -658,6 +658,126 @@ async function runRealMigrationRlsTests() {
     const unpaidBillCancelled =
       cancelUnpaidRes?.success === true && afterCancelChg.rows[0]?.status === 'cancelled';
 
+    // --- Migration 41: Student Billing Cancelled Filter, AC Fee, Proof Withdraw & Owner Gate Insert ---
+    const user1Summary = await asAuthenticatedUser(db, IDS.user1, async () => {
+      const r = await db.query(`SELECT public.get_student_billing_summary() AS res`);
+      return r.rows[0].res;
+    });
+    const user2Summary = await asAuthenticatedUser(db, IDS.user2, async () => {
+      const r = await db.query(`SELECT public.get_student_billing_summary() AS res`);
+      return r.rows[0].res;
+    });
+    const user1DecCharges = (user1Summary?.charges ?? []).filter(
+      (c) => c.billing_period_start === '2026-12-01'
+    );
+    const user2DecCharge = (user2Summary?.charges ?? []).find(
+      (c) => c.id === res2Chg.id
+    );
+    const studentSummaryExcludesCancelledAndHasAc =
+      user1Summary?.success === true &&
+      user1DecCharges.length === 0 &&
+      user2Summary?.success === true &&
+      Number(user2DecCharge?.ac_amount_paise) === 50000;
+
+    // Submitting proof on cancelled res1Chg must fail with BILL_CANCELLED
+    const proofOnCancelledRes = await asAuthenticatedUser(db, IDS.user1, async () => {
+      const r = await db.query(
+        `SELECT public.submit_student_payment_proof($1, 'upi', 'res1/cancelled.jpg', '432819203948', 'test') AS res`,
+        [res1Chg.id]
+      );
+      return r.rows[0].res;
+    });
+    const submitProofOnCancelledRejected =
+      proofOnCancelledRes?.success === false &&
+      proofOnCancelledRes?.code === 'BILL_CANCELLED';
+
+    // User 2 submits proof on active res2Chg, duplicate pending is blocked, User 1 cannot withdraw it, User 2 withdraws it cleanly
+    const submitActiveProofRes = await asAuthenticatedUser(db, IDS.user2, async () => {
+      const r = await db.query(
+        `SELECT public.submit_student_payment_proof($1, 'upi', 'res2/active.jpg', '555566667777', 'paid') AS res`,
+        [res2Chg.id]
+      );
+      return r.rows[0].res;
+    });
+    const dupPendingProofRes = await asAuthenticatedUser(db, IDS.user2, async () => {
+      const r = await db.query(
+        `SELECT public.submit_student_payment_proof($1, 'upi', 'res2/active2.jpg', '555566667778', 'paid again') AS res`,
+        [res2Chg.id]
+      );
+      return r.rows[0].res;
+    });
+    const otherUserWithdrawRes = await asAuthenticatedUser(db, IDS.user1, async () => {
+      const r = await db.query(
+        `SELECT public.withdraw_student_payment_proof($1) AS res`,
+        [submitActiveProofRes.report_id]
+      );
+      return r.rows[0].res;
+    });
+    const ownWithdrawRes = await asAuthenticatedUser(db, IDS.user2, async () => {
+      const r = await db.query(
+        `SELECT public.withdraw_student_payment_proof($1) AS res`,
+        [submitActiveProofRes.report_id]
+      );
+      return r.rows[0].res;
+    });
+    const remainingReportCheck = await db.query(
+      `SELECT id FROM public.student_payment_reports WHERE id = $1`,
+      [submitActiveProofRes.report_id]
+    );
+    const withdrawOwnProofSucceededAndOtherBlocked =
+      submitActiveProofRes?.success === true &&
+      dupPendingProofRes?.success === false &&
+      dupPendingProofRes?.code === 'PROOF_ALREADY_PENDING' &&
+      otherUserWithdrawRes?.success === false &&
+      ownWithdrawRes?.success === true &&
+      remainingReportCheck.rows.length === 0;
+
+    // Owner direct movement_logs INSERT without event_time succeeds under column grants + RLS
+    const ownerGateInsertRes = await asAuthenticatedUser(db, IDS.owner1, () =>
+      db.query(
+        `INSERT INTO public.movement_logs (
+           property_id, resident_id, direction, purpose, expected_return_time,
+           expected_return_date, food_required, note, recorded_by
+         ) VALUES ($1, $2, 'OUT', 'Home Visit', 'Returns 10 Dec', '2026-12-10'::date, false, 'Marked on leave by owner', $3)
+         RETURNING id, event_time`,
+        [IDS.prop1, IDS.res1, IDS.owner1]
+      )
+    );
+    const ownerMovementInsertWithoutEventTimeSucceeded =
+      ownerGateInsertRes.rows.length === 1 && Boolean(ownerGateInsertRes.rows[0]?.event_time);
+
+    // --- Migration 42: Re-allocate Room EB Bill After Cancelling Unpaid EB ---
+    const firstEbAlloc = await asAuthenticatedUser(db, IDS.owner1, async () => {
+      const r = await db.query(
+        `SELECT public.allocate_eb_bill($1, '101', '2026-11-01'::date, '2026-11-30'::date, '2026-11-05'::date, 10000, ARRAY[$2::uuid], 'Nov EB') AS res`,
+        [IDS.prop1, IDS.res2]
+      );
+      return r.rows[0].res;
+    });
+    const firstEbChargeRow = await db.query(
+      `SELECT id FROM public.charges WHERE resident_id = $1 AND category = 'electricity' AND billing_period_start = '2026-11-01'::date AND status != 'cancelled' LIMIT 1`,
+      [IDS.res2]
+    );
+    const cancelEbRes = await asAuthenticatedUser(db, IDS.owner1, async () => {
+      const r = await db.query(
+        `SELECT public.cancel_unpaid_charge($1, 'Wrong EB amount') AS res`,
+        [firstEbChargeRow.rows[0].id]
+      );
+      return r.rows[0].res;
+    });
+    const secondEbAlloc = await asAuthenticatedUser(db, IDS.owner1, async () => {
+      const r = await db.query(
+        `SELECT public.allocate_eb_bill($1, '101', '2026-11-01'::date, '2026-11-30'::date, '2026-11-05'::date, 20000, ARRAY[$2::uuid], 'Nov EB corrected') AS res`,
+        [IDS.prop1, IDS.res2]
+      );
+      return r.rows[0].res;
+    });
+    const ebReallocateAfterCancelSucceeded =
+      firstEbAlloc?.success === true &&
+      cancelEbRes?.success === true &&
+      secondEbAlloc?.success === true &&
+      Number(secondEbAlloc?.total_allocated_paise) === 20000;
+
     return {
       user1AnnouncementIds: user1Announcements.rows.map((r) => r.id),
       user2AnnouncementIds: user2Announcements.rows.map((r) => r.id),
@@ -715,6 +835,11 @@ async function runRealMigrationRlsTests() {
         cancelPaidBlocked,
         paymentReversedAndReopened,
         unpaidBillCancelled,
+        studentSummaryExcludesCancelledAndHasAc,
+        submitProofOnCancelledRejected,
+        withdrawOwnProofSucceededAndOtherBlocked,
+        ownerMovementInsertWithoutEventTimeSucceeded,
+        ebReallocateAfterCancelSucceeded,
       },
     };
   } finally {

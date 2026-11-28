@@ -5,7 +5,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '@/context/auth-context';
 import { useProperty } from '@/context/property-context';
 import { useResident } from '@/context/resident-context';
-import { clearQueryCache } from '@/lib/query-cache';
 import {
   BroadcastSyncPayload,
   getRealtimeSenderId,
@@ -20,6 +19,7 @@ import { supabase } from '@/lib/supabase';
 const DOMAIN_DEBOUNCE_MS = 120;
 const BASE_RECONNECT_DELAY_MS = 1000;
 const MAX_RECONNECT_DELAY_MS = 15_000;
+const APP_RESUME_SYNC_THRESHOLD_MS = 10_000;
 
 /**
  * App-wide Hybrid Realtime Sync Engine:
@@ -42,7 +42,14 @@ export function useGlobalRealtimeSync(): void {
 
   const role = profile?.role;
   const userId = user?.id ?? null;
+  const hasSession = Boolean(session);
   const accessToken = session?.access_token ?? null;
+  const accessTokenRef = useRef<string | null>(accessToken);
+  const backgroundedAtRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    accessTokenRef.current = accessToken;
+  }, [accessToken]);
 
   // Keep latest context refresh callbacks in a ref so the channel effect never tears down
   const callbacksRef = useRef({
@@ -83,7 +90,7 @@ export function useGlobalRealtimeSync(): void {
 
   // Resolve active propertyId for Warden sessions
   useEffect(() => {
-    if (!session || role !== 'warden' || !userId) {
+    if (!hasSession || role !== 'warden' || !userId) {
       return;
     }
     let active = true;
@@ -107,7 +114,7 @@ export function useGlobalRealtimeSync(): void {
     return () => {
       active = false;
     };
-  }, [session, role, userId]);
+  }, [hasSession, role, userId]);
 
   const activePropertyId =
     role === 'owner'
@@ -118,29 +125,53 @@ export function useGlobalRealtimeSync(): void {
           ? wardenPropertyId
           : null;
 
-  // Track foreground/background transitions; re-sync active queries & contexts on resume
+  // Track foreground/background transitions; only run full catch-up when returning
+  // after >= 10s away so brief switches (Gallery / UPI) never trigger a refetch storm.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
-      const becameActive = nextState === 'active';
-      setIsAppActive(becameActive);
-      if (becameActive && session) {
-        if (session.access_token) {
-          try {
-            void supabase.realtime.setAuth(session.access_token);
-          } catch {
-            // Non-fatal
+      if (nextState === 'background') {
+        if (backgroundedAtRef.current === null) {
+          backgroundedAtRef.current = Date.now();
+        }
+        setIsAppActive(false);
+        return;
+      }
+
+      if (nextState === 'inactive') {
+        if (backgroundedAtRef.current === null) {
+          backgroundedAtRef.current = Date.now();
+        }
+        return;
+      }
+
+      if (nextState === 'active') {
+        const awayMs =
+          backgroundedAtRef.current !== null
+            ? Date.now() - backgroundedAtRef.current
+            : 0;
+        backgroundedAtRef.current = null;
+        setIsAppActive(true);
+
+        if (hasSession) {
+          const token = accessTokenRef.current;
+          if (token) {
+            try {
+              void supabase.realtime.setAuth(token);
+            } catch {
+              // Non-fatal
+            }
+          }
+          if (awayMs >= APP_RESUME_SYNC_THRESHOLD_MS) {
+            void qc.invalidateQueries({ refetchType: 'active' });
+            callbacksRef.current.refreshResident();
+            callbacksRef.current.refreshProperties();
+            callbacksRef.current.refreshProfile();
           }
         }
-        void clearQueryCache().finally(() => {
-          void qc.invalidateQueries({ refetchType: 'active' });
-          callbacksRef.current.refreshResident();
-          callbacksRef.current.refreshProperties();
-          callbacksRef.current.refreshProfile();
-        });
       }
     });
     return () => sub.remove();
-  }, [qc, session]);
+  }, [qc, hasSession]);
 
   const timersRef = useRef<Partial<Record<SyncDomain, ReturnType<typeof setTimeout>>>>({});
   const lastBroadcastAtRef = useRef<Partial<Record<SyncDomain, number>>>({});
@@ -149,21 +180,24 @@ export function useGlobalRealtimeSync(): void {
   const backoffAttemptRef = useRef(0);
 
   useEffect(() => {
-    if (!session || !activePropertyId || !isAppActive) {
+    if (!hasSession || !activePropertyId || !isAppActive) {
       registerActiveRealtimeChannel(null, null);
-      if (!session) {
+      if (!hasSession) {
         setLiveConnectionStatus('connected');
       }
       return;
     }
 
-    if (session.access_token) {
+    const token = accessTokenRef.current;
+    if (token) {
       try {
-        void supabase.realtime.setAuth(session.access_token);
+        void supabase.realtime.setAuth(token);
       } catch {
         // Non-fatal
       }
     }
+
+    let channelSubscribeCount = 0;
 
     const scheduleDomainSync = (
       domain: SyncDomain,
@@ -285,18 +319,17 @@ export function useGlobalRealtimeSync(): void {
       )
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
+          channelSubscribeCount += 1;
           registerActiveRealtimeChannel(channel, activePropertyId);
           setLiveConnectionStatus('connected');
           backoffAttemptRef.current = 0;
 
-          if (hadDisconnectRef.current) {
+          if (hadDisconnectRef.current || channelSubscribeCount > 1) {
             hadDisconnectRef.current = false;
-            void clearQueryCache().finally(() => {
-              void qc.invalidateQueries({ refetchType: 'active' });
-              callbacksRef.current.refreshResident();
-              callbacksRef.current.refreshProperties();
-              callbacksRef.current.refreshProfile();
-            });
+            void qc.invalidateQueries({ refetchType: 'active' });
+            callbacksRef.current.refreshResident();
+            callbacksRef.current.refreshProperties();
+            callbacksRef.current.refreshProfile();
           }
           return;
         }
@@ -338,5 +371,5 @@ export function useGlobalRealtimeSync(): void {
       }
       void supabase.removeChannel(channel);
     };
-  }, [session, activePropertyId, isAppActive, qc, reconnectAttempt]);
+  }, [hasSession, activePropertyId, isAppActive, qc, reconnectAttempt]);
 }

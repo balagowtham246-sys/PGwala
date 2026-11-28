@@ -271,12 +271,29 @@ export default function ResidentDashboardScreen() {
     setFoodRefreshKey((k) => k + 1);
     void refreshProfile();
     void (async () => {
+      let timeoutId: ReturnType<typeof setTimeout> | null = null;
+      const timeoutPromise = new Promise<void>((resolve) => {
+        timeoutId = setTimeout(resolve, 10_000);
+      });
       try {
-        await flushOfflineQueue(defaultOfflineExecutors);
-        const count = await getPendingCount();
-        setPendingOfflineCount(count);
-        await Promise.all([loadResidentData(), loadUnreadNotices(true)]);
+        await Promise.race([
+          (async () => {
+            try {
+              await flushOfflineQueue(defaultOfflineExecutors);
+              const count = await getPendingCount();
+              setPendingOfflineCount(count);
+            } catch {
+              // Non-fatal offline queue flush failure
+            }
+            await Promise.allSettled([
+              loadResidentData(),
+              loadUnreadNotices(true),
+            ]);
+          })(),
+          timeoutPromise,
+        ]);
       } finally {
+        if (timeoutId) clearTimeout(timeoutId);
         setManualRefreshing(false);
       }
     })();

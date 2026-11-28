@@ -69,6 +69,11 @@ interface PgliteSuiteResult {
       cancelPaidBlocked: boolean;
       paymentReversedAndReopened: boolean;
       unpaidBillCancelled: boolean;
+      studentSummaryExcludesCancelledAndHasAc: boolean;
+      submitProofOnCancelledRejected: boolean;
+      withdrawOwnProofSucceededAndOtherBlocked: boolean;
+      ownerMovementInsertWithoutEventTimeSucceeded: boolean;
+      ebReallocateAfterCancelSucceeded: boolean;
     };
   };
 }
@@ -174,6 +179,11 @@ describe('Postgres ledger & RLS scoping invariants (PGlite)', () => {
       cancelPaidBlocked: true,
       paymentReversedAndReopened: true,
       unpaidBillCancelled: true,
+      studentSummaryExcludesCancelledAndHasAc: true,
+      submitProofOnCancelledRejected: true,
+      withdrawOwnProofSucceededAndOtherBlocked: true,
+      ownerMovementInsertWithoutEventTimeSucceeded: true,
+      ebReallocateAfterCancelSucceeded: true,
     });
   });
 });

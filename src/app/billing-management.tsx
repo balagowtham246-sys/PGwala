@@ -426,7 +426,7 @@ export default function SimplifiedBillingManagementScreen() {
 
   const handleOpenGenerateRent = () => {
     setRentInputRupees(defaultRentRupees);
-    setOnlyFillMissingRent(true);
+    setOnlyFillMissingRent(missingRentResidents.length > 0);
     setGenerateRentModalVisible(true);
   };
 
@@ -446,11 +446,15 @@ export default function SimplifiedBillingManagementScreen() {
     const rentPaise = Math.round(parsedRupees * 100);
     try {
       // Safe mode: when preserving existing custom unpaid rents, only update ₹0/unbilled residents
+      // and generate charges ONLY for residents with status === 'not_generated'.
       if (onlyFillMissingRent && unpaidExistingRentCount > 0) {
         if (missingRentResidents.length === 0) {
           setGenerateRentModalVisible(false);
           return;
         }
+        const hasNotGenerated = missingRentResidents.some(
+          (r) => r.status === 'not_generated'
+        );
         for (const res of missingRentResidents) {
           await updateRentMutation.mutateAsync({
             propertyId,
@@ -459,9 +463,16 @@ export default function SimplifiedBillingManagementScreen() {
             monthIsoStart,
           });
         }
+        if (hasNotGenerated) {
+          await generateBillsMutation.mutateAsync({
+            propertyId,
+            monthIsoStart,
+            rentPaise: null,
+          });
+        }
         setGenerateRentModalVisible(false);
         showToast(
-          `Set rent to ₹${parsedRupees.toLocaleString('en-IN')} for ${
+          `Generated rent (₹${parsedRupees.toLocaleString('en-IN')}) for ${
             missingRentResidents.length
           } resident${missingRentResidents.length > 1 ? 's' : ''}. Existing custom rents preserved.`
         );
@@ -1512,7 +1523,6 @@ export default function SimplifiedBillingManagementScreen() {
         initialNumToRender={12}
         maxToRenderPerBatch={12}
         windowSize={7}
-        removeClippedSubviews={Platform.OS === 'android'}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -1553,6 +1563,11 @@ export default function SimplifiedBillingManagementScreen() {
       />
 
       <ReverseBillModal
+        key={
+          reverseBillTarget
+            ? `${reverseBillTarget.chargeId}:${reverseBillTarget.mode}`
+            : 'reverse-closed'
+        }
         visible={Boolean(reverseBillTarget)}
         target={reverseBillTarget}
         submitting={
@@ -1724,7 +1739,7 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 12,
-    paddingBottom: 96,
+    paddingBottom: 160,
     maxWidth: 960,
     width: '100%',
     alignSelf: 'center',

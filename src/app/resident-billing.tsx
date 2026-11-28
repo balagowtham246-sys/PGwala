@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Linking,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -27,6 +28,7 @@ import { useToast } from '@/context/toast-context';
 import {
   useStudentBillingQuery,
   useSubmitPaymentProofMutation,
+  useWithdrawPaymentProofMutation,
 } from '@/hooks/use-student-billing';
 import { compressPickedImage } from '@/lib/image-upload';
 import { buildUpiPaymentUrl } from '@/lib/upi';
@@ -77,6 +79,10 @@ export default function SimplifiedStudentBillingScreen() {
 
   const billingQuery = useStudentBillingQuery(userId, residentContext);
   const paymentProofMutation = useSubmitPaymentProofMutation();
+  const withdrawProofMutation = useWithdrawPaymentProofMutation();
+  const [withdrawingReportId, setWithdrawingReportId] = useState<string | null>(
+    null
+  );
 
   const snapshot = billingQuery.data;
   const loading = billingQuery.isPending && !snapshot;
@@ -91,8 +97,46 @@ export default function SimplifiedStudentBillingScreen() {
     snapshot?.ownerUpiPayeeName ?? sharedResident?.ownerUpiPayeeName ?? null;
   const currentRentBill = snapshot?.currentRentBill ?? null;
   const currentEbBill = snapshot?.currentEbBill ?? null;
+  const unpaidBills = useMemo(
+    () => snapshot?.unpaidBills ?? [],
+    [snapshot?.unpaidBills]
+  );
   const pastBills = snapshot?.pastBills ?? [];
   const submittingProof = paymentProofMutation.isPending;
+
+  // Android memory-pressure recovery: if the OS killed our activity while the gallery
+  // was open, recover the picked screenshot on mount instead of losing it.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    let active = true;
+    void (async () => {
+      try {
+        const pending = await ImagePicker.getPendingResultAsync();
+        if (!active || !pending) return;
+        const result = Array.isArray(pending) ? pending[0] : pending;
+        if (
+          result &&
+          'canceled' in result &&
+          !result.canceled &&
+          Array.isArray(result.assets) &&
+          result.assets.length > 0
+        ) {
+          const compressed = await compressPickedImage(result.assets[0]);
+          if (active && compressed.ok) {
+            setSelectedScreenshot({
+              uri: compressed.data.uri,
+              base64: compressed.data.base64,
+            });
+          }
+        }
+      } catch {
+        // Non-fatal: no pending picker result
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (
@@ -113,14 +157,21 @@ export default function SimplifiedStudentBillingScreen() {
 
   const handleRefresh = async () => {
     setManualRefreshing(true);
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
     try {
-      await billingQuery.refetch();
+      await Promise.race([
+        billingQuery.refetch(),
+        new Promise<void>((resolve) => {
+          timeoutId = setTimeout(resolve, 10_000);
+        }),
+      ]);
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
       setManualRefreshing(false);
     }
   };
 
-  // Launch Image Picker to choose screenshot proof
+  // Launch Image Picker to choose screenshot proof (no cropper activity to avoid Android OOM)
   const handlePickScreenshot = async () => {
     try {
       const permission =
@@ -135,8 +186,8 @@ export default function SimplifiedStudentBillingScreen() {
 
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ['images'],
-        allowsEditing: true,
-        quality: 0.85,
+        allowsEditing: false,
+        quality: 0.7,
         base64: false,
       });
 
@@ -159,6 +210,46 @@ export default function SimplifiedStudentBillingScreen() {
     }
   };
 
+  // Withdraw a pending payment proof so the resident can pay or re-upload
+  const handleWithdrawProof = (bill: StudentBillCardItem) => {
+    const report = bill.pending_report;
+    if (!report || report.status !== 'pending' || withdrawingReportId) return;
+
+    Alert.alert(
+      'Withdraw Payment Proof?',
+      `Remove your pending proof for ${bill.month_label} ${bill.title}? You can submit a new proof afterwards.`,
+      [
+        { text: 'Keep Pending', style: 'cancel' },
+        {
+          text: 'Withdraw',
+          style: 'destructive',
+          onPress: () => {
+            setWithdrawingReportId(report.id);
+            void withdrawProofMutation
+              .mutateAsync({
+                reportId: report.id,
+                screenshotUrl: report.screenshot_url,
+              })
+              .then(() => {
+                showToast('Payment proof withdrawn');
+              })
+              .catch((err) => {
+                Alert.alert(
+                  'Withdraw Failed',
+                  err instanceof Error
+                    ? err.message
+                    : 'Could not withdraw payment proof.'
+                );
+              })
+              .finally(() => {
+                setWithdrawingReportId(null);
+              });
+          },
+        },
+      ]
+    );
+  };
+
   // Open Payment Proof Modal for a specific bill
   const handleOpenPaymentModal = (bill: StudentBillCardItem) => {
     if (bill.pending_report?.status === 'pending') {
@@ -178,7 +269,7 @@ export default function SimplifiedStudentBillingScreen() {
     const upiUrl = buildUpiPaymentUrl({
       upiId: ownerUpiId,
       payeeName: ownerUpiPayeeName || propertyName,
-      amountPaise: bill.total_paise,
+      amountPaise: bill.remaining_paise ?? bill.total_paise,
       note: `${bill.title} ${bill.month_label}`,
     });
 
@@ -278,13 +369,16 @@ export default function SimplifiedStudentBillingScreen() {
             <StudentChargeList
               currentRentBill={currentRentBill}
               currentEbBill={currentEbBill}
+              unpaidBills={unpaidBills}
               breakdownExpanded={breakdownExpanded}
               ownerUpiId={ownerUpiId}
               ownerUpiPayeeName={ownerUpiPayeeName}
               propertyName={propertyName}
+              withdrawingReportId={withdrawingReportId}
               onToggleBreakdown={() => setBreakdownExpanded((prev) => !prev)}
               onOpenPaymentModal={handleOpenPaymentModal}
               onPayNow={(bill) => void handlePayNow(bill)}
+              onWithdrawProof={handleWithdrawProof}
               onOpenReceipt={(paymentId) =>
                 router.push({
                   pathname: '/receipt-detail',
@@ -293,7 +387,7 @@ export default function SimplifiedStudentBillingScreen() {
               }
             />
 
-            {/* SECTION: PAST MONTHS HISTORY (Hidden when empty) */}
+            {/* SECTION: PAID HISTORY (Hidden when empty) */}
             {pastBills.length > 0 && (
               <>
                 <View style={[styles.sectionHeader, { marginTop: 24 }]}>
@@ -301,7 +395,16 @@ export default function SimplifiedStudentBillingScreen() {
                 </View>
                 <View style={styles.historyList}>
                   {pastBills.map((bill) => (
-                    <AllocationHistoryCard key={bill.charge_id} bill={bill} />
+                    <AllocationHistoryCard
+                      key={bill.charge_id}
+                      bill={bill}
+                      onOpenReceipt={(paymentId) =>
+                        router.push({
+                          pathname: '/receipt-detail',
+                          params: { id: paymentId },
+                        })
+                      }
+                    />
                   ))}
                 </View>
               </>
@@ -318,6 +421,7 @@ export default function SimplifiedStudentBillingScreen() {
         selectedBill={selectedBillForPayment}
         currentRentBill={currentRentBill}
         currentEbBill={currentEbBill}
+        unpaidBills={unpaidBills}
         paymentMethod={paymentMethod}
         referenceNumber={referenceNumber}
         studentNotes={studentNotes}

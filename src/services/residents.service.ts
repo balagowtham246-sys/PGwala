@@ -780,7 +780,7 @@ export async function fetchResidentsDirectory(
         status: string;
         billing_period_start: string;
       }[]) {
-        if (chg.status !== 'settled' && chg.status !== 'paid') {
+        if (chg.status !== 'settled' && chg.status !== 'paid' && chg.status !== 'cancelled') {
           duesMap.set(
             chg.resident_id,
             (duesMap.get(chg.resident_id) ?? 0) + (chg.amount_paise || 0)
@@ -955,7 +955,9 @@ export async function fetchResidentProfile(
     ]);
     recordRoundTrip(traceLabel, 3);
 
-    const recentCharges = (chargesRes.data ?? []) as ResidentChargeSummary[];
+    const recentCharges = ((chargesRes.data ?? []) as ResidentChargeSummary[]).filter(
+      (c) => c.status !== 'cancelled'
+    );
     const currentMonthStart = getIstMonthStartIso();
     const currentMonthRent = recentCharges.find(
       (c) => c.category === 'rent' && c.billing_period_start === currentMonthStart
@@ -1342,7 +1344,6 @@ export async function ownerRecordMovement(
       property_id: propertyId,
       resident_id: residentId,
       direction,
-      event_time: new Date().toISOString(),
       food_required: direction === 'IN',
       recorded_by: recordedByUserId ?? null,
       note: 'Recorded by owner',
