@@ -48,3 +48,6 @@ example
 # Firebase admin private keys (never commit service account keys)
 *firebase-adminsdk*.json
 *-firebase-adminsdk-*.json
+
+.vercel
+.env*
